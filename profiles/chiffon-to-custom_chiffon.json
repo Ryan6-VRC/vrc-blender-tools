@@ -1,0 +1,63 @@
+{
+  "source": "chiffon",
+  "target": "custom_chiffon",
+  "_note": "Second edge of 'Custom Plum'. Transcribed from the Base_Proportions checklist 'Custom Chiffon Target Proportions'. Logical checklist names mapped to the vendor Plum rig's actual bones (camelCase: UpperArm.L/.R, Hand.L/.R, UpperLeg.L/.R, LowerLeg.L/.R, Foot.L/.R; Head/Neck/Hips/Spine verbatim). +Z is up on this rig (armature world matrix rotates local Y -> world +Z), so 'Move Up 0.018' = translate [0,0,0.018]. Per-bone ops use space 'local', pivot 'individual' (== manual Normal-orientation per-bone scale, mirror-symmetric across .L/.R). Real body shape key is 'Breasts_small' (lowercase s) on mesh Body_base.",
+  "object": {
+    "pivot": "origin",
+    "scale": 1.115,
+    "translate": [0.0, 0.0, 0.018]
+  },
+  "no_inherit_scale": [
+    "Foot.L", "Foot.R",
+    "Hand.L", "Hand.R",
+    "Head",
+    "Spine"
+  ],
+  "scales": [
+    {
+      "bones": ["Head"],
+      "value": [0.94, 1.00, 0.98],
+      "space": "local", "pivot": "individual",
+      "note": "Head X:0.94 Y:1.00 Z:0.98"
+    },
+    {
+      "bones": ["Neck"],
+      "value": [1.04, 1.00, 1.04],
+      "space": "local", "pivot": "individual",
+      "note": "Neck X:1.04 Y:1.00 Z:1.04"
+    },
+    {
+      "bones": ["UpperArm.L", "UpperArm.R"],
+      "value": [1.00, 0.985, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Upper Arms Y:0.985"
+    },
+    {
+      "bones": ["Hand.L", "Hand.R"],
+      "value": [1.00, 1.04, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Hands Y:1.04"
+    },
+    {
+      "bones": ["Hips"],
+      "value": [0.98, 1.00, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Hips X:0.98"
+    },
+    {
+      "bones": ["UpperLeg.L", "UpperLeg.R"],
+      "value": [1.00, 1.03, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Upper Legs Y:1.03"
+    },
+    {
+      "bones": ["LowerLeg.L", "LowerLeg.R"],
+      "value": [1.04, 1.00, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Lower Legs X:1.04"
+    }
+  ],
+  "shapekeys": {
+    "Breasts_small": 0.600
+  }
+}

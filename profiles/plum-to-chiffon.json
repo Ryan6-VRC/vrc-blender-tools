@@ -1,0 +1,9 @@
+{
+  "source": "plum",
+  "target": "chiffon",
+  "_note": "First edge of 'Custom Plum'. Per the Base_Proportions checklist 'Plum -> Chiffon: Scale 0.9512' — the Plum body is the same mesh as Chiffon but uniformly larger; this shrinks it onto the Chiffon base. Uniform scale about the world origin (Z=0 floor), the shared reference for body+outfits. No bone or shape-key ops.",
+  "object": {
+    "pivot": "origin",
+    "scale": 0.9512
+  }
+}

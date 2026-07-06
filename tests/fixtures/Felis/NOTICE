@@ -1,0 +1,16 @@
+Felis - 3D avatar model (test fixture)
+Creator: リュク (リュクらぼ / @ryuku256)
+Source: https://t.co/KObA0d53Nw
+License: VN3 License, version 20250426 (see License_vn3license_en.pdf; the
+         original Japanese text is authoritative).
+
+This avatar is bundled here as a redistributable test/example fixture for
+vrc-blender-tools. Under its VN3 terms, redistribution of the original and of
+modified versions is permitted, modification/adjustment is permitted, and credit
+is not required. It is NOT covered by this repository's MIT LICENSE; it remains
+under the VN3 license above.
+
+REVOCABILITY: the VN3 license can be terminated by the licensor at any time.
+Because git history is permanent, this asset persists in clones even after a
+revocation. Check the licensor's site for current status. Bundling it is an
+accepted risk.

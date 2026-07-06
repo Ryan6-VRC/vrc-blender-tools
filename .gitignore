@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Blender junk
+*.blend1
+*.blend2
+
+# Test fixtures: per-avatar blends are copied in at test time and never committed.
+# The redistributable Felis avatar (VN3, see tests/fixtures/Felis/NOTICE) is the
+# one committed fixture, so realistic tests run from a clean clone.
+tests/fixtures/*.blend
+tests/fixtures/*.fbx
+
+# Build / output artifacts
+/out/
+*.fbx
+*.zip
+
+# ...but keep the committed Felis fixture (negation must follow the *.fbx rule).
+!tests/fixtures/Felis/
+!tests/fixtures/Felis/Felis.fbx
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Git worktrees (isolated workspaces)
+.worktrees/

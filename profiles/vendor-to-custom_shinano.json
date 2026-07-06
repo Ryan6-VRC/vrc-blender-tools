@@ -1,0 +1,87 @@
+{
+  "source": "vendor",
+  "target": "custom_shinano",
+  "_note": "Transcribed from the Base_Proportions checklist 'Custom Shinano Target Proportions'. Logical checklist names mapped to the vendor Shinano rig's actual bones (Upper_arm.L/.R, Hand.L/.R, Upper_leg.L/.R, Foot.L/.R, Lower_leg.L/.R, Breast_root.L/.R; fingers exclude Thumb*). Forward axis is -Y (breast/foot bones point -Y), so 'Move Back 0.030' = +Y and 'Move Up 0.010' = +Z. Per-bone ops use space 'local' (== manual Normal-orientation per-bone scale, mirror-symmetric across .L/.R). The Breasts op is space 'normal', pivot 'median' (together from the median point).",
+  "object": {
+    "pivot": "origin",
+    "scale": 0.99,
+    "translate": [0.0, 0.030, 0.010]
+  },
+  "no_inherit_scale": [
+    "Upper_arm.L", "Upper_arm.R",
+    "Hand.L", "Hand.R",
+    "Upper_leg.L", "Upper_leg.R",
+    "Foot.L", "Foot.R",
+    "Spine",
+    "Neck"
+  ],
+  "scales": [
+    {
+      "bones": ["Upper_arm.L", "Upper_arm.R"],
+      "value": [1.03, 1.00, 1.03],
+      "space": "local", "pivot": "individual",
+      "note": "Upper Arms X:1.03 Y:1.00 Z:1.03"
+    },
+    {
+      "bones": ["Hand.L", "Hand.R"],
+      "value": [1.00, 1.03, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Hands Y:1.03"
+    },
+    {
+      "bones": [
+        "Index Proximal.L", "Index Intermediate.L", "Index Distal.L",
+        "Index Proximal.R", "Index Intermediate.R", "Index Distal.R",
+        "Middle Proximal.L", "Middle Intermediate.L", "Middle Distal.L",
+        "Middle Proximal.R", "Middle Intermediate.R", "Middle Distal.R",
+        "Ring Proximal.L", "Ring Intermediate.L", "Ring Distal.L",
+        "Ring Proximal.R", "Ring Intermediate.R", "Ring Distal.R",
+        "Little Proximal.L", "Little Intermediate.L", "Little Distal.L",
+        "Little Proximal.R", "Little Intermediate.R", "Little Distal.R"
+      ],
+      "value": [1.00, 1.02, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Fingers Y:1.02 (NO THUMB; Thumb* bones excluded)"
+    },
+    {
+      "bones": ["Hips"],
+      "value": [0.95, 1.00, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Hips X:0.95"
+    },
+    {
+      "bones": ["Chest"],
+      "value": [1.05, 1.00, 1.03],
+      "space": "local", "pivot": "individual",
+      "note": "Chest X:1.05 Y:1.00 Z:1.03"
+    },
+    {
+      "bones": ["Breast_root.L", "Breast_root.R"],
+      "value": [0.95, 1.00, 0.97],
+      "space": "normal", "pivot": "median",
+      "note": "Breasts X:0.95 Y:1.00 Z:0.97 -- together from MEDIAN point, NORMAL space"
+    },
+    {
+      "bones": ["Upper_leg.L", "Upper_leg.R"],
+      "value": [1.00, 1.055, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Upper Legs Y:1.055"
+    },
+    {
+      "bones": ["Lower_leg.L", "Lower_leg.R"],
+      "value": [1.02, 1.00, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Lower Legs X:1.02"
+    },
+    {
+      "bones": ["Foot.L", "Foot.R"],
+      "value": [1.00, 0.97, 1.00],
+      "space": "local", "pivot": "individual",
+      "note": "Feet Y:0.97"
+    }
+  ],
+  "shapekeys": {
+    "Breasts_flat": 0.200,
+    "Hip_big": 0.200
+  }
+}
