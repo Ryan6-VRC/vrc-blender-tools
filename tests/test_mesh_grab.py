@@ -65,8 +65,10 @@ def _dominant_axis(n):
 
 
 def _add_cube(name, size=2.0, attr_name="Test", per_face=True, solid_color=None):
-    """A cube with a CORNER BYTE_COLOR attribute set to a distinct colour per world face
-    normal (per_face) or one uniform colour (solid_color=(r,g,b,255) bytes)."""
+    """A cube with a CORNER BYTE_COLOR attribute. per_face: a distinct colour per world face
+    normal, AND on the four SIDE faces a bright top-half (high world Z) vs a dark bottom-half —
+    a vertical asymmetry so the orientation test's counted assert fails on a forgotten reshape
+    flip (a uniform-per-face colour is flip-invariant). Else one uniform solid_color (rgba bytes)."""
     bpy.ops.mesh.primitive_cube_add(size=size)
     ob = bpy.context.active_object
     ob.name = name
@@ -74,16 +76,20 @@ def _add_cube(name, size=2.0, attr_name="Test", per_face=True, solid_color=None)
     attr = me.color_attributes.new(name=attr_name, type='BYTE_COLOR', domain='CORNER')
     me.color_attributes.active_color = attr
     me.color_attributes.render_color_index = list(me.color_attributes).index(attr)
+    # author via color_srgb: BYTE_COLOR stores sRGB, so the stored byte == the authored byte
+    # (the .color accessor is linear and would sRGB-encode a mid-value on store).
     for poly in me.polygons:
-        if per_face:
-            col = _FACE_COLORS[_dominant_axis(poly.normal)]
-        else:
-            col = solid_color
-        colf = [c / 255.0 for c in col]
-        # author via color_srgb: BYTE_COLOR stores sRGB, so the stored byte == the authored byte
-        # (the .color accessor is linear and would sRGB-encode a mid-value on store).
+        axis = _dominant_axis(poly.normal)
         for li in poly.loop_indices:
-            attr.data[li].color_srgb = colf
+            if not per_face:
+                col = solid_color
+            elif axis[2] != 0:  # top/bottom face — no world-Z asymmetry, uniform identity colour
+                col = _FACE_COLORS[axis]
+            else:               # side face — bright above the face centre, dark below (Z split)
+                bright = _FACE_COLORS[axis]
+                vz = me.vertices[me.loops[li].vertex_index].co.z
+                col = bright if vz > 0 else tuple(int(c * 0.4) for c in bright[:3]) + (255,)
+            attr.data[li].color_srgb = [c / 255.0 for c in col]
     me.update()
     return ob
 
@@ -231,9 +237,18 @@ def test_solid_render():
         check(nonplate > 0.05, "solid render should clear the drew floor, coverage=%.4f" % nonplate)
 
 
+def _nonplate_luma(region):
+    """Mean luminance (rgb sum) of the non-plate pixels in a region, 0 if none."""
+    rgb = region[:, :, :3].reshape(-1, 3).astype(np.int32)
+    m = np.abs(rgb - 71).sum(axis=1) > 30
+    return float(rgb[m].sum(axis=1).mean()) if m.any() else 0.0
+
+
 def test_orientation():
-    """Direction-keyed 3-axis fixture: each cell's dominant colour must equal the expected face
-    colour — a counted assert that fails on any front/back, left/right, or top/bottom swap."""
+    """Direction-keyed 3-axis fixture. Two counted asserts: (1) each cell's dominant colour equals
+    the expected face colour — fails on any front/back, left/right, or top/bottom face swap; (2) on
+    the four side tiles the bright top-half sits ABOVE the dark bottom-half — fails on a forgotten
+    reshape vertical flip (which a uniform-per-face colour, being flip-invariant, would not catch)."""
     from avatarprep.core.mesh_grab import grab
     _clear()
     _add_cube("OrientCube", per_face=True)
@@ -259,11 +274,20 @@ def test_orientation():
         check(got == _ANGLE_EXPECT[angle],
               "angle %s should show face %s, dominant=%s nearest=%s"
               % (angle, _ANGLE_EXPECT[angle], dom, got))
+        # vertical-flip guard: the four side faces are bright-top/dark-bottom (top = high world Z)
+        if angle in ("front", "back", "left", "right"):
+            h = cell.shape[0]
+            top = _nonplate_luma(cell[:h // 2])
+            bot = _nonplate_luma(cell[h // 2:])
+            check(top > bot + 60.0,
+                  "angle %s top-half should be brighter than bottom (upright, not flipped): "
+                  "top-luma=%.0f bot-luma=%.0f" % (angle, top, bot))
 
 
 def test_rbt_marker():
     """An 'RBT Matched'-style render colour attribute round-trips to the authored bytes within a
-    tight tolerance — catches the sRGB read-back defect."""
+    tight tolerance — catches the sRGB read-back defect. A SINGLE colour attribute is unambiguous,
+    so no ambiguous-color-attribute note fires."""
     from avatarprep.core.mesh_grab import grab
     _clear()
     rbt_fail = (234, 0, 255)  # robust-weight-transfer 'failed' magenta (234/255, 0, 1)
@@ -271,8 +295,8 @@ def test_rbt_marker():
               solid_color=(rbt_fail[0], rbt_fail[1], rbt_fail[2], 255))
     line = grab(angles=["front"], shading="vertexcolor", resolution=256)
     check("=> OK" in line and "png=" in line, "RBT vertexcolor should OK + png, got %r" % line)
-    check("no-color-attribute" not in line and "no-render-color-attribute" not in line,
-          "RBT mesh with a render attribute should emit no missing-attr note, got %r" % line)
+    check("no-color-attribute" not in line and "ambiguous-color-attribute" not in line,
+          "single-attr RBT mesh should emit no missing/ambiguous note, got %r" % line)
     path = _png_path(line)
     if os.path.exists(path):
         px = _load_png_top(path)
@@ -281,12 +305,35 @@ def test_rbt_marker():
               "RBT marker should round-trip to %s within 3, got %s" % (rbt_fail, dom))
 
 
-# NOTE: the spec's third vertexcolor case — a mesh with colour attributes but NONE render-flagged
-# (note=no-render-color-attribute) — is defensively coded in core (rci < 0 or rci >= len) but is not
-# asserted here because it is unreachable in Blender 5.1: render_color_index clamps to a valid index
-# (0) whenever any colour attribute exists (setting -1 does not stick), so the branch cannot fire
-# through the normal API. test_rbt_marker asserts the branch does NOT false-fire when a render attr
-# exists. Surfaced to the conductor.
+def test_ambiguous_color_attribute():
+    """The identity hazard: a mesh with >1 colour attribute renders the one at render_color_index,
+    and the OK line must NAME what was actually rendered (so a non-RBT layer can't masquerade as the
+    marker). The single-attribute case must NOT emit this note."""
+    from avatarprep.core.mesh_grab import grab
+    _clear()
+    # a mesh carrying an unrelated layer FIRST and the RBT marker second, marker flagged for render
+    me = bpy.data.meshes.new("MultiData")
+    me.from_pydata([(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)], [], [(0, 1, 2, 3)])
+    me.update()
+    a0 = me.color_attributes.new(name="Col", type='BYTE_COLOR', domain='CORNER')
+    a1 = me.color_attributes.new(name="RBT Matched", type='BYTE_COLOR', domain='CORNER')
+    for d in a0.data:
+        d.color_srgb = (0.0, 0.0, 1.0, 1.0)
+    for d in a1.data:
+        d.color_srgb = (234 / 255.0, 0.0, 1.0, 1.0)
+    me.color_attributes.render_color_index = list(me.color_attributes).index(a1)
+    ob = bpy.data.objects.new("Multi", me)
+    bpy.context.scene.collection.objects.link(ob)
+    line = grab(angles=["top"], shading="vertexcolor", resolution=256)
+    check("=> OK" in line, "multi-attr vertexcolor should OK, got %r" % line)
+    check("ambiguous-color-attribute:Multi=RBT_Matched" in line,
+          "multi-attr mesh must name the rendered attribute, got %r" % line)
+
+
+# NOTE: the spec (v2) drops the unreachable no-render-color-attribute case — Blender 5.1 clamps
+# render_color_index to a valid index (0) whenever any colour attribute exists, so "attributes but
+# none render-flagged" cannot occur through the API. The real hazard is IDENTITY (render index points
+# at a non-marker layer), covered by test_ambiguous_color_attribute above.
 def test_no_color_attribute():
     from avatarprep.core.mesh_grab import grab
     _clear()
@@ -329,6 +376,27 @@ def test_fail_emits_no_png():
     check("=> FAIL" in line and "png=" not in line, "FAIL path must emit no png=, got %r" % line)
 
 
+def test_resolution_ceiling():
+    from avatarprep.core.mesh_grab import grab
+    _clear()
+    _add_plain_cube("Cube")
+    line = grab(resolution=100000)
+    check("=> FAIL:" in line and "resolution must be <=" in line and "png=" not in line,
+          "an absurd resolution should refuse early naming the ceiling, got %r" % line)
+
+
+def test_only_all_hidden_breakdown():
+    from avatarprep.core.mesh_grab import grab
+    _clear()
+    h = _add_plain_cube("Cape")
+    h.hide_render = True
+    # every --only name unresolvable: one hidden, one absent — the FAIL must break them down
+    line = grab(only=["Cape", "Ghost"], resolution=64)
+    check("=> FAIL:" in line and "png=" not in line, "all-hidden/absent --only should refuse, got %r" % line)
+    check("hidden:Cape" in line and "not-found:Ghost" in line,
+          "the refusal should distinguish hidden from not-found, got %r" % line)
+
+
 def main():
     _enable()
     test_sanitize()
@@ -342,9 +410,12 @@ def main():
     test_solid_render()
     test_orientation()
     test_rbt_marker()
+    test_ambiguous_color_attribute()
     test_no_color_attribute()
     test_plate()
     test_fail_emits_no_png()
+    test_resolution_ceiling()
+    test_only_all_hidden_breakdown()
     if FAILURES:
         for f in FAILURES:
             print("MESHGRAB_TEST FAIL:", f)

@@ -21,9 +21,17 @@ import sys
 import argparse
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argparse errors (missing --in, non-int --resolution) exit IN-GRAMMAR, not bare usage —
+    a traceback/usage dump must never escape the AVATARPREP: result grammar."""
+    def error(self, message):
+        print("AVATARPREP: meshgrab ? => FAIL: bad args: %s" % message)
+        sys.exit(2)
+
+
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    p = argparse.ArgumentParser(prog="mesh_grab")
+    p = _Parser(prog="mesh_grab")
     p.add_argument("--in", dest="in_path", required=True)
     p.add_argument("--label", dest="label", default=None)
     p.add_argument("--only", dest="only", default=None)
@@ -62,8 +70,12 @@ def main():
         print("AVATARPREP: meshgrab ? => FAIL: could not open --in: %s" % e)
         sys.exit(2)
 
-    _enable_avatarprep()
-    from avatarprep.core.mesh_grab import grab
+    try:
+        _enable_avatarprep()
+        from avatarprep.core.mesh_grab import grab
+    except Exception as e:
+        print("AVATARPREP: meshgrab ? => FAIL: could not load avatarprep: %s" % e)
+        sys.exit(2)
 
     try:
         line = grab(
@@ -78,7 +90,9 @@ def main():
         sys.exit(2)
 
     print(line)
-    sys.exit(0 if "=> OK" in line else 1)
+    # classify on the FAIL marker, not the OK substring: a refusal can echo a raw arg (e.g. an angle
+    # literally "=> OK") into its reason, but sanitized labels/notes can never contain "=> FAIL:".
+    sys.exit(1 if "=> FAIL:" in line else 0)
 
 
 if __name__ == "__main__":

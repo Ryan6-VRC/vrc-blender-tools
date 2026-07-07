@@ -28,6 +28,8 @@ _MARGIN = 0.15   # ortho-scale border fraction so the silhouette doesn't touch t
 _EPSILON = 1e-6  # zero-extent bounds guard
 _PLATE = 71      # Unity-grey plate byte (parity with AvatarGrab's (71,71,71) compose fill)
 _SHEET_CAP = 2048  # composed-sheet edge ceiling — parity with AvatarGrab's SheetEdgeCap
+_MAX_RES = 8192    # per-tile render ceiling: rendered full-size BEFORE the sheet downscale, so an
+                   # absurd value would allocate GBs; refuse early rather than OOM late
 _DREW_FLOOR = 0.005  # per-tile alpha-coverage floor: a sub-1% "nothing drew" threshold, NOT a
                      # "little drew" one — the uniform ortho_scale frames a tall avatar's top/bottom
                      # as a small footprint, so a few-percent coverage is legitimate (Felis top tile
@@ -136,7 +138,7 @@ def _world_aabb(drawable, depsgraph):
 def _notes_field(notes):
     """Single ``note=`` field of space-separated key:value tokens; each value is a
     comma-joined list with no spaces, in encounter order. Empty -> ""."""
-    order = ["no-color-attribute", "no-render-color-attribute", "only-hidden", "only-not-found"]
+    order = ["no-color-attribute", "ambiguous-color-attribute", "only-hidden", "only-not-found"]
     toks = [("%s:%s" % (k, ",".join(notes[k]))) for k in order if notes.get(k)]
     return (" | note=%s" % " ".join(toks)) if toks else ""  # its own | field, before terminal png=
 
@@ -169,6 +171,8 @@ def grab(
         return _fail(lbl, "resolution must be >= 1, got %r" % (resolution,))
     if resolution < 1:
         return _fail(lbl, "resolution must be >= 1, got %d" % resolution)
+    if resolution > _MAX_RES:
+        return _fail(lbl, "resolution must be <= %d, got %d" % (_MAX_RES, resolution))
 
     # --- validate angles -------------------------------------------------------------------
     if not angles:
@@ -195,6 +199,7 @@ def grab(
 
     notes = {}
     touched_hide = {}  # object -> original hide_render, restored in finally
+    saved_active_color = {}  # mesh.data -> original active_color_index, restored in finally
 
     # --- resolve the drawable set (visibility-based; --only narrows) -----------------------
     if only:
@@ -210,12 +215,19 @@ def grab(
             else:
                 not_found.append(n)    # no render-visible mesh by that name at all
         if hidden_hit:
-            notes["only-hidden"] = hidden_hit
+            notes["only-hidden"] = [_sanitize(n) for n in hidden_hit]
         if not_found:
-            notes["only-not-found"] = not_found
+            notes["only-not-found"] = [_sanitize(n) for n in not_found]
         drawable = [o for o in visible if o.name in keep]
         if not drawable:
-            return _fail(lbl, "--only matched no render-visible mesh")
+            # fold the breakdown into the reason so the agent can tell "un-hide it" from "typo"
+            parts = []
+            if hidden_hit:
+                parts.append("hidden:" + ",".join(_sanitize(n) for n in hidden_hit))
+            if not_found:
+                parts.append("not-found:" + ",".join(_sanitize(n) for n in not_found))
+            detail = (" (%s)" % " ".join(parts)) if parts else ""
+            return _fail(lbl, "--only matched no render-visible mesh%s" % detail)
     else:
         drawable = visible
         if not drawable:
@@ -270,24 +282,32 @@ def grab(
         else:  # vertexcolor
             disp.color_type = 'VERTEX'
             disp.light = 'FLAT'
-            no_attr, no_render = [], []
+            no_attr, ambiguous = [], []
             for o in drawable:
                 attrs = o.data.color_attributes
-                if len(attrs) == 0:
-                    no_attr.append(o.name)
+                n = len(attrs)
+                if n == 0:
+                    no_attr.append(o.name)  # zero attributes -> grey fallback
                     continue
+                # Point Workbench at the mesh's active RENDER color attribute. Blender keeps
+                # render_color_index valid (0..n-1) whenever any attribute exists; clamp defensively.
                 rci = attrs.render_color_index
-                if rci < 0 or rci >= len(attrs):
-                    no_render.append(o.name)  # never fall through to index 0
-                    continue
+                if rci < 0 or rci >= n:
+                    rci = 0
+                saved_active_color[o.data] = attrs.active_color_index
                 try:
-                    attrs.active_color_index = rci  # point Workbench at the render color attr
+                    attrs.active_color_index = rci
                 except Exception:
-                    no_render.append(o.name)
+                    saved_active_color.pop(o.data, None)
+                # The real hazard is IDENTITY, not range: with >1 attribute the render index may point
+                # at a non-RBT layer (e.g. imported vertex colors) and the schema would silently render
+                # it as if it were the marker. Name what was actually rendered so the read can't lie.
+                if n > 1:
+                    ambiguous.append("%s=%s" % (_sanitize(o.name), _sanitize(attrs[rci].name)))
             if no_attr:
-                notes["no-color-attribute"] = no_attr
-            if no_render:
-                notes["no-render-color-attribute"] = no_render
+                notes["no-color-attribute"] = [_sanitize(m) for m in no_attr]
+            if ambiguous:
+                notes["ambiguous-color-attribute"] = ambiguous
 
         # --- temp orthographic camera; one ortho_scale for every angle ---------------------
         cam_data = bpy.data.cameras.new("meshgrab_cam")
@@ -368,6 +388,11 @@ def grab(
         for o, v in touched_hide.items():
             try:
                 o.hide_render = v
+            except Exception:
+                pass
+        for mesh_data, idx in saved_active_color.items():
+            try:
+                mesh_data.color_attributes.active_color_index = idx
             except Exception:
                 pass
         try:
