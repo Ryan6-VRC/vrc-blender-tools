@@ -252,7 +252,9 @@ def _under(path, base):
 
 
 def test_output_persists_location():
-    """The returned png= must live in the PERSISTENT OS temp (tempfile.gettempdir), NOT in
+    """The returned png= must live in the PERSISTENT OS temp, in the DEDICATED
+    <tempfile.gettempdir>/avatarprep_meshgrab subdir (not the bare temp root — so a grab-dir
+    scanner sees only meshgrab sheets, mirroring AvatarGrab's per-project cache), NOT in
     bpy.app.tempdir — Blender deletes its session dir on process exit, so a session-dir path is a
     dead path by the time a real headless cli returns. A true cross-process test isn't feasible in
     one process; this location assert is the practical regression guard."""
@@ -261,8 +263,9 @@ def test_output_persists_location():
     _add_plain_cube("Cube")
     line = grab(angles=["front"], shading="solid", resolution=128)
     path = _png_path(line)
-    check(_under(path, tempfile.gettempdir()),
-          "png= should be under the persistent OS temp %r, got %r" % (tempfile.gettempdir(), path))
+    subdir = os.path.join(tempfile.gettempdir(), "avatarprep_meshgrab")
+    check(_under(path, subdir),
+          "png= should be under the dedicated subdir %r, got %r" % (subdir, path))
     check(not _under(path, bpy.app.tempdir),
           "png= must NOT be under bpy.app.tempdir (nuked on exit), got %r" % path)
 

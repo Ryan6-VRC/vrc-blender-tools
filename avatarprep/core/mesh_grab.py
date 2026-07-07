@@ -168,8 +168,9 @@ def grab(
     resolution: int = 1024,  # per-tile square edge cap in px; must be >= 1; never upscales
 ) -> str:
     """Render the scene's render-visible meshes (optionally narrowed by ``only`` names) from
-    ``angles`` to one stamped contact-sheet PNG in ``bpy.app.tempdir``; return the one-line
-    summary (OK or FAIL). Never raises for an EXPECTED refusal — it returns the FAIL line;
+    ``angles`` to one stamped contact-sheet PNG in the persistent ``avatarprep_meshgrab`` temp
+    subdir; return the one-line summary (OK or FAIL). Never raises for an EXPECTED refusal — it
+    returns the FAIL line;
     a genuinely unexpected error propagates (the cli maps that to exit 2).
 
     Operates on the CURRENT ``bpy.context.scene``. The ``.blend`` on disk is never touched,
@@ -391,9 +392,12 @@ def grab(
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # millisecond, matching AvatarGrab
             # Persistent OS temp (Python's tempfile.gettempdir — the analog of Unity AvatarGrab's
             # Application.temporaryCachePath), NOT bpy.app.tempdir: Blender NUKES its session dir on
-            # process exit, so a headless cli would return a png= path that no longer exists. The
-            # per-angle intermediate tiles above stay in bpy.app.tempdir — they're intra-process scratch.
-            out_dir = tempfile.gettempdir()
+            # process exit, so a headless cli would return a png= path that no longer exists. A
+            # DEDICATED subdir (not the bare temp root) mirrors AvatarGrab's per-project cache, so a
+            # grab-dir scanner sees only meshgrab sheets, not the whole busy temp root. The per-angle
+            # intermediate tiles above stay in bpy.app.tempdir — they're intra-process scratch.
+            out_dir = os.path.join(tempfile.gettempdir(), "avatarprep_meshgrab")
+            os.makedirs(out_dir, exist_ok=True)
             path = os.path.join(out_dir, "meshgrab_%s_%s.png" % (lbl, stamp))
             sh, sw = sheet.shape[0], sheet.shape[1]
             out = bpy.data.images.new("meshgrab_out", sw, sh, alpha=True)
