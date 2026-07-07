@@ -97,8 +97,8 @@ def _twin_pair():
 def test_stamp_equal_pass():
     _clear_scene()
     base, merge = _twin_pair()
-    _stamp(base, avatarprep_base="shinano", avatarprep_state="vendor")
-    _stamp(merge, avatarprep_base="shinano", avatarprep_state="vendor")
+    _stamp(base, avatarprep_base="shinano", avatarprep_state="unproportioned")
+    _stamp(merge, avatarprep_base="shinano", avatarprep_state="unproportioned")
     from avatarprep.core.merge_armatures import armature_compat, merge_armatures
     rep = armature_compat(base, merge)
     if not rep["clean"] or not rep["stamp_clean"] or rep["stamp_mismatches"]:
@@ -129,7 +129,7 @@ def test_stamp_state_different_fail():
     _clear_scene()
     base, merge = _twin_pair()
     _stamp(base, avatarprep_base="shinano", avatarprep_state="shinano-tall")
-    _stamp(merge, avatarprep_base="shinano", avatarprep_state="vendor")
+    _stamp(merge, avatarprep_base="shinano", avatarprep_state="unproportioned")
     from avatarprep.core.merge_armatures import merge_armatures
     res = merge_armatures(base, merge)
     if res["verdict"] != "FAIL":
@@ -143,7 +143,7 @@ def test_stamp_interrupted_fail():
     from avatarprep.core import scene_utils
     _clear_scene()
     base, merge = _twin_pair()
-    _stamp(base, avatarprep_state="vendor")
+    _stamp(base, avatarprep_state="unproportioned")
     _stamp(merge, avatarprep_state=scene_utils.STATE_APPLYING)
     from avatarprep.core.merge_armatures import merge_armatures
     res = merge_armatures(base, merge)
@@ -157,7 +157,7 @@ def test_stamp_interrupted_fail():
 def test_stamp_corrupt_fail():
     _clear_scene()
     base, merge = _twin_pair()
-    _stamp(base, avatarprep_state="vendor")
+    _stamp(base, avatarprep_state="unproportioned")
     _stamp(merge, avatarprep_state=5)  # non-str → corrupt
     from avatarprep.core.merge_armatures import merge_armatures
     res = merge_armatures(base, merge)

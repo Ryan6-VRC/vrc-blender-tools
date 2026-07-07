@@ -57,12 +57,13 @@ def import_fbx(path: str, **settings) -> Dict[str, Any]:
 
     new_objects = [o for o in bpy.data.objects if o not in before]
 
-    # Stamp every newly-imported armature as the reserved ``vendor`` state (a fresh
-    # import is, by definition, vendor). Base lineage is NOT touched here — base is a
-    # deliberate agent assertion made only through the stamp_base door, never guessed
-    # at import. A fresh import therefore reads base=absent (honest/unknown).
+    # Stamp every newly-imported armature with the reserved ``unproportioned`` origin
+    # state (a fresh import is, by definition, unproportioned — the as-shipped shape).
+    # Base lineage is NOT touched here — base is a deliberate agent assertion made only
+    # through the stamp_base door, never guessed at import. A fresh import reads
+    # base=absent (honest/unknown).
     for arm in (o for o in new_objects if o.type == 'ARMATURE'):
-        scene_utils.write_stamp(arm, scene_utils.STAMP_STATE, "vendor")
+        scene_utils.write_stamp(arm, scene_utils.STAMP_STATE, "unproportioned")
 
     return observe_import(new_objects)
 
