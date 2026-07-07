@@ -1,6 +1,6 @@
 """Reference-verification harness for the Shinano proportion profile (Task 10).
 
-Headless. Imports the vendor Shinano FBX, applies profiles/vendor-to-custom_shinano.json via
+Headless. Imports the vendor Shinano FBX, applies profiles/custom_shinano.json via
 avatarprep.core.proportions.apply_profile, measures the body mesh world bbox, opens
 the hand-made BaseShinano.blend reference and measures ITS body mesh, prints % deltas,
 and renders orthographic FRONT/SIDE views of both to a scratch dir for visual review.
@@ -12,7 +12,7 @@ Also runs two deferred checks from the Task 3 review:
 Run:
   blender --background --factory-startup --python tests/verify_proportions.py -- \
       --fbx <vendor_Shinano.fbx> --ref <BaseShinano.blend> \
-      --profile <vendor-to-custom_shinano.json> --out <scratch_dir>
+      --profile <custom_shinano.json> --out <scratch_dir>
 
 Prints VERIFY: lines. Exits 0 when the two deferred checks (breast-Y-unchanged,
 leg-length-baked) pass; exits 1 if either lands in REVIEW. The H/W/D deltas and the
