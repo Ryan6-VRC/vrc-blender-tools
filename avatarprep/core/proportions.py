@@ -8,6 +8,7 @@ bpy.types.Operator, no UI.
 from typing import Any, Dict, List, Union
 
 import bpy
+import idprop
 import mathutils
 
 from . import scene_utils, rest_pose
@@ -218,6 +219,12 @@ def validate_profile(armature, meshes, edge, *, bone_overrides=None,
             on_some = any(m.data.shape_keys and key in m.data.shape_keys.key_blocks for m in meshes)
             if not on_some:
                 offenders.append("shapekey not found on any mesh: %r" % key)
+            for m in meshes:
+                baked = m.get(scene_utils.STAMP_BAKED)
+                if isinstance(baked, (dict, idprop.types.IDPropertyGroup)) and dict(baked).get(key):
+                    warnings.append("shapekey %r already baked on mesh %r (avatarprep_baked=%r); "
+                                    "driving it again may double-apply"
+                                    % (key, m.name, dict(baked).get(key)))
 
     ident = mathutils.Matrix.Identity(4)
     for pb in armature.pose.bones:

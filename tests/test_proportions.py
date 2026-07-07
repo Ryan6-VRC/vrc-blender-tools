@@ -330,6 +330,30 @@ def test_apply_profile_median():
           "equivalency: base moved to chiffon; got %r" % arm.get("avatarprep_base"))
 
 
+def test_baked_coupling():
+    from avatarprep.core import proportions as P
+    arm = _make_arm()
+    mesh = _make_mesh(arm, shapekeys=("Big",))
+    mesh["avatarprep_baked"] = {"Big": 0.5}   # pretend 'Big' is already baked
+    arm["avatarprep_base"] = "shinano"; arm["avatarprep_state"] = "unproportioned"
+    edge_bk = {"source": "unproportioned", "target": "custom",
+               "source_base": "shinano", "target_base": "shinano",
+               "shapekeys": {"Big": 0.3}}
+    rep_bk = P.validate_profile(arm, [mesh], P.load_edge(edge_bk))
+    check(any("already baked" in w.lower() for w in rep_bk["warnings"]),
+          "driving an already-baked key must warn: %r" % rep_bk["warnings"])
+    # a key with no baked entry must NOT produce the warning
+    arm2 = _make_arm()
+    mesh2 = _make_mesh(arm2, shapekeys=("Big",))
+    arm2["avatarprep_base"] = "shinano"; arm2["avatarprep_state"] = "unproportioned"
+    edge_ok = {"source": "unproportioned", "target": "custom",
+               "source_base": "shinano", "target_base": "shinano",
+               "shapekeys": {"Big": 0.3}}
+    rep_ok = P.validate_profile(arm2, [mesh2], P.load_edge(edge_ok))
+    check(not any("already baked" in w.lower() for w in rep_ok["warnings"]),
+          "unbaked key must not warn: %r" % rep_ok["warnings"])
+
+
 def main():
     _clear_scene()
     _enable_avatarprep()
@@ -342,6 +366,7 @@ def main():
     test_apply_profile()
     test_apply_profile_skip_shapekeys()
     test_apply_profile_median()
+    test_baked_coupling()
     if FAILURES:
         for f in FAILURES:
             print("PROP_TEST FAIL:", f)
