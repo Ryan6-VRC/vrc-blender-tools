@@ -176,6 +176,8 @@ def validate_profile(armature, meshes, edge, *, bone_overrides=None,
     if base_raw is None:
         offenders.append("base absent: stamp_base the armature's lineage before apply "
                          "(edge expects source_base=%r)" % edge["source_base"])
+    elif not isinstance(base_raw, str):
+        offenders.append("base corrupt: avatarprep_base is not a string (%r)" % base_raw)
     elif base_raw != edge["source_base"]:
         offenders.append("base mismatch: armature is %r but edge expects source_base %r"
                          % (base_raw, edge["source_base"]))

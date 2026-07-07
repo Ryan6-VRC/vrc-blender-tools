@@ -157,6 +157,12 @@ def test_validate():
     rep_nobase = P.validate_profile(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
     check(any("base absent" in o.lower() for o in rep_nobase["offenders"]),
           "base-absent must offend: %r" % rep_nobase["offenders"])
+    # base corrupt (present but not a str) -> distinct offender, not conflated with 'mismatch'.
+    arm["avatarprep_base"] = 123
+    rep_badbase = P.validate_profile(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
+    check(any("base corrupt" in o.lower() for o in rep_badbase["offenders"]),
+          "base-corrupt must offend distinctly: %r" % rep_badbase["offenders"])
+    del arm["avatarprep_base"]
     # A rig left at the mid-apply sentinel (a crashed apply_profile) hard-FAILs distinctly.
     from avatarprep.core import scene_utils
     arm["avatarprep_state"] = scene_utils.STATE_APPLYING
