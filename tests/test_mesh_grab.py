@@ -12,6 +12,7 @@ read-back defect). See the module docstring in core/mesh_grab.py for the pipelin
 import os
 import sys
 import math
+import tempfile
 
 import bpy
 import numpy as np
@@ -244,6 +245,28 @@ def _nonplate_luma(region):
     return float(rgb[m].sum(axis=1).mean()) if m.any() else 0.0
 
 
+def _under(path, base):
+    p = os.path.normcase(os.path.abspath(path))
+    b = os.path.normcase(os.path.abspath(base))
+    return p == b or p.startswith(b.rstrip(os.sep) + os.sep)
+
+
+def test_output_persists_location():
+    """The returned png= must live in the PERSISTENT OS temp (tempfile.gettempdir), NOT in
+    bpy.app.tempdir — Blender deletes its session dir on process exit, so a session-dir path is a
+    dead path by the time a real headless cli returns. A true cross-process test isn't feasible in
+    one process; this location assert is the practical regression guard."""
+    from avatarprep.core.mesh_grab import grab
+    _clear()
+    _add_plain_cube("Cube")
+    line = grab(angles=["front"], shading="solid", resolution=128)
+    path = _png_path(line)
+    check(_under(path, tempfile.gettempdir()),
+          "png= should be under the persistent OS temp %r, got %r" % (tempfile.gettempdir(), path))
+    check(not _under(path, bpy.app.tempdir),
+          "png= must NOT be under bpy.app.tempdir (nuked on exit), got %r" % path)
+
+
 def test_orientation():
     """Direction-keyed 3-axis fixture. Two counted asserts: (1) each cell's dominant colour equals
     the expected face colour — fails on any front/back, left/right, or top/bottom face swap; (2) on
@@ -408,6 +431,7 @@ def main():
     test_only_not_found_refusal()
     test_only_notes_distinguish()
     test_solid_render()
+    test_output_persists_location()
     test_orientation()
     test_rbt_marker()
     test_ambiguous_color_attribute()

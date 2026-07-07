@@ -16,8 +16,11 @@ Two spellings, on purpose: ``mesh_grab`` is the file/key/param form; ``meshgrab`
 the display token in the result line (mirrors AvatarGrab's concatenated ``avatargrab_``).
 """
 
+import glob
 import math
 import os
+import tempfile
+import time
 from datetime import datetime
 
 import bpy
@@ -133,6 +136,20 @@ def _world_aabb(drawable, depsgraph):
     center = Vector(((mins[i] + maxs[i]) / 2.0 for i in range(3)))
     max_dim = max(maxs[i] - mins[i] for i in range(3))
     return center, max_dim
+
+
+def _prune_old_sheets(out_dir, days=30):
+    """Delete our own ``meshgrab_*.png`` older than ``days`` in ``out_dir`` — best-effort per file
+    (a locked or already-gone file is skipped). Mirrors AvatarGrab's 30-day self-prune: the persistent
+    temp is never swept by the OS, so each write bounds it; the just-written sheet is newer than the
+    cutoff, so it never self-deletes."""
+    cutoff = time.time() - days * 86400
+    for old in glob.glob(os.path.join(out_dir, "meshgrab_*.png")):
+        try:
+            if os.path.getmtime(old) < cutoff:
+                os.remove(old)
+        except OSError:
+            pass
 
 
 def _notes_field(notes):
@@ -372,7 +389,12 @@ def grab(
         if fail_reason is None:
             sheet = _compose_sheet(tiles, delivered_edge, cols, rows)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # millisecond, matching AvatarGrab
-            path = os.path.join(bpy.app.tempdir, "meshgrab_%s_%s.png" % (lbl, stamp))
+            # Persistent OS temp (Python's tempfile.gettempdir — the analog of Unity AvatarGrab's
+            # Application.temporaryCachePath), NOT bpy.app.tempdir: Blender NUKES its session dir on
+            # process exit, so a headless cli would return a png= path that no longer exists. The
+            # per-angle intermediate tiles above stay in bpy.app.tempdir — they're intra-process scratch.
+            out_dir = tempfile.gettempdir()
+            path = os.path.join(out_dir, "meshgrab_%s_%s.png" % (lbl, stamp))
             sh, sw = sheet.shape[0], sheet.shape[1]
             out = bpy.data.images.new("meshgrab_out", sw, sh, alpha=True)
             loaded_images.append(out)
@@ -383,6 +405,7 @@ def grab(
             out.save()
             bpy.data.images.remove(out)
             loaded_images.remove(out)
+            _prune_old_sheets(out_dir)  # bound the persistent dir (the just-written sheet is newest)
 
     finally:
         for o, v in touched_hide.items():
