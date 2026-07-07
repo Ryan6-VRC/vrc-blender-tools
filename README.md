@@ -67,8 +67,9 @@ so your own `--python` script can `sys.path`-insert the repo and call
 
 ## 3. What each feature does
 
-One line per op; behavior lives in the meta-repo `docs/blender.md`, and the callable surface (entry
-points, flags) in the meta-repo `TOOLS.md`.
+A line each on the ops with the least obvious behavior (not the full set — that's the meta-repo
+`TOOLS.md`); behavior lives in the meta-repo `docs/blender.md`, and the callable surface (entry
+points, flags) in `TOOLS.md`.
 
 - **Apply Pose as Rest Pose** (`core.rest_pose.apply_pose_as_rest`) — shape-key-safe bake of the current pose into the rest pose.
 - **Proportion profiles** (`core.proportions.apply_profile`) — apply a proportion **edge** (a JSON file mapping one named proportion state to another); the agent chains edges to walk a path. Bundled `profiles/` are worked examples only — real per-avatar edges live at the Unity-project level (see `docs/LAYOUT.md`).
@@ -100,7 +101,7 @@ blender --background --factory-startup --python tests/verify.py -- --asset path/
 ```
 avatarprep/            # the extension package
   core/                # pure logic (no Operator/UI): scene_utils, import_fbx, prune_bones,
-                       #   rest_pose, merge_armatures, proportions, fbx_export
+                       #   rest_pose, merge_armatures, proportions, shapekey_bake, fbx_export, mesh_grab
   operators.py         # thin operator wrappers
   ui.py                # N-panel (category "AvatarPrep")
   __init__.py          # register()/unregister() — NO upper version guard
@@ -115,7 +116,8 @@ tests/                 # verify.py + committed Felis fixture (per-avatar blends 
 - `apply_pose_as_rest` requires the armature to be in **Pose mode** (same as
   CATS). The CLI handles this automatically.
 - Multi-armature scenes: the proportion CLIs (`apply_profile`, `apply_recipe`,
-  `validate_profile`) and `export_unity_fbx` scope to a named rig via `--armature` and
-  fail loud on ambiguity.
+  `validate_profile`) scope to a named rig via `--armature` and **fail loud** on ambiguity.
 - FBX export defaults to the whole scene (matching CATS); `--armature` exports one rig
-  and the meshes it deforms, selection-only.
+  and the meshes it deforms, selection-only. Unlike the proportion CLIs, a missing
+  `--armature` in a multi-armature scene only **warns** and exports the whole scene — so
+  always pass `--armature` when a disposable reference body is present, or it ships too.

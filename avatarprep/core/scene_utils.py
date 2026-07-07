@@ -27,8 +27,9 @@ STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left 
 
 
 def write_stamp(obj, key, value) -> None:
-    """Set ``obj[key] = value`` (a scalar str stamp). One code path for every
-    irreversible mutating core op, so stamping is never per-tool reinvented."""
+    """Set ``obj[key] = value`` (a scalar str stamp). One code path for the scalar
+    base/state stamps, so stamping is never per-tool reinvented. (The baked-map axis
+    is a dict, written directly against ``STAMP_BAKED`` — it does not route here.)"""
     obj[key] = value
 
 
