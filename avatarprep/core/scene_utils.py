@@ -238,6 +238,28 @@ def find_armature(name: Optional[str] = None,
     return None
 
 
+def resolve_target_armature(scene=None, active=None):
+    """Resolve the single armature to mutate, or ``(None, error)`` when ambiguous.
+
+    Safe pick: the active object if it is an armature; else the sole armature; else an
+    error on 0 or >=2 (NEVER silently grab 'the first' — in a two-armature scene that
+    could be the disposable reference body own-mergeable appends)."""
+    if scene is None:
+        scene = bpy.context.scene
+    if active is None:
+        active = getattr(bpy.context, "active_object", None)
+    objs = list(scene.objects) if scene else list(bpy.data.objects)
+    arms = [o for o in objs if o is not None and o.type == 'ARMATURE']
+    if active is not None and active.type == 'ARMATURE' and active in objs:
+        return active, None
+    if len(arms) == 1:
+        return arms[0], None
+    if not arms:
+        return None, "no armature in the scene"
+    return None, ("%d armatures in scene — activate the target armature; "
+                  "apply_profile won't guess" % len(arms))
+
+
 def get_bound_meshes(armature: bpy.types.Object,
                      scene: Optional[bpy.types.Scene] = None) -> List[bpy.types.Object]:
     """Return mesh objects bound to ``armature``.

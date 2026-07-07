@@ -82,9 +82,10 @@ class AVATARPREP_OT_apply_profile(bpy.types.Operator, ImportHelper):
 
     def execute(self, context):
         from .core import proportions
-        armature = scene_utils.find_armature()
-        if armature is None:
-            self.report({'ERROR'}, "No armature found")
+        armature, err = scene_utils.resolve_target_armature(context.scene,
+                                                            context.active_object)
+        if err:
+            self.report({'ERROR'}, err)
             return {'CANCELLED'}
         try:
             report = proportions.apply_profile(
