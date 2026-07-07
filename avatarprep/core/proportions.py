@@ -390,11 +390,12 @@ def apply_profile(armature, meshes=None, edge_src=None, *, bone_overrides=None,
 
     report = {"source": edge["source"], "target": edge["target"],
               "warnings": val["warnings"], "bakes": [], "scales_applied": 0,
-              "shapekeys": [], "state": None}
+              "shapekeys": [], "base": None, "state": None}
 
     # Mark the rig mid-apply. A value left at this sentinel == a crash between here
-    # and the success stamp below → the geometry is half-transformed. It carries
-    # avatarprep_base untouched (a state op never overwrites lineage).
+    # and the success stamp below → the geometry is half-transformed.
+    # avatarprep_base is deliberately untouched HERE; it is written only on success,
+    # just before the final state write (base first, state last).
     scene_utils.write_stamp(armature, scene_utils.STAMP_STATE, scene_utils.STATE_APPLYING)
 
     _ensure_pose_mode(armature)
@@ -427,7 +428,12 @@ def apply_profile(armature, meshes=None, edge_src=None, *, bone_overrides=None,
         eff = _effective_shapekeys(edge, shapekey_overrides)
         report["shapekeys"] = apply_shapekeys(meshes, eff)
 
+    # Transition the (base, state) pair. Base FIRST, state LAST: state carries the
+    # STATE_APPLYING sentinel, so a crash between these two writes leaves the sentinel
+    # visible (detectable by validate_profile), never a real state beside a stale base.
+    scene_utils.write_stamp(armature, scene_utils.STAMP_BASE, edge["target_base"])
     stamp = edge["target"]
     scene_utils.write_stamp(armature, scene_utils.STAMP_STATE, stamp)
+    report["base"] = edge["target_base"]
     report["state"] = stamp
     return report

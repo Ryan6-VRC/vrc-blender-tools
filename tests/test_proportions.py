@@ -313,6 +313,22 @@ def test_apply_profile_median():
           "uniform 1.4 about median pivot should scale vertex dist %.4f -> ~%.4f, got %.4f"
           % (d0, 1.4 * d0, d1))
 
+    # apply transitions (base, state): reproportion keeps base, equivalency moves it.
+    arm["avatarprep_base"] = "shinano"; arm["avatarprep_state"] = "unproportioned"
+    repro = {"source": "unproportioned", "target": "custom",
+             "source_base": "shinano", "target_base": "shinano"}
+    r1 = P.apply_profile(arm, [mesh], repro, skip_shapekeys=True)
+    check(arm["avatarprep_base"] == "shinano" and arm["avatarprep_state"] == "custom",
+          "reproportion: base kept, state=custom; got (%r,%r)"
+          % (arm.get("avatarprep_base"), arm.get("avatarprep_state")))
+
+    arm["avatarprep_state"] = "unproportioned"
+    equiv = {"source": "unproportioned", "target": "unproportioned",
+             "source_base": "shinano", "target_base": "chiffon"}
+    r2 = P.apply_profile(arm, [mesh], equiv, skip_shapekeys=True)
+    check(arm["avatarprep_base"] == "chiffon",
+          "equivalency: base moved to chiffon; got %r" % arm.get("avatarprep_base"))
+
 
 def main():
     _clear_scene()
