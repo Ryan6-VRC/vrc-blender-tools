@@ -1,0 +1,8 @@
+{
+  "source": "unproportioned",
+  "target": "unproportioned",
+  "source_base": "chiffon",
+  "target_base": "plum",
+  "object": { "pivot": "origin", "scale": 1.0513036 },
+  "_note": "Inverse of plum-to-chiffon (S=0.9512); 1/0.9512 = 1.0513036. Chiffon and Plum are the same mesh, Plum uniformly larger, so this pure-scale about the world origin is a base equivalency, not a reshape."
+}

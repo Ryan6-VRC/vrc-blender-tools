@@ -1,6 +1,8 @@
 {
-  "source": "vendor",
-  "target": "custom_shinano",
+  "source": "unproportioned",
+  "target": "custom",
+  "source_base": "shinano",
+  "target_base": "shinano",
   "_note": "Transcribed from the Base_Proportions checklist 'Custom Shinano Target Proportions'. Logical checklist names mapped to the vendor Shinano rig's actual bones (Upper_arm.L/.R, Hand.L/.R, Upper_leg.L/.R, Foot.L/.R, Lower_leg.L/.R, Breast_root.L/.R; fingers exclude Thumb*). Forward axis is -Y (breast/foot bones point -Y), so 'Move Back 0.030' = +Y and 'Move Up 0.010' = +Z. Per-bone ops use space 'local' (== manual Normal-orientation per-bone scale, mirror-symmetric across .L/.R). The Breasts op is space 'normal', pivot 'median' (together from the median point).",
   "object": {
     "pivot": "origin",
