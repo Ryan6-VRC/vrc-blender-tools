@@ -47,9 +47,19 @@ def load_edge(src: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
         if not isinstance(data.get(field), str) or not data[field]:
             raise EdgeError("edge %s: missing/empty %r" % (origin, field))
 
+    sb = data.get("source_base")
+    if not isinstance(sb, str) or not sb:
+        raise EdgeError("edge %s: missing/empty 'source_base'" % origin)
+    tb = data.get("target_base", sb)
+    if not isinstance(tb, str) or not tb:
+        raise EdgeError("edge %s: 'target_base' must be a non-empty string" % origin)
+
     edge: Dict[str, Any] = {"source": data["source"], "target": data["target"],
+                            "source_base": None, "target_base": None,
                             "object": None, "no_inherit_scale": [], "scales": [],
                             "shapekeys": {}}
+    edge["source_base"] = sb
+    edge["target_base"] = tb
 
     obj = data.get("object")
     if obj is not None:
@@ -155,14 +165,19 @@ def validate_profile(armature, meshes, edge, *, bone_overrides=None,
         offenders.append("state corrupt: avatarprep_state is not a string (%r)" % raw)
     elif kind == "absent":
         warnings.append("armature has no avatarprep_state stamp; assuming source=%r" % expected)
-    elif raw == "vendor" and expected != "vendor":
-        # 'vendor' is the reserved fresh-import sentinel; any named source is
-        # vendor-origin by construction, so a fresh import validates against a
-        # named-source edge. Warn-and-assume, mirroring the absent-stamp branch.
-        warnings.append("armature is fresh-import 'vendor'; assuming source=%r" % expected)
-    elif raw != expected:  # kind == "value"
+    elif raw != expected:                       # exact match — no vendor-wildcard
         offenders.append("state mismatch: armature is %r but edge expects source %r"
                          % (raw, expected))
+
+    # Base-family gate (exact). stamp_base must have seeded a lineage matching source_base;
+    # a profile only transitions an already-asserted base, so absent is an offender, not a warn.
+    base_raw = scene_utils.read_stamp(armature, scene_utils.STAMP_BASE)
+    if base_raw is None:
+        offenders.append("base absent: stamp_base the armature's lineage before apply "
+                         "(edge expects source_base=%r)" % edge["source_base"])
+    elif base_raw != edge["source_base"]:
+        offenders.append("base mismatch: armature is %r but edge expects source_base %r"
+                         % (base_raw, edge["source_base"]))
 
     referenced = list(edge["no_inherit_scale"])
     for op in edge["scales"]:

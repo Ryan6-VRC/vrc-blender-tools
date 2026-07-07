@@ -39,7 +39,7 @@ def _clear_scene():
 
 def test_load_edge():
     from avatarprep.core.proportions import load_edge, EdgeError
-    good = {"source": "a", "target": "b",
+    good = {"source": "a", "target": "b", "source_base": "base",
             "object": {"pivot": "bbox_center", "scale": 0.99, "translate": [0, 0.03, 0.01]},
             "no_inherit_scale": ["Head"],
             "scales": [{"bones": ["Spine"], "value": [1.05, 1.0, 1.03]}],
@@ -47,27 +47,33 @@ def test_load_edge():
     e = load_edge(good)
     check(e["scales"][0]["space"] == "local", "default space should be local")
     check(e["scales"][0]["pivot"] == "individual", "default pivot should be individual")
+    check(e["source_base"] == "base", "source_base should round-trip")
+    check(e["target_base"] == "base", "target_base should default to source_base")
 
     expect_raises(lambda: load_edge({"target": "b"}), "source", "missing source")
     expect_raises(lambda: load_edge({"source": "a"}), "target", "missing target")
+    expect_raises(lambda: load_edge({"source": "a", "target": "b"}),
+                  "source_base", "missing source_base")
     # origin and bbox_center are both valid object pivots; anything else raises.
-    check(load_edge({"source": "a", "target": "b", "object": {"pivot": "origin", "scale": 1.0}})
+    check(load_edge({"source": "a", "target": "b", "source_base": "base",
+                     "object": {"pivot": "origin", "scale": 1.0}})
           ["object"]["pivot"] == "origin", "origin pivot should be accepted")
-    check(load_edge({"source": "a", "target": "b", "object": {"scale": 1.0}})
+    check(load_edge({"source": "a", "target": "b", "source_base": "base",
+                     "object": {"scale": 1.0}})
           ["object"]["pivot"] == "origin", "object pivot should default to origin")
-    expect_raises(lambda: load_edge({"source": "a", "target": "b",
+    expect_raises(lambda: load_edge({"source": "a", "target": "b", "source_base": "base",
                   "object": {"pivot": "world", "scale": 1.0}}), "pivot", "bad object pivot")
-    expect_raises(lambda: load_edge({"source": "a", "target": "b",
+    expect_raises(lambda: load_edge({"source": "a", "target": "b", "source_base": "base",
                   "object": {"scale": 0}}), "degenerate", "zero object scale")
-    expect_raises(lambda: load_edge({"source": "a", "target": "b",
+    expect_raises(lambda: load_edge({"source": "a", "target": "b", "source_base": "base",
                   "scales": [{"bones": ["X"], "value": [1, 1, 1], "pivot": "world"}]}),
                   "pivot", "bad scale pivot")
-    expect_raises(lambda: load_edge({"source": "a", "target": "b",
+    expect_raises(lambda: load_edge({"source": "a", "target": "b", "source_base": "base",
                   "scales": [{"bones": ["X"], "value": [1, 0, 1]}]}), "degenerate", "zero scale")
-    expect_raises(lambda: load_edge({"source": "a", "target": "b",
+    expect_raises(lambda: load_edge({"source": "a", "target": "b", "source_base": "base",
                   "scales": [{"bones": ["X"], "value": [1, 1, 1], "rotate": [1, 0, 0]}]}),
                   "unknown", "rotation key rejected")
-    expect_raises(lambda: load_edge({"source": "a", "target": "b",
+    expect_raises(lambda: load_edge({"source": "a", "target": "b", "source_base": "base",
                   "scales": [{"bones": ["X"], "value": [1, 1, 1], "space": "world"}]}),
                   "space", "bad space")
 
@@ -110,7 +116,8 @@ def test_validate():
     from avatarprep.core import proportions as P
     arm = _make_arm(bones=(("Root",(0,0,0),(0,0,0.1)),("Spine",(0,0,0.1),(0,0,0.3))))
     mesh = _make_mesh(arm, groups=("Root","Spine"), shapekeys=("Big",))
-    edge = P.load_edge({"source":"a","target":"b",
+    arm["avatarprep_base"] = "a"
+    edge = P.load_edge({"source":"a","target":"b","source_base":"a",
         "scales":[{"bones":["Spine"],"value":[1.1,1,1]},{"bones":["Ghost"],"value":[1.1,1,1]}],
         "shapekeys":{"Big":0.2,"Missing":0.2}})
     rep = P.validate_profile(arm, [mesh], edge, bone_overrides={}, shapekey_overrides={})
@@ -130,15 +137,26 @@ def test_validate():
     rep3 = P.validate_profile(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
     check(any("state" in o.lower() for o in rep3["offenders"]), "state mismatch should be an offender")
-    # A fresh-import 'vendor' rig validates clean against a named-source edge (edge.source=='a'):
-    # 'vendor' is the reserved sentinel, so any named source is vendor-origin by construction.
-    arm["avatarprep_state"] = "vendor"
-    rep_vendor = P.validate_profile(arm, [mesh], edge,
-        bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
-    check(not any("state" in o.lower() for o in rep_vendor["offenders"]),
-          "vendor rig must not offend a named-source edge: %r" % rep_vendor["offenders"])
-    check(any("vendor" in w.lower() for w in rep_vendor["warnings"]),
-          "vendor-against-named should warn-and-assume: %r" % rep_vendor["warnings"])
+    # A rig at the reserved 'unproportioned' origin validates clean against an
+    # unproportioned-source edge (exact match); base must also match source_base.
+    arm["avatarprep_base"] = "a"
+    arm["avatarprep_state"] = "unproportioned"
+    edge_u = dict(edge); edge_u["source"] = "unproportioned"; edge_u["source_base"] = "a"
+    rep_u = P.validate_profile(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
+    check(not any("state" in o.lower() or "base" in o.lower() for o in rep_u["offenders"]),
+          "unproportioned+matching-base must not offend: %r" % rep_u["offenders"])
+
+    # A named-source-state edge on an 'unproportioned' rig now OFFENDS (wildcard removed).
+    edge_named = dict(edge); edge_named["source"] = "custom"; edge_named["source_base"] = "a"
+    rep_named = P.validate_profile(arm, [mesh], P.load_edge(edge_named), skip_shapekeys=True)
+    check(any("state mismatch" in o.lower() for o in rep_named["offenders"]),
+          "named-source on unproportioned rig must offend: %r" % rep_named["offenders"])
+
+    # base absent -> offender.
+    del arm["avatarprep_base"]
+    rep_nobase = P.validate_profile(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
+    check(any("base absent" in o.lower() for o in rep_nobase["offenders"]),
+          "base-absent must offend: %r" % rep_nobase["offenders"])
     # A rig left at the mid-apply sentinel (a crashed apply_profile) hard-FAILs distinctly.
     from avatarprep.core import scene_utils
     arm["avatarprep_state"] = scene_utils.STATE_APPLYING
@@ -146,13 +164,13 @@ def test_validate():
         bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
     check(any("interrupted" in o.lower() for o in rep_int["offenders"]),
           "mid-apply sentinel should be an 'interrupted' offender: %r" % rep_int["offenders"])
-    edge_med = P.load_edge({"source":"a","target":"b",
+    edge_med = P.load_edge({"source":"a","target":"b","source_base":"a",
         "scales":[{"bones":["Spine"],"value":[1.1,1,1],"pivot":"median"}], "shapekeys":{}})
     del arm["avatarprep_state"]
     rep_med = P.validate_profile(arm, [mesh], edge_med)
     check(any("median" in o for o in rep_med["offenders"]), "median pivot with 1 bone should offend")
     # this arm has two parentless bones (Root, Spine); an object edge must offend pre-mutation
-    edge_obj = P.load_edge({"source":"a","target":"b","object":{"scale":1.1}})
+    edge_obj = P.load_edge({"source":"a","target":"b","source_base":"a","object":{"scale":1.1}})
     rep_obj = P.validate_profile(arm, [mesh], edge_obj, skip_shapekeys=True)
     check(any("root bone" in o for o in rep_obj["offenders"]),
           "object edge on a multi-root armature should offend: %r" % rep_obj["offenders"])
@@ -230,8 +248,9 @@ def test_apply_profile():
     arm.data.edit_bones["Spine"].parent = arm.data.edit_bones["Hips"]
     scene_utils.op_override(bpy.ops.object.mode_set, ctx, mode='OBJECT')
     mesh = _make_mesh(arm, groups=("Spine",), shapekeys=("Big",))
+    arm["avatarprep_base"] = "a"
     z0 = (mesh.matrix_world @ mathutils.Vector(mesh.data.vertices[0].co)).z
-    edge = {"source":"vendor","target":"custom",
+    edge = {"source":"unproportioned","target":"custom","source_base":"a",
             "object":{"pivot":"bbox_center","scale":2.0,"translate":[0,0,0]},
             "no_inherit_scale":["Spine"],
             "scales":[{"bones":["Spine"],"value":[1.0,1.5,1.0]}],
@@ -255,8 +274,9 @@ def test_apply_profile_skip_shapekeys():
     from avatarprep.core import proportions as P
     arm = _make_arm(bones=(("Hips",(0,0,0.0),(0,0,0.6)),))
     mesh = _make_mesh(arm, groups=("Hips",))   # NO shape keys
+    arm["avatarprep_base"] = "a"
     z0 = (mesh.matrix_world @ mathutils.Vector(mesh.data.vertices[0].co)).z
-    edge = {"source":"vendor","target":"custom",
+    edge = {"source":"unproportioned","target":"custom","source_base":"a",
             "object":{"pivot":"origin","scale":2.0,"translate":[0,0,0]},
             "shapekeys":{"Big":0.5}}           # mesh lacks 'Big'
     raised = []
@@ -276,7 +296,8 @@ def test_apply_profile_median():
     arm = _make_arm(bones=(("Breast.L",(0.1,0,1.0),(0.1,-0.1,1.0)),
                            ("Breast.R",(-0.1,0,1.0),(-0.1,-0.1,1.0))))
     mesh = _make_mesh(arm, groups=("Breast.L","Breast.R"))
-    edge = {"source":"vendor","target":"custom",
+    arm["avatarprep_base"] = "a"
+    edge = {"source":"unproportioned","target":"custom","source_base":"a",
             "scales":[{"bones":["Breast.L","Breast.R"],"value":[1.4,1.4,1.4],
                        "space":"normal","pivot":"median"}]}
     # value is uniform 1.4, so vertex distance from the median pivot must scale x1.4
