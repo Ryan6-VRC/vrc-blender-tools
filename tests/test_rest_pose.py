@@ -152,12 +152,12 @@ def main():
     all_meshes = [mesh_none, mesh_basis, mesh_multi, mesh_masked, mesh_disabled]
     exc = None
     try:
-        rest_pose.apply_pose_as_rest(arm, all_meshes)
+        rest_pose.apply_pose(arm, all_meshes)
     except Exception as e:  # noqa: BLE001
         exc = e
         import traceback
         traceback.print_exc()
-    check(exc is None, "apply_pose_as_rest raised: %s" % exc)
+    check(exc is None, "apply_pose raised: %s" % exc)
 
     after = arm.data.bones.get("Root")
     ratio = (after.length / before_len) if after else None

@@ -1,6 +1,6 @@
 """AvatarPrep verification harness (run inside Blender, headless).
 
-Verifies the shape-key-safe ``apply_pose_as_rest`` against a real avatar:
+Verifies the shape-key-safe ``apply_pose`` against a real avatar:
   (a) no exception,
   (b) the REST pose changed to reflect an applied ~1.2x pose scale,
   (c) shape keys are preserved (same count, basis intact, a non-basis key still
@@ -165,13 +165,13 @@ def main():
 
     exc = None
     try:
-        result = rest_pose.apply_pose_as_rest(armature)
+        result = rest_pose.apply_pose(armature)
     except Exception as e:  # (a)
         exc = e
         import traceback
         traceback.print_exc()
     if exc is not None:
-        failures.append("apply_pose_as_rest raised: %s" % exc)
+        failures.append("apply_pose raised: %s" % exc)
         print("VERIFY: (a) FAIL exception raised")
     else:
         print("VERIFY: (a) PASS no exception | result =", result)

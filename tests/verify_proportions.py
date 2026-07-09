@@ -1,7 +1,7 @@
 """Reference-verification harness for the Shinano proportion profile (Task 10).
 
-Headless. Imports the vendor Shinano FBX, applies profiles/custom_shinano.json via
-avatarprep.core.proportions.apply_profile, measures the body mesh world bbox, opens
+Headless. Imports the vendor Shinano FBX, applies edges/custom_shinano.json via
+avatarprep.core.proportions.apply_proportion_edge, measures the body mesh world bbox, opens
 the hand-made BaseShinano.blend reference and measures ITS body mesh, prints % deltas,
 and renders orthographic FRONT/SIDE views of both to a scratch dir for visual review.
 
@@ -177,7 +177,7 @@ def main():
     body = _find_body(meshes)
     print("VERIFY: applying profile %s to %r (body mesh = %r)"
           % (os.path.basename(args.profile), arm.name, body.name))
-    report = proportions.apply_profile(arm, meshes, os.path.abspath(args.profile))
+    report = proportions.apply_proportion_edge(arm, meshes, os.path.abspath(args.profile))
     print("VERIFY: apply report state=%r scales_applied=%d bakes=%d shapekeys=%d"
           % (report["state"], report["scales_applied"], len(report["bakes"]),
              len(report["shapekeys"])))

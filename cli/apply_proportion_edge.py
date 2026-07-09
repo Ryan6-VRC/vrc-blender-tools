@@ -1,8 +1,13 @@
-"""Headless CLI: apply one proportion edge to a blend.
+"""Headless CLI: apply one proportion edge to a blend (or validate with --whatif).
 
 Run:
-  blender <in.blend> --background --factory-startup --python cli/apply_profile.py -- \
+  blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --out <out.blend> --edge <edge.json> [--skip-shapekeys] \
+      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
+
+  # Read-only gate: validate the edge against the scene, no mutation, no --out.
+  blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
+      --in <in.blend> --edge <edge.json> --whatif [--skip-shapekeys] \
       [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
 """
 import os
@@ -13,17 +18,22 @@ import argparse
 
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    p = argparse.ArgumentParser(prog="apply_profile")
+    p = argparse.ArgumentParser(prog="apply_proportion_edge")
     p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", required=True)
+    p.add_argument("--out", dest="out_path", default=None)   # not required under --whatif
     p.add_argument("--edge", dest="edge", required=True)
     p.add_argument("--armature", dest="armature", default=None,
                    help="Armature object to target; required when the scene has more than one")
+    p.add_argument("--whatif", dest="whatif", action="store_true",
+                   help="Validate the edge against the scene and report offenders; no mutation, no --out")
     p.add_argument("--skip-shapekeys", action="store_true")
     p.add_argument("--bone-override", action="append", default=[])
     p.add_argument("--shapekey-override", action="append", default=[])
     p.add_argument("--report", dest="report", default=None)
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if not args.whatif and not args.out_path:
+        p.error("--out is required unless --whatif is given")
+    return args
 
 
 def _enable_avatarprep():
@@ -75,7 +85,7 @@ def main():
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
     _enable_avatarprep()
-    from avatarprep.core import proportions
+    from avatarprep.core import scene_utils, proportions
 
     armature = _resolve_armature(args.armature)
 
@@ -83,8 +93,42 @@ def main():
     sk_raw = _kv(args.shapekey_override)
     shapekey_overrides = {k: (None if v.lower() == "null" else float(v))
                           for k, v in sk_raw.items()}
+
+    if args.whatif:
+        # Read-only gate (folded from the former standalone validate CLI): load the edge,
+        # check it against the rig, report offenders/warnings, exit 1 on offenders. No save.
+        try:
+            edge = proportions.load_edge(os.path.abspath(args.edge))
+        except proportions.EdgeError as e:
+            print("AVATARPREP: ERROR", e)
+            sys.exit(1)
+
+        meshes = scene_utils.get_bound_meshes(armature)
+        report = proportions.validate_proportion_edge(
+            armature, meshes, edge, bone_overrides=bone_overrides,
+            shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys)
+
+        offenders = report["offenders"]
+        warnings = report["warnings"]
+        verdict = "FAIL" if offenders else "PASS"
+        print("AVATARPREP: validate %s %s -> %s (%d offenders, %d warnings)"
+              % (verdict, edge["source"], edge["target"], len(offenders), len(warnings)))
+        for o in offenders:
+            print("AVATARPREP: OFFENDER", o)
+        for w in warnings:
+            print("AVATARPREP: WARNING", w)
+
+        if args.report:
+            report_path = os.path.abspath(args.report)
+            os.makedirs(os.path.dirname(report_path), exist_ok=True)
+            with open(report_path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh, indent=2)
+            print("AVATARPREP: report ->", report_path)
+
+        sys.exit(1 if offenders else 0)
+
     try:
-        report = proportions.apply_profile(
+        report = proportions.apply_proportion_edge(
             armature, None, args.edge, bone_overrides=bone_overrides,
             shapekey_overrides=shapekey_overrides,
             skip_shapekeys=args.skip_shapekeys)

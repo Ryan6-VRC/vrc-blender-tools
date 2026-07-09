@@ -99,8 +99,8 @@ def test_stamp_equal_pass():
     base, merge = _twin_pair()
     _stamp(base, avatarprep_base="shinano", avatarprep_state="unproportioned")
     _stamp(merge, avatarprep_base="shinano", avatarprep_state="unproportioned")
-    from avatarprep.core.merge_armatures import armature_compat, merge_armatures
-    rep = armature_compat(base, merge)
+    from avatarprep.core.merge_armatures import compare_armatures, merge_armatures
+    rep = compare_armatures(base, merge)
     if not rep["clean"] or not rep["stamp_clean"] or rep["stamp_mismatches"]:
         _fail("stamp_equal: expected clean/stamp_clean with no mismatches, got %r" % rep)
     res = merge_armatures(base, merge)
@@ -250,8 +250,8 @@ def test_compat_flags_rename():
         ("Hips", Vector((0, 0, 1.0)), None),
         ("breast_L", Vector((0.1, 0, 1.3)), "Hips"),  # renamed, same position
     ])
-    from avatarprep.core.merge_armatures import armature_compat
-    rep = armature_compat(base, merge)
+    from avatarprep.core.merge_armatures import compare_armatures
+    rep = compare_armatures(base, merge)
     if rep["clean"]:
         _fail("compat: expected clean=False for a rename")
     sr = rep["suspected_renames"]
@@ -382,8 +382,8 @@ def test_force_parent_mismatch():
         ("Hips", Vector((0, 0, 1.0)), "Root"),
         ("Spine", Vector((0, 0, 1.2)), "Root"),     # parent = Root (mismatch)
     ])
-    from avatarprep.core.merge_armatures import armature_compat, merge_armatures
-    rep = armature_compat(base, merge)
+    from avatarprep.core.merge_armatures import compare_armatures, merge_armatures
+    rep = compare_armatures(base, merge)
     if not any(p["bone"] == "Spine" for p in rep["parent_mismatches"]):
         _fail("force: expected Spine in parent_mismatches, got %r"
               % rep["parent_mismatches"])

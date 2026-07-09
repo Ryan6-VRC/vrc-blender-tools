@@ -1,7 +1,7 @@
 """Headless multi-angle Workbench render of the scene's render-visible meshes — the
-Blender-side sibling of Unity AvatarGrab (``vrc-unity-tools/.../Editor/AvatarGrab.cs``):
+Blender-side sibling of Unity RenderAvatar (``vrc-unity-tools/.../Editor/RenderAvatar.cs``):
 same result grammar, same refusal shape, same angle vocabulary, same
-``meshgrab_<label>_<stamp>.png`` filename and terminal ``png=`` trailer.
+``rendermesh_<label>_<stamp>.png`` filename and terminal ``png=`` trailer.
 
 Runs entirely under ``--background`` (no VIEW_3D, no GL). Both shading modes render
 through ``BLENDER_WORKBENCH``; ``film_transparent`` carries geometry coverage as the
@@ -10,10 +10,10 @@ numpy — so the plate byte is ``71`` by construction and the drew-guard keys of
 (a shading-independent "did anything draw" signal), never a colour-difference read.
 
 No ``bpy.types.Operator`` subclasses and no UI live here (mirrors scene_utils). The
-one door is the headless ``cli/mesh_grab.py``.
+one door is the headless ``cli/render_mesh.py``.
 
-Two spellings, on purpose: ``mesh_grab`` is the file/key/param form; ``meshgrab`` is
-the display token in the result line (mirrors AvatarGrab's concatenated ``avatargrab_``).
+Two spellings, on purpose: ``render_mesh`` is the file/module form; ``rendermesh`` is
+the display token in the result line (mirrors RenderAvatar's concatenated ``renderavatar_``).
 """
 
 import glob
@@ -29,8 +29,8 @@ from mathutils import Quaternion, Vector
 
 _MARGIN = 0.15   # ortho-scale border fraction so the silhouette doesn't touch the tile edge
 _EPSILON = 1e-6  # zero-extent bounds guard
-_PLATE = 71      # Unity-grey plate byte (parity with AvatarGrab's (71,71,71) compose fill)
-_SHEET_CAP = 2048  # composed-sheet edge ceiling — parity with AvatarGrab's SheetEdgeCap
+_PLATE = 71      # Unity-grey plate byte (parity with RenderAvatar's (71,71,71) compose fill)
+_SHEET_CAP = 2048  # composed-sheet edge ceiling — parity with RenderAvatar's SheetEdgeCap
 _MAX_RES = 8192    # per-tile render ceiling: rendered full-size BEFORE the sheet downscale, so an
                    # absurd value would allocate GBs; refuse early rather than OOM late
 _DREW_FLOOR = 0.005  # per-tile alpha-coverage floor: a sub-1% "nothing drew" threshold, NOT a
@@ -49,7 +49,7 @@ _SHADING_VOCAB = ["solid", "vertexcolor"]
 # SWAPPED from Blender's native front/back (native front looks +Y at the -Y face); Felis calibration
 # proved the native table renders the avatar's BACK on "front", so front and back are exchanged here.
 # The angle is a world axis — a target NOT on the upright-facing-front convention renders the scene's
-# front, not its own (the documented AvatarGrab limitation).
+# front, not its own (the documented RenderAvatar limitation).
 _VIEW_Q = {
     "front":  (0.0, 0.0, math.sqrt(2) / 2, math.sqrt(2) / 2),
     "back":   (math.sqrt(2) / 2, math.sqrt(2) / 2, 0.0, 0.0),
@@ -67,10 +67,10 @@ def _sanitize(name: str) -> str:
 
 
 def _fail(label, reason: str) -> str:
-    """Mirror AvatarGrab's Fail(): family arrow, NO png= trailer — the schema never points
+    """Mirror RenderAvatar's Fail(): family arrow, NO png= trailer — the schema never points
     at a PNG that isn't on disk. ``label`` may be None/empty -> "?"."""
     lbl = label if label else "?"
-    return "AVATARPREP: meshgrab " + lbl + " => FAIL: " + reason
+    return "AVATARPREP: rendermesh " + lbl + " => FAIL: " + reason
 
 
 def _downscale(arr, edge):
@@ -98,7 +98,7 @@ def _downscale(arr, edge):
 def _compose_sheet(tiles, edge, cols, rows):
     """Row-major in requested order, 71-plate-filled empty cells. The array is bottom-origin
     (matches the bpy image API — never flipped end to end), so requested-order row 0 lands at
-    the LAST array band (mirrors AvatarGrab.Compose's ``(rows - 1 - r)``) and reads back as the
+    the LAST array band (mirrors RenderAvatar.Compose's ``(rows - 1 - r)``) and reads back as the
     top row of the saved sheet."""
     sheet = np.full((rows * edge, cols * edge, 4), _PLATE, dtype=np.uint8)
     sheet[:, :, 3] = 255
@@ -139,12 +139,12 @@ def _world_aabb(drawable, depsgraph):
 
 
 def _prune_old_sheets(out_dir, days=30):
-    """Delete our own ``meshgrab_*.png`` older than ``days`` in ``out_dir`` — best-effort per file
-    (a locked or already-gone file is skipped). Mirrors AvatarGrab's 30-day self-prune: the persistent
+    """Delete our own ``rendermesh_*.png`` older than ``days`` in ``out_dir`` — best-effort per file
+    (a locked or already-gone file is skipped). Mirrors RenderAvatar's 30-day self-prune: the persistent
     temp is never swept by the OS, so each write bounds it; the just-written sheet is newer than the
     cutoff, so it never self-deletes."""
     cutoff = time.time() - days * 86400
-    for old in glob.glob(os.path.join(out_dir, "meshgrab_*.png")):
+    for old in glob.glob(os.path.join(out_dir, "rendermesh_*.png")):
         try:
             if os.path.getmtime(old) < cutoff:
                 os.remove(old)
@@ -160,7 +160,7 @@ def _notes_field(notes):
     return (" | note=%s" % " ".join(toks)) if toks else ""  # its own | field, before terminal png=
 
 
-def grab(
+def render(
     label=None,       # filename/result label; None/empty -> the scene name
     only=None,        # flat object-name filter; None/empty -> all render-visible meshes
     angles=None,      # subset of {front,back,left,right,top,bottom}; None/empty -> [front, back]
@@ -168,7 +168,7 @@ def grab(
     resolution: int = 1024,  # per-tile square edge cap in px; must be >= 1; never upscales
 ) -> str:
     """Render the scene's render-visible meshes (optionally narrowed by ``only`` names) from
-    ``angles`` to one stamped contact-sheet PNG in the persistent ``avatarprep_meshgrab`` temp
+    ``angles`` to one stamped contact-sheet PNG in the persistent ``avatarprep_rendermesh`` temp
     subdir; return the one-line summary (OK or FAIL). Never raises for an EXPECTED refusal — it
     returns the FAIL line;
     a genuinely unexpected error propagates (the cli maps that to exit 2).
@@ -328,13 +328,13 @@ def grab(
                 notes["ambiguous-color-attribute"] = ambiguous
 
         # --- temp orthographic camera; one ortho_scale for every angle ---------------------
-        cam_data = bpy.data.cameras.new("meshgrab_cam")
+        cam_data = bpy.data.cameras.new("rendermesh_cam")
         cam_data.type = 'ORTHO'
         cam_data.ortho_scale = max_dim * (1.0 + _MARGIN)
         dist = max_dim * 4.0 + 1.0
         cam_data.clip_start = 0.001
         cam_data.clip_end = dist + max_dim * 4.0 + 1.0
-        cam_obj = bpy.data.objects.new("meshgrab_cam", cam_data)
+        cam_obj = bpy.data.objects.new("rendermesh_cam", cam_data)
         scene.collection.objects.link(cam_obj)
         cam_obj.rotation_mode = 'QUATERNION'
         scene.camera = cam_obj
@@ -354,7 +354,7 @@ def grab(
             back = q.to_matrix() @ Vector((0.0, 0.0, 1.0))  # +Z (backward), NOT -Z (would be inside)
             cam_obj.location = center + back * dist
 
-            tmp_path = os.path.join(bpy.app.tempdir, "meshgrab_tile_%s.png" % angle)
+            tmp_path = os.path.join(bpy.app.tempdir, "rendermesh_tile_%s.png" % angle)
             written_tiles.append(tmp_path)
             r.filepath = tmp_path
             bpy.ops.render.render(write_still=True)
@@ -389,18 +389,18 @@ def grab(
 
         if fail_reason is None:
             sheet = _compose_sheet(tiles, delivered_edge, cols, rows)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # millisecond, matching AvatarGrab
-            # Persistent OS temp (Python's tempfile.gettempdir — the analog of Unity AvatarGrab's
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # millisecond, matching RenderAvatar
+            # Persistent OS temp (Python's tempfile.gettempdir — the analog of Unity RenderAvatar's
             # Application.temporaryCachePath), NOT bpy.app.tempdir: Blender NUKES its session dir on
             # process exit, so a headless cli would return a png= path that no longer exists. A
-            # DEDICATED subdir (not the bare temp root) mirrors AvatarGrab's per-project cache, so a
-            # grab-dir scanner sees only meshgrab sheets, not the whole busy temp root. The per-angle
+            # DEDICATED subdir (not the bare temp root) mirrors RenderAvatar's per-project cache, so a
+            # grab-dir scanner sees only rendermesh sheets, not the whole busy temp root. The per-angle
             # intermediate tiles above stay in bpy.app.tempdir — they're intra-process scratch.
-            out_dir = os.path.join(tempfile.gettempdir(), "avatarprep_meshgrab")
+            out_dir = os.path.join(tempfile.gettempdir(), "avatarprep_rendermesh")
             os.makedirs(out_dir, exist_ok=True)
-            path = os.path.join(out_dir, "meshgrab_%s_%s.png" % (lbl, stamp))
+            path = os.path.join(out_dir, "rendermesh_%s_%s.png" % (lbl, stamp))
             sh, sw = sheet.shape[0], sheet.shape[1]
-            out = bpy.data.images.new("meshgrab_out", sw, sh, alpha=True)
+            out = bpy.data.images.new("rendermesh_out", sw, sh, alpha=True)
             loaded_images.append(out)
             out.colorspace_settings.name = 'Non-Color'  # byte-exact inverse of the Non-Color read
             out.pixels.foreach_set((sheet.astype(np.float32) / 255.0).reshape(-1))
@@ -450,6 +450,6 @@ def grab(
     if fail_reason is not None:
         return _fail(lbl, fail_reason)
 
-    return ("AVATARPREP: meshgrab %s angles=%s shading=%s tiles=%d res=%d => OK%s | png=%s"
+    return ("AVATARPREP: rendermesh %s angles=%s shading=%s tiles=%d res=%d => OK%s | png=%s"
             % (lbl, ",".join(resolved_angles), shading, len(resolved_angles),
                delivered_edge, _notes_field(notes), path))

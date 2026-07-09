@@ -2,7 +2,7 @@
 
 A *proportion edge* (JSON) maps one named proportion state to another. This
 module loads/validates an edge and applies it to the scene armature + meshes,
-baking shape-key-safely via rest_pose.apply_pose_as_rest. Pure bpy: no
+baking shape-key-safely via rest_pose.apply_pose. Pure bpy: no
 bpy.types.Operator, no UI.
 """
 from typing import Any, Dict, List, Union
@@ -131,15 +131,15 @@ def _effective_shapekeys(edge, shapekey_overrides):
     return eff
 
 
-def validate_profile(armature, meshes, edge, *, bone_overrides=None,
+def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
                            shapekey_overrides=None, skip_shapekeys=False) -> Dict[str, Any]:
     """Read-only check of a loaded ``edge`` against the rig, before any mutation.
 
     Returns ``{"offenders": [...], "warnings": [...]}`` — offenders are hard blockers
     (missing bones/shapekeys, state mismatch) named for the fix; warnings are softer.
-    apply_profile calls this and aborts on offenders. Faces: pure core (agent/MCP) +
-    the ``validate_profile`` headless CLI; no operator/UI by design — it is an
-    agent-side gate, not a human N-panel button.
+    apply_proportion_edge calls this and aborts on offenders. Faces: pure core
+    (agent/MCP) + the ``apply_proportion_edge --whatif`` headless CLI; no operator/UI
+    by design — it is an agent-side gate, not a human N-panel button.
     """
     bone_overrides = bone_overrides or {}
     shapekey_overrides = shapekey_overrides or {}
@@ -161,7 +161,7 @@ def validate_profile(armature, meshes, edge, *, bone_overrides=None,
     kind = scene_utils.stamp_kind(raw)
     if kind == "interrupted":
         offenders.append("state interrupted: armature left mid-apply (%r) — a crashed "
-                         "apply_profile; re-import or restore" % raw)
+                         "apply_proportion_edge; re-import or restore" % raw)
     elif kind == "corrupt":
         offenders.append("state corrupt: avatarprep_state is not a string (%r)" % raw)
     elif kind == "absent":
@@ -171,7 +171,7 @@ def validate_profile(armature, meshes, edge, *, bone_overrides=None,
                          % (raw, expected))
 
     # Base-family gate (exact). stamp_base must have seeded a lineage matching source_base;
-    # a profile only transitions an already-asserted base, so absent is an offender, not a warn.
+    # an edge only transitions an already-asserted base, so absent is an offender, not a warn.
     base_raw = scene_utils.read_stamp(armature, scene_utils.STAMP_BASE)
     if base_raw is None:
         offenders.append("base absent: stamp_base the armature's lineage before apply "
@@ -381,20 +381,20 @@ def _set_no_inherit_scale(armature, bone_names):
                 eb.inherit_scale = 'NONE'
 
 
-def apply_profile(armature, meshes=None, edge_src=None, *, bone_overrides=None,
+def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_overrides=None,
                   shapekey_overrides=None, skip_shapekeys=False) -> Dict[str, Any]:
     if armature is None or armature.type != 'ARMATURE':
-        raise EdgeError("apply_profile requires a valid armature")
+        raise EdgeError("apply_proportion_edge requires a valid armature")
     if meshes is None:
         meshes = scene_utils.get_bound_meshes(armature)
     bone_overrides = bone_overrides or {}
     shapekey_overrides = shapekey_overrides or {}
     edge = load_edge(edge_src)
 
-    val = validate_profile(armature, meshes, edge, bone_overrides=bone_overrides,
+    val = validate_proportion_edge(armature, meshes, edge, bone_overrides=bone_overrides,
                                  shapekey_overrides=shapekey_overrides, skip_shapekeys=skip_shapekeys)
     if val["offenders"]:
-        raise EdgeError("apply_profile aborted; offenders:\n  - "
+        raise EdgeError("apply_proportion_edge aborted; offenders:\n  - "
                         + "\n  - ".join(val["offenders"]))
 
     report = {"source": edge["source"], "target": edge["target"],
@@ -414,7 +414,7 @@ def apply_profile(armature, meshes=None, edge_src=None, *, bone_overrides=None,
         t = list(edge["object"]["translate"])
         if abs(s - 1.0) > 1e-12 or any(abs(c) > 1e-12 for c in t):
             pose_object_transform(armature, meshes, s, t, pivot=edge["object"]["pivot"])
-            report["bakes"].append(rest_pose.apply_pose_as_rest(armature))
+            report["bakes"].append(rest_pose.apply_pose(armature))
             _ensure_pose_mode(armature)
 
     if edge["no_inherit_scale"] or edge["scales"]:
@@ -431,7 +431,7 @@ def apply_profile(armature, meshes=None, edge_src=None, *, bone_overrides=None,
                 apply_framed_scale(armature, pbs, op["value"],
                                    space=op["space"], pivot=op["pivot"])
             report["scales_applied"] += 1
-        report["bakes"].append(rest_pose.apply_pose_as_rest(armature))
+        report["bakes"].append(rest_pose.apply_pose(armature))
 
     if not skip_shapekeys:
         eff = _effective_shapekeys(edge, shapekey_overrides)
@@ -439,7 +439,7 @@ def apply_profile(armature, meshes=None, edge_src=None, *, bone_overrides=None,
 
     # Transition the (base, state) pair. Base FIRST, state LAST: state carries the
     # STATE_APPLYING sentinel, so a crash between these two writes leaves the sentinel
-    # visible (detectable by validate_profile), never a real state beside a stale base.
+    # visible (detectable by validate_proportion_edge), never a real state beside a stale base.
     scene_utils.write_stamp(armature, scene_utils.STAMP_BASE, edge["target_base"])
     stamp = edge["target"]
     scene_utils.write_stamp(armature, scene_utils.STAMP_STATE, stamp)

@@ -1,7 +1,7 @@
 """Headless CLI: read-only seam-compatibility diff of two armatures (no mutation).
 
 Run:
-  blender <in.blend> --background --factory-startup --python cli/armature_compat.py -- \
+  blender <in.blend> --background --factory-startup --python cli/compare_armatures.py -- \
       --in <in.blend> --base <armatureObjectName> --merge <armatureObjectName> \
       [--tol <float>] [--report <report.json>]
 
@@ -16,7 +16,7 @@ import argparse
 
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    p = argparse.ArgumentParser(prog="armature_compat")
+    p = argparse.ArgumentParser(prog="compare_armatures")
     p.add_argument("--in", dest="in_path", required=True)
     p.add_argument("--base", dest="base", required=True)
     p.add_argument("--merge", dest="merge", required=True)
@@ -50,12 +50,12 @@ def main():
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
     _enable_avatarprep()
-    from avatarprep.core.merge_armatures import armature_compat, report_offenders
+    from avatarprep.core.merge_armatures import compare_armatures, report_offenders
 
     base = _resolve_arm(args.base, "base")
     merge = _resolve_arm(args.merge, "merge")
 
-    report = armature_compat(base, merge, tol=args.tol)
+    report = compare_armatures(base, merge, tol=args.tol)
     verdict = "PASS" if report["clean"] else "FAIL"
     counts = ("matched=%d only_in_base=%d only_in_merge=%d renames=%d "
               "parent_mismatch=%d position_mismatch=%d stamp_mismatch=%d warnings=%d"

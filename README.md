@@ -71,8 +71,8 @@ A line each on the ops with the least obvious behavior (not the full set — tha
 `TOOLS.md`); behavior lives in the meta-repo `docs/blender.md`, and the callable surface (entry
 points, flags) in `TOOLS.md`.
 
-- **Apply Pose as Rest Pose** (`core.rest_pose.apply_pose_as_rest`) — shape-key-safe bake of the current pose into the rest pose.
-- **Proportion profiles** (`core.proportions.apply_profile`) — apply a proportion **edge** (a JSON file mapping one named proportion state to another); the agent chains edges to walk a path. Bundled `profiles/` are worked examples only — real per-avatar edges live at the Unity-project level (see `docs/LAYOUT.md`).
+- **Apply Pose as Rest Pose** (`core.rest_pose.apply_pose`) — shape-key-safe bake of the current pose into the rest pose.
+- **Proportion edges** (`core.proportions.apply_proportion_edge`) — apply a proportion **edge** (a JSON file mapping one named proportion state to another); the agent chains edges to walk a path. `--whatif` validates an edge against the scene read-only (no mutation). Bundled `edges/` are worked examples only — real per-avatar edges live at the Unity-project level (see `docs/LAYOUT.md`).
 - **Stamp Base** (`core.scene_utils.write_stamp` via the `stamp_base` door) — stamps the avatar body lineage on an armature as a deliberate agent assertion.
 - **Report Stamps** (`core.scene_utils.report_stamps`) — read-only query of every armature's base/state stamps and, grouped under each armature, its bound meshes' baked-morph maps (plus an `unbound` bucket for meshes owned by no single armature).
 - **Bake Shape Key to Basis** (`core.shapekey_bake.bake_shapekey_to_basis`) — folds one body-shape morph into Basis and records the reversible fold.
@@ -101,22 +101,22 @@ blender --background --factory-startup --python tests/verify.py -- --asset path/
 ```
 avatarprep/            # the extension package
   core/                # pure logic (no Operator/UI): scene_utils, import_fbx, prune_bones,
-                       #   rest_pose, merge_armatures, proportions, shapekey_bake, fbx_export, mesh_grab
+                       #   rest_pose, merge_armatures, proportions, shapekey_bake, fbx_export, render_mesh
   operators.py         # thin operator wrappers
   ui.py                # N-panel (category "AvatarPrep")
   __init__.py          # register()/unregister() — NO upper version guard
   blender_manifest.toml
-cli/                   # headless entry points (incl. apply_profile, apply_recipe)
-profiles/              # worked examples / test fixtures only — real per-avatar profiles
+cli/                   # headless entry points (incl. apply_proportion_edge)
+edges/                 # worked examples / test fixtures only — real per-avatar edges
                        #   live at the Unity-project level (see below)
 tests/                 # verify.py + committed Felis fixture (per-avatar blends gitignored)
 ```
 
 ## Known limitations
-- `apply_pose_as_rest` requires the armature to be in **Pose mode** (same as
+- `apply_pose` requires the armature to be in **Pose mode** (same as
   CATS). The CLI handles this automatically.
-- Multi-armature scenes: the proportion CLIs (`apply_profile`, `apply_recipe`,
-  `validate_profile`) scope to a named rig via `--armature` and **fail loud** on ambiguity.
+- Multi-armature scenes: the proportion CLI (`apply_proportion_edge`, incl.
+  `--whatif`) scopes to a named rig via `--armature` and **fails loud** on ambiguity.
 - FBX export defaults to the whole scene (matching CATS); `--armature` exports one rig
   and the meshes it deforms, selection-only. Unlike the proportion CLIs, a missing
   `--armature` in a multi-armature scene only **warns** and exports the whole scene — so
