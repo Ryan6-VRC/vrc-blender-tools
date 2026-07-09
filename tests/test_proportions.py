@@ -120,21 +120,21 @@ def test_validate():
     edge = P.load_edge({"source":"a","target":"b","source_base":"a",
         "scales":[{"bones":["Spine"],"value":[1.1,1,1]},{"bones":["Ghost"],"value":[1.1,1,1]}],
         "shapekeys":{"Big":0.2,"Missing":0.2}})
-    rep = P.validate_profile(arm, [mesh], edge, bone_overrides={}, shapekey_overrides={})
+    rep = P.validate_proportion_edge(arm, [mesh], edge, bone_overrides={}, shapekey_overrides={})
     joined = " ".join(rep["offenders"])
     check("Ghost" in joined, "missing bone Ghost should be an offender")
     check("Missing" in joined, "missing shapekey should be an offender")
     check("Spine" not in joined, "present bone Spine must not be an offender")
-    rep2 = P.validate_profile(arm, [mesh], edge,
+    rep2 = P.validate_proportion_edge(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
     check(not rep2["offenders"], "overrides should clear offenders: %r" % rep2["offenders"])
     # skip_shapekeys suppresses the missing-shapekey offender (body edge onto an outfit)
-    rep_skip = P.validate_profile(arm, [mesh], edge,
+    rep_skip = P.validate_proportion_edge(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, skip_shapekeys=True)
     check(not any("shapekey" in o for o in rep_skip["offenders"]),
           "skip_shapekeys should suppress missing-shapekey offenders: %r" % rep_skip["offenders"])
     arm["avatarprep_state"] = "wrong"
-    rep3 = P.validate_profile(arm, [mesh], edge,
+    rep3 = P.validate_proportion_edge(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
     check(any("state" in o.lower() for o in rep3["offenders"]), "state mismatch should be an offender")
     # A rig at the reserved 'unproportioned' origin validates clean against an
@@ -142,42 +142,42 @@ def test_validate():
     arm["avatarprep_base"] = "a"
     arm["avatarprep_state"] = "unproportioned"
     edge_u = dict(edge); edge_u["source"] = "unproportioned"; edge_u["source_base"] = "a"
-    rep_u = P.validate_profile(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
+    rep_u = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
     check(not any("state" in o.lower() or "base" in o.lower() for o in rep_u["offenders"]),
           "unproportioned+matching-base must not offend: %r" % rep_u["offenders"])
 
     # A named-source-state edge on an 'unproportioned' rig now OFFENDS (wildcard removed).
     edge_named = dict(edge); edge_named["source"] = "custom"; edge_named["source_base"] = "a"
-    rep_named = P.validate_profile(arm, [mesh], P.load_edge(edge_named), skip_shapekeys=True)
+    rep_named = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_named), skip_shapekeys=True)
     check(any("state mismatch" in o.lower() for o in rep_named["offenders"]),
           "named-source on unproportioned rig must offend: %r" % rep_named["offenders"])
 
     # base absent -> offender.
     del arm["avatarprep_base"]
-    rep_nobase = P.validate_profile(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
+    rep_nobase = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
     check(any("base absent" in o.lower() for o in rep_nobase["offenders"]),
           "base-absent must offend: %r" % rep_nobase["offenders"])
     # base corrupt (present but not a str) -> distinct offender, not conflated with 'mismatch'.
     arm["avatarprep_base"] = 123
-    rep_badbase = P.validate_profile(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
+    rep_badbase = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
     check(any("base corrupt" in o.lower() for o in rep_badbase["offenders"]),
           "base-corrupt must offend distinctly: %r" % rep_badbase["offenders"])
     del arm["avatarprep_base"]
-    # A rig left at the mid-apply sentinel (a crashed apply_profile) hard-FAILs distinctly.
+    # A rig left at the mid-apply sentinel (a crashed apply_proportion_edge) hard-FAILs distinctly.
     from avatarprep.core import scene_utils
     arm["avatarprep_state"] = scene_utils.STATE_APPLYING
-    rep_int = P.validate_profile(arm, [mesh], edge,
+    rep_int = P.validate_proportion_edge(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
     check(any("interrupted" in o.lower() for o in rep_int["offenders"]),
           "mid-apply sentinel should be an 'interrupted' offender: %r" % rep_int["offenders"])
     edge_med = P.load_edge({"source":"a","target":"b","source_base":"a",
         "scales":[{"bones":["Spine"],"value":[1.1,1,1],"pivot":"median"}], "shapekeys":{}})
     del arm["avatarprep_state"]
-    rep_med = P.validate_profile(arm, [mesh], edge_med)
+    rep_med = P.validate_proportion_edge(arm, [mesh], edge_med)
     check(any("median" in o for o in rep_med["offenders"]), "median pivot with 1 bone should offend")
     # this arm has two parentless bones (Root, Spine); an object edge must offend pre-mutation
     edge_obj = P.load_edge({"source":"a","target":"b","source_base":"a","object":{"scale":1.1}})
-    rep_obj = P.validate_profile(arm, [mesh], edge_obj, skip_shapekeys=True)
+    rep_obj = P.validate_proportion_edge(arm, [mesh], edge_obj, skip_shapekeys=True)
     check(any("root bone" in o for o in rep_obj["offenders"]),
           "object edge on a multi-root armature should offend: %r" % rep_obj["offenders"])
 
@@ -244,7 +244,7 @@ def test_shapekeys():
     check(any(r["widened"] for r in rep), "report should note widening")
 
 
-def test_apply_profile():
+def test_apply_proportion_edge():
     from avatarprep.core import proportions as P
     arm = _make_arm(bones=(("Hips",(0,0,0.5),(0,0,0.6)),("Spine",(0,0,0.6),(0,0,0.9))))
     bpy.context.view_layer.objects.active = arm
@@ -261,20 +261,20 @@ def test_apply_profile():
             "no_inherit_scale":["Spine"],
             "scales":[{"bones":["Spine"],"value":[1.0,1.5,1.0]}],
             "shapekeys":{"Big":0.5}}
-    rep = P.apply_profile(arm, [mesh], edge)
+    rep = P.apply_proportion_edge(arm, [mesh], edge)
     check(rep["state"] == "custom", "state should be stamped 'custom'")
     z1 = (mesh.matrix_world @ mathutils.Vector(mesh.data.vertices[0].co)).z
     check(abs(z1 - z0) > 1e-4, "geometry should have moved")
     check(mesh.data.shape_keys.key_blocks["Big"].value == 0.5, "shapekey value set")
     raised = []
     try:
-        P.apply_profile(arm, [mesh], edge)
+        P.apply_proportion_edge(arm, [mesh], edge)
     except Exception as e:
         raised.append(str(e))
     check(raised and "state" in raised[0].lower(), "re-apply should fail on state mismatch")
 
 
-def test_apply_profile_skip_shapekeys():
+def test_apply_proportion_edge_skip_shapekeys():
     # Covers skip_shapekeys (a body edge applied to a mesh lacking its shape keys)
     # AND a baked geometric check that an origin-pivot object scale maps z -> 2z.
     from avatarprep.core import proportions as P
@@ -287,17 +287,17 @@ def test_apply_profile_skip_shapekeys():
             "shapekeys":{"Big":0.5}}           # mesh lacks 'Big'
     raised = []
     try:
-        P.apply_profile(arm, [mesh], edge)     # aborts before any mutation
+        P.apply_proportion_edge(arm, [mesh], edge)     # aborts before any mutation
     except Exception as e:
         raised.append(str(e))
     check(raised and "shapekey" in raised[0].lower(), "missing shapekey should abort without skip")
-    rep = P.apply_profile(arm, [mesh], edge, skip_shapekeys=True)
+    rep = P.apply_proportion_edge(arm, [mesh], edge, skip_shapekeys=True)
     check(rep["state"] == "custom", "skip_shapekeys run should complete and stamp target")
     z1 = (mesh.matrix_world @ mathutils.Vector(mesh.data.vertices[0].co)).z
     check(abs(z1 - 2.0 * z0) < 1e-3,
           "origin scale 2x should map z=%.3f to ~%.3f, got %.3f" % (z0, 2 * z0, z1))
 
-def test_apply_profile_median():
+def test_apply_proportion_edge_median():
     from avatarprep.core import proportions as P
     arm = _make_arm(bones=(("Breast.L",(0.1,0,1.0),(0.1,-0.1,1.0)),
                            ("Breast.R",(-0.1,0,1.0),(-0.1,-0.1,1.0))))
@@ -310,7 +310,7 @@ def test_apply_profile_median():
     # (frame-independent) -- a geometric check that catches a pivot/scale regression.
     piv = mathutils.Vector((0.0, 0.0, 1.0))   # median of the two breast bone heads
     d0 = ((mesh.matrix_world @ mathutils.Vector(mesh.data.vertices[0].co)) - piv).length
-    rep = P.apply_profile(arm, [mesh], edge)
+    rep = P.apply_proportion_edge(arm, [mesh], edge)
     check(rep["state"] == "custom", "median path should stamp target")
     check(rep["scales_applied"] == 1 and len(rep["bakes"]) == 1,
           "median path should record one scale + one bake")
@@ -323,7 +323,7 @@ def test_apply_profile_median():
     arm["avatarprep_base"] = "shinano"; arm["avatarprep_state"] = "unproportioned"
     repro = {"source": "unproportioned", "target": "custom",
              "source_base": "shinano", "target_base": "shinano"}
-    r1 = P.apply_profile(arm, [mesh], repro, skip_shapekeys=True)
+    r1 = P.apply_proportion_edge(arm, [mesh], repro, skip_shapekeys=True)
     check(arm["avatarprep_base"] == "shinano" and arm["avatarprep_state"] == "custom",
           "reproportion: base kept, state=custom; got (%r,%r)"
           % (arm.get("avatarprep_base"), arm.get("avatarprep_state")))
@@ -331,7 +331,7 @@ def test_apply_profile_median():
     arm["avatarprep_state"] = "unproportioned"
     equiv = {"source": "unproportioned", "target": "unproportioned",
              "source_base": "shinano", "target_base": "chiffon"}
-    r2 = P.apply_profile(arm, [mesh], equiv, skip_shapekeys=True)
+    r2 = P.apply_proportion_edge(arm, [mesh], equiv, skip_shapekeys=True)
     check(arm["avatarprep_base"] == "chiffon",
           "equivalency: base moved to chiffon; got %r" % arm.get("avatarprep_base"))
 
@@ -345,7 +345,7 @@ def test_baked_coupling():
     edge_bk = {"source": "unproportioned", "target": "custom",
                "source_base": "shinano", "target_base": "shinano",
                "shapekeys": {"Big": 0.3}}
-    rep_bk = P.validate_profile(arm, [mesh], P.load_edge(edge_bk))
+    rep_bk = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_bk))
     check(any("already baked" in w.lower() for w in rep_bk["warnings"]),
           "driving an already-baked key must warn: %r" % rep_bk["warnings"])
     # a key with no baked entry must NOT produce the warning
@@ -355,7 +355,7 @@ def test_baked_coupling():
     edge_ok = {"source": "unproportioned", "target": "custom",
                "source_base": "shinano", "target_base": "shinano",
                "shapekeys": {"Big": 0.3}}
-    rep_ok = P.validate_profile(arm2, [mesh2], P.load_edge(edge_ok))
+    rep_ok = P.validate_proportion_edge(arm2, [mesh2], P.load_edge(edge_ok))
     check(not any("already baked" in w.lower() for w in rep_ok["warnings"]),
           "unbaked key must not warn: %r" % rep_ok["warnings"])
 
@@ -369,9 +369,9 @@ def main():
     test_framed_scale()
     test_object_transform()
     test_shapekeys()
-    test_apply_profile()
-    test_apply_profile_skip_shapekeys()
-    test_apply_profile_median()
+    test_apply_proportion_edge()
+    test_apply_proportion_edge_skip_shapekeys()
+    test_apply_proportion_edge_median()
     test_baked_coupling()
     if FAILURES:
         for f in FAILURES:

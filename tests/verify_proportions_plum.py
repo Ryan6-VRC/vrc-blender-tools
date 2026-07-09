@@ -1,8 +1,8 @@
 """Reference-verification harness for the 'Custom Plum' chain (Task 10).
 
 Custom Plum = Plum -> Chiffon -> Custom Chiffon (two edges). This harness imports
-the vendor Plum FBX, applies profiles/plum-to-chiffon.json then
-profiles/chiffon-to-custom_chiffon.json via avatarprep.core.proportions.apply_profile, then
+the vendor Plum FBX, applies edges/plum-to-chiffon.json then
+edges/chiffon-to-custom_chiffon.json via avatarprep.core.proportions.apply_proportion_edge, then
 compares the resulting armature's bone REST positions (bone heads, in WORLD space
 metres) against the hand-made BasePlum.blend reference for every commonly-named
 bone. World space is used because the vendor import and the hand-made reference may
@@ -161,7 +161,7 @@ def main():
           % (arm.name, body.name, len(arm.data.bones)))
 
     for tag, prof in (("plum-to-chiffon", args.p1), ("chiffon-to-custom_chiffon", args.p2)):
-        rep = proportions.apply_profile(arm, meshes, os.path.abspath(prof))
+        rep = proportions.apply_proportion_edge(arm, meshes, os.path.abspath(prof))
         print("VERIFY: applied %-16s -> state=%r scales=%d bakes=%d shapekeys=%d"
               % (tag, rep["state"], rep["scales_applied"], len(rep["bakes"]),
                  len(rep["shapekeys"])))

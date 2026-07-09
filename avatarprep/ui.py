@@ -30,8 +30,8 @@ class AVATARPREP_PT_main(bpy.types.Panel):
                      text="Apply Pose as Rest Pose", icon='POSE_HLT')
         col.operator("avatarprep.export_unity_fbx",
                      text="Export Unity FBX", icon='EXPORT')
-        col.operator("avatarprep.apply_profile",
-                     text="Apply Proportion Profile", icon='MOD_LATTICE')
+        col.operator("avatarprep.apply_proportion_edge",
+                     text="Apply Proportion Edge", icon='MOD_LATTICE')
         col.operator("avatarprep.bake_shapekey",
                      text="Bake Shape Key to Basis", icon='SHAPEKEY_DATA')
         col.operator("avatarprep.stamp_base",

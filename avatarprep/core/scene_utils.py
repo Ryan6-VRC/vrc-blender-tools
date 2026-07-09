@@ -19,9 +19,9 @@ import idprop
 # *unknown*, not compatible. In-``.blend`` only: never exported to FBX (the Unity
 # export recipe omits ``use_custom_props``; do not change that).
 STAMP_BASE = "avatarprep_base"     # armature: body lineage (str); CREATED via stamp_base,
-                                   # TRANSITIONED by a profile's target_base along a gated edge
+                                   # TRANSITIONED by an edge's target_base along a gated edge
 STAMP_STATE = "avatarprep_state"   # armature: proportion state (str); import_fbx seeds the reserved
-                                   # 'unproportioned' origin, apply_profile writes the edge target
+                                   # 'unproportioned' origin, apply_proportion_edge writes the edge target
 STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
 
@@ -258,7 +258,7 @@ def resolve_target_armature(scene=None, active=None):
     if not arms:
         return None, "no armature in the scene"
     return None, ("%d armatures in scene — activate the target armature; "
-                  "apply_profile won't guess" % len(arms))
+                  "apply_proportion_edge won't guess" % len(arms))
 
 
 def get_bound_meshes(armature: bpy.types.Object,

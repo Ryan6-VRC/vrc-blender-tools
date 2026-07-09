@@ -66,9 +66,9 @@ class AVATARPREP_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
         return {'FINISHED'}
 
 
-class AVATARPREP_OT_apply_profile(bpy.types.Operator, ImportHelper):
-    bl_idname = "avatarprep.apply_profile"
-    bl_label = "Apply Proportion Profile"
+class AVATARPREP_OT_apply_proportion_edge(bpy.types.Operator, ImportHelper):
+    bl_idname = "avatarprep.apply_proportion_edge"
+    bl_label = "Apply Proportion Edge"
     bl_description = "Apply a JSON proportion edge (scale/move + bone scales + shape keys)"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -88,11 +88,11 @@ class AVATARPREP_OT_apply_profile(bpy.types.Operator, ImportHelper):
             self.report({'ERROR'}, err)
             return {'CANCELLED'}
         try:
-            report = proportions.apply_profile(
+            report = proportions.apply_proportion_edge(
                 armature, None, self.filepath,
                 skip_shapekeys=self.skip_shapekeys)
         except Exception as exc:
-            self.report({'ERROR'}, "Apply profile failed: %s" % exc)
+            self.report({'ERROR'}, "Apply proportion edge failed: %s" % exc)
             return {'CANCELLED'}
         for w in report["warnings"]:
             self.report({'WARNING'}, w)
@@ -296,7 +296,7 @@ class AVATARPREP_OT_armature_compat(bpy.types.Operator):
 classes = (
     AVATARPREP_OT_apply_pose_as_rest,
     AVATARPREP_OT_export_unity_fbx,
-    AVATARPREP_OT_apply_profile,
+    AVATARPREP_OT_apply_proportion_edge,
     AVATARPREP_OT_bake_shapekey,
     AVATARPREP_OT_stamp_base,
     AVATARPREP_OT_merge_armatures,
