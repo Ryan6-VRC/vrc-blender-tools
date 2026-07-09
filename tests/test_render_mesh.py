@@ -1,7 +1,7 @@
 """Synthetic headless test for avatarprep.core.render_mesh.render().
 
 Run: blender --background --factory-startup --python tests/test_render_mesh.py
-Prints MESHGRAB_TEST OK / MESHGRAB_TEST FAIL: <reason>; sys.exit(1) on any failure.
+Prints RENDERMESH_TEST OK / RENDERMESH_TEST FAIL: <reason>; sys.exit(1) on any failure.
 
 Workbench renders headless, so BOTH the pre-render refusals AND the real render
 assertions live here (no separate windowed script). The load-bearing render asserts:
@@ -253,8 +253,8 @@ def _under(path, base):
 
 def test_output_persists_location():
     """The returned png= must live in the PERSISTENT OS temp, in the DEDICATED
-    <tempfile.gettempdir>/avatarprep_meshgrab subdir (not the bare temp root — so a grab-dir
-    scanner sees only meshgrab sheets, mirroring AvatarGrab's per-project cache), NOT in
+    <tempfile.gettempdir>/avatarprep_rendermesh subdir (not the bare temp root — so a grab-dir
+    scanner sees only rendermesh sheets, mirroring RenderAvatar's per-project cache), NOT in
     bpy.app.tempdir — Blender deletes its session dir on process exit, so a session-dir path is a
     dead path by the time a real headless cli returns. A true cross-process test isn't feasible in
     one process; this location assert is the practical regression guard."""
@@ -263,7 +263,7 @@ def test_output_persists_location():
     _add_plain_cube("Cube")
     line = render(angles=["front"], shading="solid", resolution=128)
     path = _png_path(line)
-    subdir = os.path.join(tempfile.gettempdir(), "avatarprep_meshgrab")
+    subdir = os.path.join(tempfile.gettempdir(), "avatarprep_rendermesh")
     check(_under(path, subdir),
           "png= should be under the dedicated subdir %r, got %r" % (subdir, path))
     check(not _under(path, bpy.app.tempdir),
@@ -445,9 +445,9 @@ def main():
     test_only_all_hidden_breakdown()
     if FAILURES:
         for f in FAILURES:
-            print("MESHGRAB_TEST FAIL:", f)
+            print("RENDERMESH_TEST FAIL:", f)
         sys.exit(1)
-    print("MESHGRAB_TEST OK")
+    print("RENDERMESH_TEST OK")
 
 
 if __name__ == "__main__":

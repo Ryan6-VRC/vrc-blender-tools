@@ -14,7 +14,7 @@ Opens ``--in`` read-only via wm.open_mainfile (never saved), calls
 ``--only`` and ``--angles`` split on comma into lists before the call (so an object name
 containing a comma cannot be targeted — rename it, or use the default whole-scene render).
 A bare traceback must never escape the result grammar: exit-2 paths emit an in-grammar
-``AVATARPREP: meshgrab ? => FAIL: ...`` line.
+``AVATARPREP: rendermesh ? => FAIL: ...`` line.
 """
 import os
 import sys
@@ -25,7 +25,7 @@ class _Parser(argparse.ArgumentParser):
     """Argparse errors (missing --in, non-int --resolution) exit IN-GRAMMAR, not bare usage —
     a traceback/usage dump must never escape the AVATARPREP: result grammar."""
     def error(self, message):
-        print("AVATARPREP: meshgrab ? => FAIL: bad args: %s" % message)
+        print("AVATARPREP: rendermesh ? => FAIL: bad args: %s" % message)
         sys.exit(2)
 
 
@@ -67,14 +67,14 @@ def main():
     try:
         bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
     except Exception as e:
-        print("AVATARPREP: meshgrab ? => FAIL: could not open --in: %s" % e)
+        print("AVATARPREP: rendermesh ? => FAIL: could not open --in: %s" % e)
         sys.exit(2)
 
     try:
         _enable_avatarprep()
         from avatarprep.core.render_mesh import render
     except Exception as e:
-        print("AVATARPREP: meshgrab ? => FAIL: could not load avatarprep: %s" % e)
+        print("AVATARPREP: rendermesh ? => FAIL: could not load avatarprep: %s" % e)
         sys.exit(2)
 
     try:
@@ -86,7 +86,7 @@ def main():
             resolution=args.resolution,
         )
     except Exception as e:
-        print("AVATARPREP: meshgrab ? => FAIL: %s" % e)
+        print("AVATARPREP: rendermesh ? => FAIL: %s" % e)
         sys.exit(2)
 
     print(line)
