@@ -4,7 +4,7 @@ Replicates the operator's manual method: Blend-from-Shape (Add) the morph delta
 into Basis, leaving the morph block behind (reversible/extensible — keep it). Then
 refresh normals, preserving author-authored custom normals in a protected vertex
 group (default "neck") and refusing a head mesh outright. Lossy at the mesh level:
-the profile/recipe link is the recovery path. Pure bpy, headless-safe.
+the proportion-edge link is the recovery path. Pure bpy, headless-safe.
 """
 import re
 from typing import Any, Dict, List, Set, Tuple

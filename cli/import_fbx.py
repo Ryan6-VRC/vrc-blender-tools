@@ -38,6 +38,7 @@ def main():
     args = _parse_args()
     import bpy
 
+    bpy.ops.wm.read_factory_settings(use_empty=True)
     _enable_avatarprep()
     from avatarprep.core import import_fbx as import_mod
 

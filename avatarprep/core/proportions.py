@@ -171,7 +171,7 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
                          % (raw, expected))
 
     # Base-family gate (exact). stamp_base must have seeded a lineage matching source_base;
-    # a profile only transitions an already-asserted base, so absent is an offender, not a warn.
+    # an edge only transitions an already-asserted base, so absent is an offender, not a warn.
     base_raw = scene_utils.read_stamp(armature, scene_utils.STAMP_BASE)
     if base_raw is None:
         offenders.append("base absent: stamp_base the armature's lineage before apply "
