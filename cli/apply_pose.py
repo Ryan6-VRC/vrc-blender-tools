@@ -3,7 +3,7 @@
 Run with::
 
     blender <in.blend> --background --factory-startup \
-        --python cli/apply_pose_as_rest.py -- --in <in.blend> --out <out.blend> [--scale-test]
+        --python cli/apply_pose.py -- --in <in.blend> --out <out.blend> [--scale-test]
 
 The script loads ``--in``, enables the AvatarPrep extension from the bundled
 source package (deterministic, no dependence on user prefs), calls the pure core
@@ -23,7 +23,7 @@ def _parse_args():
         argv = argv[argv.index("--") + 1:]
     else:
         argv = []
-    p = argparse.ArgumentParser(prog="apply_pose_as_rest")
+    p = argparse.ArgumentParser(prog="apply_pose")
     p.add_argument("--in", dest="in_path", required=True)
     p.add_argument("--out", dest="out_path", required=True)
     p.add_argument("--scale-test", action="store_true",
@@ -71,8 +71,8 @@ def main():
         print("AVATARPREP: applied 1.2x pose scale to %d bones"
               % len(armature.pose.bones))
 
-    result = rest_pose.apply_pose_as_rest(armature)
-    print("AVATARPREP: apply_pose_as_rest result =", result)
+    result = rest_pose.apply_pose(armature)
+    print("AVATARPREP: apply_pose result =", result)
 
     out_path = os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

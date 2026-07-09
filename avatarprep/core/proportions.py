@@ -2,7 +2,7 @@
 
 A *proportion edge* (JSON) maps one named proportion state to another. This
 module loads/validates an edge and applies it to the scene armature + meshes,
-baking shape-key-safely via rest_pose.apply_pose_as_rest. Pure bpy: no
+baking shape-key-safely via rest_pose.apply_pose. Pure bpy: no
 bpy.types.Operator, no UI.
 """
 from typing import Any, Dict, List, Union
@@ -414,7 +414,7 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
         t = list(edge["object"]["translate"])
         if abs(s - 1.0) > 1e-12 or any(abs(c) > 1e-12 for c in t):
             pose_object_transform(armature, meshes, s, t, pivot=edge["object"]["pivot"])
-            report["bakes"].append(rest_pose.apply_pose_as_rest(armature))
+            report["bakes"].append(rest_pose.apply_pose(armature))
             _ensure_pose_mode(armature)
 
     if edge["no_inherit_scale"] or edge["scales"]:
@@ -431,7 +431,7 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
                 apply_framed_scale(armature, pbs, op["value"],
                                    space=op["space"], pivot=op["pivot"])
             report["scales_applied"] += 1
-        report["bakes"].append(rest_pose.apply_pose_as_rest(armature))
+        report["bakes"].append(rest_pose.apply_pose(armature))
 
     if not skip_shapekeys:
         eff = _effective_shapekeys(edge, shapekey_overrides)

@@ -26,7 +26,7 @@ class AVATARPREP_PT_main(bpy.types.Panel):
                           icon='INFO')
 
         col = layout.column(align=True)
-        col.operator("avatarprep.apply_pose_as_rest",
+        col.operator("avatarprep.apply_pose",
                      text="Apply Pose as Rest Pose", icon='POSE_HLT')
         col.operator("avatarprep.export_unity_fbx",
                      text="Export Unity FBX", icon='EXPORT')
@@ -36,8 +36,8 @@ class AVATARPREP_PT_main(bpy.types.Panel):
                      text="Bake Shape Key to Basis", icon='SHAPEKEY_DATA')
         col.operator("avatarprep.stamp_base",
                      text="Stamp Base", icon='OUTLINER_OB_ARMATURE')
-        col.operator("avatarprep.armature_compat",
-                     text="Check Armature Compatibility", icon='ARMATURE_DATA')
+        col.operator("avatarprep.compare_armatures",
+                     text="Compare Armatures", icon='ARMATURE_DATA')
         col.operator("avatarprep.merge_armatures",
                      text="Merge Armatures", icon='AUTOMERGE_ON')
         col.operator("avatarprep.prune_bones",

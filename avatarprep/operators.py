@@ -12,8 +12,8 @@ from bpy_extras.io_utils import ExportHelper, ImportHelper
 from .core import scene_utils, rest_pose, fbx_export
 
 
-class AVATARPREP_OT_apply_pose_as_rest(bpy.types.Operator):
-    bl_idname = "avatarprep.apply_pose_as_rest"
+class AVATARPREP_OT_apply_pose(bpy.types.Operator):
+    bl_idname = "avatarprep.apply_pose"
     bl_label = "Apply Pose as Rest Pose"
     bl_description = ("Apply the armature's current pose as the new rest pose, "
                       "preserving shape keys")
@@ -33,7 +33,7 @@ class AVATARPREP_OT_apply_pose_as_rest(bpy.types.Operator):
             self.report({'ERROR'}, "Armature must be in Pose mode")
             return {'CANCELLED'}
         try:
-            result = rest_pose.apply_pose_as_rest(armature)
+            result = rest_pose.apply_pose(armature)
         except Exception as exc:  # surface to the user, don't crash Blender
             self.report({'ERROR'}, "Apply pose as rest failed: %s" % exc)
             return {'CANCELLED'}
@@ -255,9 +255,9 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class AVATARPREP_OT_armature_compat(bpy.types.Operator):
-    bl_idname = "avatarprep.armature_compat"
-    bl_label = "Check Armature Compatibility"
+class AVATARPREP_OT_compare_armatures(bpy.types.Operator):
+    bl_idname = "avatarprep.compare_armatures"
+    bl_label = "Compare Armatures"
     bl_description = ("Read-only seam check: how the one other selected armature's "
                       "skeleton differs from the active armature's (no mutation)")
     bl_options = {'REGISTER'}  # read-only
@@ -268,7 +268,7 @@ class AVATARPREP_OT_armature_compat(bpy.types.Operator):
         return obj is not None and obj.type == 'ARMATURE'
 
     def execute(self, context):
-        from .core.merge_armatures import armature_compat, report_offenders
+        from .core.merge_armatures import compare_armatures, report_offenders
         base = context.active_object
         if base is None or base.type != 'ARMATURE':
             self.report({'ERROR'}, "Active object must be an armature (the base)")
@@ -281,7 +281,7 @@ class AVATARPREP_OT_armature_compat(bpy.types.Operator):
                         "to compare (found %d other selected armature(s))" % len(others))
             return {'CANCELLED'}
         other = others[0]
-        report = armature_compat(base, other)
+        report = compare_armatures(base, other)
         offenders = report_offenders(report)
         verdict = "PASS" if report["clean"] else "FAIL"
         self.report({'INFO'}, "Compat %s: %r vs %r (%d offender(s))"
@@ -294,14 +294,14 @@ class AVATARPREP_OT_armature_compat(bpy.types.Operator):
 
 
 classes = (
-    AVATARPREP_OT_apply_pose_as_rest,
+    AVATARPREP_OT_apply_pose,
     AVATARPREP_OT_export_unity_fbx,
     AVATARPREP_OT_apply_proportion_edge,
     AVATARPREP_OT_bake_shapekey,
     AVATARPREP_OT_stamp_base,
     AVATARPREP_OT_merge_armatures,
     AVATARPREP_OT_prune_bones,
-    AVATARPREP_OT_armature_compat,
+    AVATARPREP_OT_compare_armatures,
 )
 
 

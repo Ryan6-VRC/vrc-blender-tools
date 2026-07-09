@@ -10,9 +10,9 @@ numpy — so the plate byte is ``71`` by construction and the drew-guard keys of
 (a shading-independent "did anything draw" signal), never a colour-difference read.
 
 No ``bpy.types.Operator`` subclasses and no UI live here (mirrors scene_utils). The
-one door is the headless ``cli/mesh_grab.py``.
+one door is the headless ``cli/render_mesh.py``.
 
-Two spellings, on purpose: ``mesh_grab`` is the file/key/param form; ``meshgrab`` is
+Two spellings, on purpose: ``render_mesh`` is the file/module form; ``meshgrab`` is
 the display token in the result line (mirrors AvatarGrab's concatenated ``avatargrab_``).
 """
 
@@ -160,7 +160,7 @@ def _notes_field(notes):
     return (" | note=%s" % " ".join(toks)) if toks else ""  # its own | field, before terminal png=
 
 
-def grab(
+def render(
     label=None,       # filename/result label; None/empty -> the scene name
     only=None,        # flat object-name filter; None/empty -> all render-visible meshes
     angles=None,      # subset of {front,back,left,right,top,bottom}; None/empty -> [front, back]

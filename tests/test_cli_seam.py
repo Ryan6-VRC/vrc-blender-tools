@@ -128,21 +128,21 @@ def test_compat_exit_codes(tmp):
     _build_clean_blend(clean)
     _build_dirty_blend(dirty)
 
-    rc, out = _run_cli("armature_compat.py",
+    rc, out = _run_cli("compare_armatures.py",
                        ["--in", clean, "--base", "Base", "--merge", "Merge"])
     if rc != 0:
         _fail("compat clean: expected exit 0, got %d\n%s" % (rc, out))
     if "compat PASS" not in out:
         _fail("compat clean: expected 'compat PASS' in output\n%s" % out)
 
-    rc, out = _run_cli("armature_compat.py",
+    rc, out = _run_cli("compare_armatures.py",
                        ["--in", dirty, "--base", "Base", "--merge", "Merge"])
     if rc != 1:
         _fail("compat dirty: expected exit 1, got %d\n%s" % (rc, out))
     if "compat FAIL" not in out or "OFFENDER" not in out:
         _fail("compat dirty: expected 'compat FAIL' + OFFENDER\n%s" % out)
 
-    rc, out = _run_cli("armature_compat.py",
+    rc, out = _run_cli("compare_armatures.py",
                        ["--in", clean, "--base", "Nope", "--merge", "Merge"])
     if rc != 2:
         _fail("compat bogus name: expected exit 2, got %d\n%s" % (rc, out))

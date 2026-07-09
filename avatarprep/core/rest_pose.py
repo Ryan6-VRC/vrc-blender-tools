@@ -1,6 +1,6 @@
 """Shape-key-safe "apply current pose as rest pose" bake.
 
-After :func:`apply_pose_as_rest`, the armature's CURRENT pose becomes its REST
+After :func:`apply_pose`, the armature's CURRENT pose becomes its REST
 pose and every bound mesh's geometry is baked so it looks identical to the posed
 result -- *without* losing shape-key information. A naive "add an armature
 modifier and apply it" corrupts every non-active shape key, because applying a
@@ -95,7 +95,7 @@ def _apply_pose(armature_obj: bpy.types.Object) -> None:
     """Set the armature's current pose as its rest pose (headless).
 
     Caller-visible state (active object / selection / mode) is restored by the
-    :class:`scene_utils.SavedSelection` guard in :func:`apply_pose_as_rest`.
+    :class:`scene_utils.SavedSelection` guard in :func:`apply_pose`.
     """
     bpy.context.view_layer.objects.active = armature_obj
     armature_obj.select_set(True)
@@ -123,8 +123,8 @@ def _write(mesh_obj: bpy.types.Object, method: str, captured) -> None:
     me.update()
 
 
-def apply_pose_as_rest(armature_obj: bpy.types.Object,
-                       mesh_objs: Optional[List[bpy.types.Object]] = None) -> dict:
+def apply_pose(armature_obj: bpy.types.Object,
+               mesh_objs: Optional[List[bpy.types.Object]] = None) -> dict:
     """Bake the armature's current pose into the rest pose, shape-key-safely.
 
     For each bound mesh the deformed geometry is captured at the current pose
@@ -133,7 +133,7 @@ def apply_pose_as_rest(armature_obj: bpy.types.Object,
     every shape key keeps producing its correct deformed offset.
     """
     if armature_obj is None or armature_obj.type != 'ARMATURE':
-        raise ValueError("apply_pose_as_rest requires a valid ARMATURE object, got %r"
+        raise ValueError("apply_pose requires a valid ARMATURE object, got %r"
                          % (None if armature_obj is None else armature_obj.type))
 
     if mesh_objs is None:

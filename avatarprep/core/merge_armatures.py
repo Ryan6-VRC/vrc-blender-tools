@@ -5,7 +5,7 @@ mishandles (which would produce a doubled skeleton).
 Pure ``bpy`` — callable headless. An independent implementation of the union
 bone-merge algorithm (reproduced from the documented behavior, not copied).
 
-``armature_compat`` reports how two skeletons differ (matched / only-in-base /
+``compare_armatures`` reports how two skeletons differ (matched / only-in-base /
 only-in-merge / suspected renames / parent & position mismatches) without mutating
 anything; ``merge_armatures`` unions them by bone name behind that report — refusing
 to run (FAIL verdict, named offenders, scene untouched) on a rename/restructure
@@ -30,9 +30,9 @@ def _world_heads(arm: bpy.types.Object) -> Dict[str, Any]:
     return {b.name: mw @ b.head_local for b in arm.data.bones}
 
 
-def armature_compat(base_arm: bpy.types.Object,
-                    merge_arm: bpy.types.Object,
-                    *, tol: float = 1e-4) -> Dict[str, Any]:
+def compare_armatures(base_arm: bpy.types.Object,
+                      merge_arm: bpy.types.Object,
+                      *, tol: float = 1e-4) -> Dict[str, Any]:
     """Read-only diff of two armature skeletons. Mutates nothing."""
     base_heads = _world_heads(base_arm)
     merge_heads = _world_heads(merge_arm)
@@ -305,7 +305,7 @@ def merge_armatures(base_arm: bpy.types.Object,
     # safety-critical skeleton-doubling gate); ``force_stamps`` overrides the
     # advisory STAMP offenders only — so forcing past a harmless base mislabel
     # cannot silently wave past a real structural mismatch, and vice versa.
-    report = armature_compat(base_arm, merge_arm, tol=tol)
+    report = compare_armatures(base_arm, merge_arm, tol=tol)
     structural_fail = (not report["structural_clean"]) and not force
     stamp_fail = (not report["stamp_clean"]) and not force_stamps
     if structural_fail or stamp_fail:

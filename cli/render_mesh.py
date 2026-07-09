@@ -1,15 +1,15 @@
 """Headless CLI: multi-angle Workbench contact-sheet render of a .blend's render-visible meshes.
 
 Run:
-  blender --background --factory-startup --python cli/mesh_grab.py -- \
+  blender --background --factory-startup --python cli/render_mesh.py -- \
       --in <file.blend> [--label <name>] [--only a,b,c] \
       [--angles front,back] [--shading solid|vertexcolor] [--resolution 1024]
 
 Opens ``--in`` read-only via wm.open_mainfile (never saved), calls
-``avatarprep.core.mesh_grab.grab()``, prints the one-line summary, and exits:
-  0 — grab() returned an ``=> OK`` line.
-  1 — grab() returned an ``=> FAIL`` line (a ran-but-failed refusal the agent acts on).
-  2 — setup/infra: --in failed to open, or grab() raised unexpectedly.
+``avatarprep.core.render_mesh.render()``, prints the one-line summary, and exits:
+  0 — render() returned an ``=> OK`` line.
+  1 — render() returned an ``=> FAIL`` line (a ran-but-failed refusal the agent acts on).
+  2 — setup/infra: --in failed to open, or render() raised unexpectedly.
 
 ``--only`` and ``--angles`` split on comma into lists before the call (so an object name
 containing a comma cannot be targeted — rename it, or use the default whole-scene render).
@@ -31,7 +31,7 @@ class _Parser(argparse.ArgumentParser):
 
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    p = _Parser(prog="mesh_grab")
+    p = _Parser(prog="render_mesh")
     p.add_argument("--in", dest="in_path", required=True)
     p.add_argument("--label", dest="label", default=None)
     p.add_argument("--only", dest="only", default=None)
@@ -72,13 +72,13 @@ def main():
 
     try:
         _enable_avatarprep()
-        from avatarprep.core.mesh_grab import grab
+        from avatarprep.core.render_mesh import render
     except Exception as e:
         print("AVATARPREP: meshgrab ? => FAIL: could not load avatarprep: %s" % e)
         sys.exit(2)
 
     try:
-        line = grab(
+        line = render(
             label=args.label,
             only=_split(args.only),
             angles=_split(args.angles),

@@ -1,13 +1,13 @@
-"""Synthetic headless test for avatarprep.core.mesh_grab.grab().
+"""Synthetic headless test for avatarprep.core.render_mesh.render().
 
-Run: blender --background --factory-startup --python tests/test_mesh_grab.py
+Run: blender --background --factory-startup --python tests/test_render_mesh.py
 Prints MESHGRAB_TEST OK / MESHGRAB_TEST FAIL: <reason>; sys.exit(1) on any failure.
 
 Workbench renders headless, so BOTH the pre-render refusals AND the real render
 assertions live here (no separate windowed script). The load-bearing render asserts:
 a direction-keyed 3-axis orientation fixture (fails on any front/back, left/right, or
 top/bottom vertical-flip swap) and an RBT-marker color round-trip (catches the sRGB
-read-back defect). See the module docstring in core/mesh_grab.py for the pipeline.
+read-back defect). See the module docstring in core/render_mesh.py for the pipeline.
 """
 import os
 import sys
@@ -141,79 +141,79 @@ def _nearest_face(dom):
 # ============================ pre-render refusals ==========================================
 
 def test_sanitize():
-    from avatarprep.core.mesh_grab import _sanitize
+    from avatarprep.core.render_mesh import _sanitize
     check(_sanitize("a.b c-d") == "a_b_c_d", "sanitize should map . space - to _, got %r" % _sanitize("a.b c-d"))
     check(_sanitize("Body_01") == "Body_01", "sanitize should keep alnum + _, got %r" % _sanitize("Body_01"))
 
 
 def test_refuse_unknown_angle():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(angles=["front", "sideways"], resolution=64)
+    line = render(angles=["front", "sideways"], resolution=64)
     check("=> FAIL:" in line and "sideways" in line and "front,back,left,right,top,bottom" in line,
           "unknown angle should refuse listing the vocabulary, got %r" % line)
     check("png=" not in line, "a FAIL line must emit no png=, got %r" % line)
 
 
 def test_refuse_unknown_shading():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(shading="glow", resolution=64)
+    line = render(shading="glow", resolution=64)
     check("=> FAIL:" in line and "solid,vertexcolor" in line,
           "unknown shading should refuse listing solid,vertexcolor, got %r" % line)
     # mixed-case / whitespace normalizes and passes
-    ok = grab(shading=" Solid ", resolution=64)
+    ok = render(shading=" Solid ", resolution=64)
     check("=> OK" in ok, "' Solid ' should normalize and pass, got %r" % ok)
 
 
 def test_refuse_bad_resolution():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(resolution=0)
+    line = render(resolution=0)
     check("=> FAIL:" in line and "resolution must be >= 1" in line and "png=" not in line,
           "resolution < 1 should refuse naming it, got %r" % line)
 
 
 def test_refuse_empty_scene():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
-    line = grab(resolution=64)
+    line = render(resolution=64)
     check("=> FAIL:" in line and "no render-visible mesh" in line and "png=" not in line,
           "empty scene should refuse, got %r" % line)
 
 
 def test_refuse_zero_extent():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     me = bpy.data.meshes.new("Dot")
     me.from_pydata([(0.0, 0.0, 0.0)], [], [])  # single vertex — zero extent
     me.update()
     ob = bpy.data.objects.new("Dot", me)
     bpy.context.scene.collection.objects.link(ob)
-    line = grab(resolution=64)
+    line = render(resolution=64)
     check("=> FAIL:" in line and "zero-extent bounds" in line and "png=" not in line,
           "single-vertex mesh should refuse zero-extent, got %r" % line)
 
 
 def test_only_not_found_refusal():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(only=["Ghost"], resolution=64)
+    line = render(only=["Ghost"], resolution=64)
     check("=> FAIL:" in line and "--only matched no render-visible mesh" in line and "png=" not in line,
           "--only naming only an absent object should refuse, got %r" % line)
 
 
 def test_only_notes_distinguish():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     v = _add_plain_cube("Visible")
     h = _add_plain_cube("Hidden")
     h.hide_render = True
-    line = grab(only=["Visible", "Hidden", "Ghost"], resolution=64)
+    line = render(only=["Visible", "Hidden", "Ghost"], resolution=64)
     check("=> OK" in line, "a resolvable --only should render, got %r" % line)
     check("only-hidden:Hidden" in line, "present-but-hidden name should read only-hidden, got %r" % line)
     check("only-not-found:Ghost" in line, "absent name should read only-not-found, got %r" % line)
@@ -224,10 +224,10 @@ def test_only_notes_distinguish():
 # ============================ real Workbench render assertions =============================
 
 def test_solid_render():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(shading="solid", angles=["front"], resolution=256)
+    line = render(shading="solid", angles=["front"], resolution=256)
     check("=> OK" in line and "png=" in line, "solid single-angle should OK + png, got %r" % line)
     path = _png_path(line)
     check(os.path.exists(path), "solid PNG should exist at %r" % path)
@@ -258,10 +258,10 @@ def test_output_persists_location():
     bpy.app.tempdir — Blender deletes its session dir on process exit, so a session-dir path is a
     dead path by the time a real headless cli returns. A true cross-process test isn't feasible in
     one process; this location assert is the practical regression guard."""
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(angles=["front"], shading="solid", resolution=128)
+    line = render(angles=["front"], shading="solid", resolution=128)
     path = _png_path(line)
     subdir = os.path.join(tempfile.gettempdir(), "avatarprep_meshgrab")
     check(_under(path, subdir),
@@ -275,11 +275,11 @@ def test_orientation():
     the expected face colour — fails on any front/back, left/right, or top/bottom face swap; (2) on
     the four side tiles the bright top-half sits ABOVE the dark bottom-half — fails on a forgotten
     reshape vertical flip (which a uniform-per-face colour, being flip-invariant, would not catch)."""
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_cube("OrientCube", per_face=True)
     angles = ["front", "back", "left", "right", "top", "bottom"]
-    line = grab(angles=angles, shading="vertexcolor", resolution=256)
+    line = render(angles=angles, shading="vertexcolor", resolution=256)
     check("=> OK" in line and "tiles=6" in line and "png=" in line,
           "6-angle vertexcolor should OK tiles=6 + png, got %r" % line)
     path = _png_path(line)
@@ -314,12 +314,12 @@ def test_rbt_marker():
     """An 'RBT Matched'-style render colour attribute round-trips to the authored bytes within a
     tight tolerance — catches the sRGB read-back defect. A SINGLE colour attribute is unambiguous,
     so no ambiguous-color-attribute note fires."""
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     rbt_fail = (234, 0, 255)  # robust-weight-transfer 'failed' magenta (234/255, 0, 1)
     _add_cube("RBTMesh", per_face=False, attr_name="RBT Matched",
               solid_color=(rbt_fail[0], rbt_fail[1], rbt_fail[2], 255))
-    line = grab(angles=["front"], shading="vertexcolor", resolution=256)
+    line = render(angles=["front"], shading="vertexcolor", resolution=256)
     check("=> OK" in line and "png=" in line, "RBT vertexcolor should OK + png, got %r" % line)
     check("no-color-attribute" not in line and "ambiguous-color-attribute" not in line,
           "single-attr RBT mesh should emit no missing/ambiguous note, got %r" % line)
@@ -335,7 +335,7 @@ def test_ambiguous_color_attribute():
     """The identity hazard: a mesh with >1 colour attribute renders the one at render_color_index,
     and the OK line must NAME what was actually rendered (so a non-RBT layer can't masquerade as the
     marker). The single-attribute case must NOT emit this note."""
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     # a mesh carrying an unrelated layer FIRST and the RBT marker second, marker flagged for render
     me = bpy.data.meshes.new("MultiData")
@@ -350,7 +350,7 @@ def test_ambiguous_color_attribute():
     me.color_attributes.render_color_index = list(me.color_attributes).index(a1)
     ob = bpy.data.objects.new("Multi", me)
     bpy.context.scene.collection.objects.link(ob)
-    line = grab(angles=["top"], shading="vertexcolor", resolution=256)
+    line = render(angles=["top"], shading="vertexcolor", resolution=256)
     check("=> OK" in line, "multi-attr vertexcolor should OK, got %r" % line)
     check("ambiguous-color-attribute:Multi=RBT_Matched" in line,
           "multi-attr mesh must name the rendered attribute, got %r" % line)
@@ -361,10 +361,10 @@ def test_ambiguous_color_attribute():
 # none render-flagged" cannot occur through the API. The real hazard is IDENTITY (render index points
 # at a non-marker layer), covered by test_ambiguous_color_attribute above.
 def test_no_color_attribute():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Plain")
-    line = grab(angles=["front"], shading="vertexcolor", resolution=256)
+    line = render(angles=["front"], shading="vertexcolor", resolution=256)
     check("=> OK" in line, "vertexcolor on a plain mesh should still OK, got %r" % line)
     check("no-color-attribute:Plain" in line,
           "a mesh with no colour attribute should be flagged no-color-attribute, got %r" % line)
@@ -380,11 +380,11 @@ def test_no_color_attribute():
 def test_plate():
     """An empty grid cell / margin samples exactly the 71 plate (passes by construction — a
     compose-layout check, not a round-trip guard)."""
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
     # 3 angles -> 2x2 grid, one empty cell filled with the plate
-    line = grab(angles=["front", "back", "left"], shading="solid", resolution=128)
+    line = render(angles=["front", "back", "left"], shading="solid", resolution=128)
     path = _png_path(line)
     edge = _res(line)
     if os.path.exists(path) and edge:
@@ -395,29 +395,29 @@ def test_plate():
 
 
 def test_fail_emits_no_png():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(angles=["nonsense"], resolution=64)
+    line = render(angles=["nonsense"], resolution=64)
     check("=> FAIL" in line and "png=" not in line, "FAIL path must emit no png=, got %r" % line)
 
 
 def test_resolution_ceiling():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    line = grab(resolution=100000)
+    line = render(resolution=100000)
     check("=> FAIL:" in line and "resolution must be <=" in line and "png=" not in line,
           "an absurd resolution should refuse early naming the ceiling, got %r" % line)
 
 
 def test_only_all_hidden_breakdown():
-    from avatarprep.core.mesh_grab import grab
+    from avatarprep.core.render_mesh import render
     _clear()
     h = _add_plain_cube("Cape")
     h.hide_render = True
     # every --only name unresolvable: one hidden, one absent — the FAIL must break them down
-    line = grab(only=["Cape", "Ghost"], resolution=64)
+    line = render(only=["Cape", "Ghost"], resolution=64)
     check("=> FAIL:" in line and "png=" not in line, "all-hidden/absent --only should refuse, got %r" % line)
     check("hidden:Cape" in line and "not-found:Ghost" in line,
           "the refusal should distinguish hidden from not-found, got %r" % line)
