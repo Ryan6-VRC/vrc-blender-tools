@@ -27,7 +27,7 @@ def expect_raises(fn, substr, label):
         return
     FAILURES.append("%s: expected an exception mentioning %r, none raised" % (label, substr))
 
-def _enable_avatarprep():
+def _add_repo_root_to_path():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
@@ -362,7 +362,7 @@ def test_baked_coupling():
 
 def main():
     _clear_scene()
-    _enable_avatarprep()
+    _add_repo_root_to_path()
     test_load_edge()
     test_validate()
     test_local_scale()

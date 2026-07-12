@@ -16,6 +16,13 @@ import os
 import sys
 import argparse
 
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep
+
 
 def _parse_args():
     argv = sys.argv
@@ -31,27 +38,13 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    """Make the source ``avatarprep`` package importable and register it."""
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        # Already registered in this session; fine.
-        pass
-    return avatarprep
-
-
 def main():
     args = _parse_args()
     import bpy
 
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
 
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core import scene_utils, rest_pose
 
     armature = scene_utils.find_armature()
@@ -72,7 +65,11 @@ def main():
               % len(armature.pose.bones))
 
     result = rest_pose.apply_pose(armature)
-    print("AVATARPREP: apply_pose result =", result)
+    print("AVATARPREP: rest pose applied on %s (meshes=%d)"
+          % (result["armature"], len(result["meshes_processed"])))
+    for m in result["meshes_processed"]:
+        print("AVATARPREP: mesh %s rebased (%s, shape_keys=%d)"
+              % (m["name"], m["method"], m["shape_key_count"]))
 
     out_path = os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

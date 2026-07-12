@@ -12,8 +12,14 @@ Run:
 """
 import os
 import sys
-import json
 import argparse
+
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep, kv, write_report
 
 
 def _parse_args():
@@ -34,25 +40,6 @@ def _parse_args():
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")
     return args
-
-
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
-
-
-def _kv(items):
-    out = {}
-    for it in items:
-        k, _, v = it.partition("=")
-        out[k] = v
-    return out
 
 
 def _resolve_armature(name):
@@ -84,13 +71,13 @@ def main():
     args = _parse_args()
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core import scene_utils, proportions
 
     armature = _resolve_armature(args.armature)
 
-    bone_overrides = _kv(args.bone_override)
-    sk_raw = _kv(args.shapekey_override)
+    bone_overrides = kv(args.bone_override)
+    sk_raw = kv(args.shapekey_override)
     shapekey_overrides = {k: (None if v.lower() == "null" else float(v))
                           for k, v in sk_raw.items()}
 
@@ -119,11 +106,7 @@ def main():
             print("AVATARPREP: WARNING", w)
 
         if args.report:
-            report_path = os.path.abspath(args.report)
-            os.makedirs(os.path.dirname(report_path), exist_ok=True)
-            with open(report_path, "w", encoding="utf-8") as fh:
-                json.dump(report, fh, indent=2)
-            print("AVATARPREP: report ->", report_path)
+            write_report(args.report, report)
 
         sys.exit(1 if offenders else 0)
 
@@ -142,11 +125,7 @@ def main():
         print("AVATARPREP: WARNING", w)
 
     if args.report:
-        report_path = os.path.abspath(args.report)
-        os.makedirs(os.path.dirname(report_path), exist_ok=True)
-        with open(report_path, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, indent=2)
-        print("AVATARPREP: report ->", report_path)
+        write_report(args.report, report)
 
     out_path = os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

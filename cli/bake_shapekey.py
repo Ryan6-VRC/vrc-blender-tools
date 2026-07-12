@@ -9,6 +9,13 @@ import os
 import sys
 import argparse
 
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep
+
 
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -22,22 +29,11 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
-
-
 def main():
     args = _parse_args()
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core import shapekey_bake
 
     mesh = bpy.data.objects.get(args.mesh)
@@ -50,7 +46,9 @@ def main():
     except shapekey_bake.BakeError as e:
         print("AVATARPREP: ERROR", e)
         sys.exit(1)
-    print("AVATARPREP: bake_shapekey report =", report)
+    print("AVATARPREP: baked %s=%g into Basis on %s (cumulative=%g, protected_loops=%d)"
+          % (report["key"], report["value"], report["mesh"],
+             report["baked_cumulative"], report["protected_loops"]))
 
     out_path = os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

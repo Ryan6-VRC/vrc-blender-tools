@@ -24,7 +24,7 @@ def check(cond, msg):
         FAILURES.append(msg)
 
 
-def _enable_avatarprep():
+def _add_repo_root_to_path():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
@@ -121,7 +121,7 @@ def _eval_key(mesh, key_name):
 
 
 def main():
-    _enable_avatarprep()
+    _add_repo_root_to_path()
     _clear_scene()
     from avatarprep.core import rest_pose
 

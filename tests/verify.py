@@ -46,15 +46,12 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep
 
 
 def _load(path):
@@ -106,7 +103,7 @@ def _max_nonbasis_offset(mesh_obj):
 
 def main():
     args = _parse_args()
-    _enable_avatarprep()
+    enable_avatarprep()
     _load(args.asset)
     from avatarprep.core import scene_utils, rest_pose
 
