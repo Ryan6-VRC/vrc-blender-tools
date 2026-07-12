@@ -16,8 +16,14 @@ with the FULL result dict (carries postcheck) so a postcheck FAIL can be triaged
 """
 import os
 import sys
-import json
 import argparse
+
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep, kv, resolve_arm, write_report
 
 
 def _parse_args():
@@ -37,62 +43,20 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
-
-
-def _kv(items):
-    out = {}
-    for it in items:
-        k, _, v = it.partition("=")
-        out[k] = v
-    return out
-
-
-def _resolve_arm(name, arg):
-    import bpy
-    obj = bpy.context.scene.objects.get(name)
-    if obj is None or obj.type != 'ARMATURE':
-        print("AVATARPREP: ERROR --%s %r is not an armature in this scene" % (arg, name))
-        sys.exit(2)
-    return obj
-
-
-def _write_report(path, data):
-    try:
-        report_path = os.path.abspath(path)
-        d = os.path.dirname(report_path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        with open(report_path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-    except Exception as e:
-        print("AVATARPREP: ERROR failed to write report:", e)
-        sys.exit(2)
-    print("AVATARPREP: report ->", report_path)
-
-
 def main():
     args = _parse_args()
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core.merge_armatures import merge_armatures
 
     if not args.whatif and not args.out_path:
         print("AVATARPREP: ERROR --out is required unless --whatif")
         sys.exit(2)
 
-    base = _resolve_arm(args.base, "base")
-    merge = _resolve_arm(args.merge, "merge")
-    rename_map = _kv(args.rename)
+    base = resolve_arm(args.base, "base")
+    merge = resolve_arm(args.merge, "merge")
+    rename_map = kv(args.rename)
 
     try:
         result = merge_armatures(
@@ -118,7 +82,7 @@ def main():
             print("AVATARPREP: FORCED STAMP", line)
         if args.whatif:
             if args.report:
-                _write_report(args.report, result)
+                write_report(args.report, result)
             sys.exit(0)
         # Save the deliverable (--out) BEFORE the diagnostic report, so a
         # report-write failure can't discard a successful merge's output.
@@ -133,7 +97,7 @@ def main():
             sys.exit(2)
         print("AVATARPREP: saved ->", out_path)
         if args.report:
-            _write_report(args.report, result)
+            write_report(args.report, result)
         sys.exit(0)
 
     # FAIL: do NOT save --out (rollback covers only pre-mutation FAILs).
@@ -148,7 +112,7 @@ def main():
     for line in (result.get("report") or {}).get("warnings", []):
         print("AVATARPREP: WARNING", line)
     if args.report:
-        _write_report(args.report, result)  # FULL dict — carries postcheck
+        write_report(args.report, result)  # FULL dict — carries postcheck
     sys.exit(1)
 
 

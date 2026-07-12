@@ -20,6 +20,13 @@ import os
 import sys
 import argparse
 
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep
+
 
 class _Parser(argparse.ArgumentParser):
     """Argparse errors (missing --in, non-int --resolution) exit IN-GRAMMAR, not bare usage —
@@ -41,17 +48,6 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
-
-
 def _split(value):
     """Comma-split a cli arg into a stripped, non-empty list; None/empty -> None."""
     if not value:
@@ -71,7 +67,7 @@ def main():
         sys.exit(2)
 
     try:
-        _enable_avatarprep()
+        enable_avatarprep()
         from avatarprep.core.render_mesh import render
     except Exception as e:
         print("AVATARPREP: rendermesh ? => FAIL: could not load avatarprep: %s" % e)

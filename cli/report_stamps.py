@@ -14,23 +14,19 @@ import sys
 import json
 import argparse
 
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep
+
 
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="report_stamps")
     p.add_argument("--in", dest="in_path", required=True)
     return p.parse_args(argv)
-
-
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
 
 
 def main():
@@ -41,7 +37,7 @@ def main():
     except Exception as e:
         print("AVATARPREP: ERROR failed to open --in:", e)
         sys.exit(2)
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core import scene_utils
 
     report = scene_utils.report_stamps(bpy.context.scene)

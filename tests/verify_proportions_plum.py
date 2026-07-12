@@ -40,15 +40,12 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep
 
 
 def _clear():
@@ -148,7 +145,7 @@ def main():
     args = _parse_args()
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core import import_fbx, scene_utils, proportions
 
     # ---- Apply the chain to vendor Plum ----
@@ -180,7 +177,7 @@ def main():
 
     # ---- Reference BasePlum ----
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.ref))
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core import scene_utils as su2
     ref_arm = su2.find_armature()
     ref_heads = _bone_world_heads(ref_arm)

@@ -15,7 +15,7 @@ import bpy
 from mathutils import Vector
 
 
-def _enable_avatarprep():
+def _add_repo_root_to_path():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
@@ -639,7 +639,7 @@ def test_whatif():
 
 
 def main():
-    _enable_avatarprep()
+    _add_repo_root_to_path()
     test_compat_flags_rename()
     test_guard_unmutated()
     test_same_armature_guard()

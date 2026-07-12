@@ -15,6 +15,13 @@ import os
 import sys
 import argparse
 
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep, resolve_arm
+
 
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -29,34 +36,14 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
-
-
-def _resolve_arm(name, arg):
-    import bpy
-    obj = bpy.context.scene.objects.get(name)
-    if obj is None or obj.type != 'ARMATURE':
-        print("AVATARPREP: ERROR --%s %r is not an armature in this scene" % (arg, name))
-        sys.exit(2)
-    return obj
-
-
 def main():
     args = _parse_args()
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core import scene_utils
 
-    arm = _resolve_arm(args.armature, "armature")
+    arm = resolve_arm(args.armature, "armature")
     scene_utils.write_stamp(arm, scene_utils.STAMP_BASE, args.base)
     print("AVATARPREP: stamped base %s on %s" % (args.base, arm.name))
 

@@ -10,8 +10,14 @@ Exit codes: 0 = clean (compat PASS) · 1 = incompatible (compat FAIL) ·
 """
 import os
 import sys
-import json
 import argparse
+
+# Structural: a fresh --background --python process has no repo path; this must
+# precede any shared import.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from cli._common import enable_avatarprep, resolve_arm, write_report
 
 
 def _parse_args():
@@ -25,35 +31,15 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-def _enable_avatarprep():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    import avatarprep
-    try:
-        avatarprep.register()
-    except Exception:
-        pass
-
-
-def _resolve_arm(name, arg):
-    import bpy
-    obj = bpy.context.scene.objects.get(name)
-    if obj is None or obj.type != 'ARMATURE':
-        print("AVATARPREP: ERROR --%s %r is not an armature in this scene" % (arg, name))
-        sys.exit(2)
-    return obj
-
-
 def main():
     args = _parse_args()
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-    _enable_avatarprep()
+    enable_avatarprep()
     from avatarprep.core.merge_armatures import compare_armatures, report_offenders
 
-    base = _resolve_arm(args.base, "base")
-    merge = _resolve_arm(args.merge, "merge")
+    base = resolve_arm(args.base, "base")
+    merge = resolve_arm(args.merge, "merge")
 
     report = compare_armatures(base, merge, tol=args.tol)
     verdict = "PASS" if report["clean"] else "FAIL"
@@ -71,17 +57,7 @@ def main():
         print("AVATARPREP: WARNING", line)
 
     if args.report:
-        try:
-            report_path = os.path.abspath(args.report)
-            d = os.path.dirname(report_path)
-            if d:
-                os.makedirs(d, exist_ok=True)
-            with open(report_path, "w", encoding="utf-8") as fh:
-                json.dump(report, fh, indent=2)
-        except Exception as e:
-            print("AVATARPREP: ERROR failed to write report:", e)
-            sys.exit(2)
-        print("AVATARPREP: report ->", report_path)
+        write_report(args.report, report)
 
     sys.exit(0 if report["clean"] else 1)
 
