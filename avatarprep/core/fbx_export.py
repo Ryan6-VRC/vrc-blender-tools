@@ -45,8 +45,19 @@ def export_unity_fbx(filepath: str,
     if object_types is None:
         object_types = {'EMPTY', 'ARMATURE', 'MESH', 'OTHER'}
 
+    from . import scene_utils
+
+    # ``select_all`` (and the FBX exporter) poll for OBJECT mode; a caller that left
+    # the scene in POSE/EDIT — apply_proportion_edge exits in POSE on its object-only
+    # edge path — otherwise crashes ``select_all.poll() failed, context is incorrect``.
+    # Force OBJECT here so apply-then-export in one script is safe for every caller.
+    active = bpy.context.view_layer.objects.active
+    if active is not None and active.mode != 'OBJECT':
+        scene_utils.op_override(bpy.ops.object.mode_set,
+                                {'active_object': active, 'object': active},
+                                mode='OBJECT')
+
     if armature_obj is not None:
-        from . import scene_utils
         bpy.ops.object.select_all(action='DESELECT')
         armature_obj.select_set(True)
         for m in scene_utils.get_bound_meshes(armature_obj):
