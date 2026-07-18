@@ -88,6 +88,22 @@ def _build_prune_blend(path):
     _save_scene(path)
 
 
+def _build_prune_attach_blend(path):
+    """Prune scene plus an Empty bone-parented to the doomed ``Skirt``."""
+    _clear_scene()
+    arm = _make_armature("Rig", [
+        ("Spine", Vector((0, 0, 1.0)), None),
+        ("Skirt", Vector((0, 0, -0.3)), None),  # orphan zero-weight -> pruned
+    ])
+    _make_mesh("Body", arm, "Spine", Vector((0, 0, 1.0)))
+    empty = bpy.data.objects.new("SkirtAttachment", None)
+    bpy.context.collection.objects.link(empty)
+    empty.parent = arm
+    empty.parent_type = 'BONE'
+    empty.parent_bone = 'Skirt'
+    _save_scene(path)
+
+
 def _build_clean_blend(path):
     _clear_scene()
     _make_armature("Base", [
@@ -206,11 +222,94 @@ def test_prune_exit_code(tmp):
         _fail("prune: report deleted_bones should include 'Skirt', got %r" % data)
 
 
+def test_prune_whatif(tmp):
+    """--whatif reports the plan, writes no --out, and leaves the input untouched."""
+    scene = os.path.join(tmp, "prune_whatif_in.blend")
+    _build_prune_blend(scene)
+    before = os.path.getsize(scene), os.path.getmtime(scene)
+    report = os.path.join(tmp, "prune_whatif_report.json")
+
+    # --out omitted entirely: it must not be required under --whatif.
+    rc, out_txt = _run_cli("prune_bones.py",
+                           ["--in", scene, "--whatif", "--report", report])
+    if rc != 0:
+        _fail("prune whatif: expected exit 0, got %d\n%s" % (rc, out_txt))
+    if (os.path.getsize(scene), os.path.getmtime(scene)) != before:
+        _fail("prune whatif: the input .blend was modified")
+    if not os.path.exists(report):
+        _fail("prune whatif: expected --report written at %s" % report)
+        return
+
+    with open(report, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if data.get("whatif") is not True:
+        _fail("prune whatif: report should carry whatif=True, got %r" % data.get("whatif"))
+    if "Skirt" not in data.get("deleted_bones", []):
+        _fail("prune whatif: planned deleted_bones should include 'Skirt', got %r" % data)
+    chains = data.get("chains")
+    if not chains:
+        _fail("prune whatif: expected a non-empty chains list, got %r" % chains)
+    else:
+        chained = [n for ch in chains for n in ch["bones"]]
+        if sorted(chained) != sorted(data.get("deleted_bones", [])):
+            _fail("prune whatif: chains do not partition deleted_bones (%r vs %r)"
+                  % (sorted(chained), sorted(data.get("deleted_bones", []))))
+
+    # Omitting --out WITHOUT --whatif must still be rejected, or the guard is vacuous.
+    rc2, out2 = _run_cli("prune_bones.py", ["--in", scene])
+    if rc2 == 0:
+        _fail("prune: expected nonzero exit when --out is omitted without --whatif\n%s" % out2)
+
+
+def test_prune_refuses_on_bone_parented(tmp):
+    """An object riding a doomed bone refuses: exit 1, --out unwritten, nothing pruned."""
+    scene = os.path.join(tmp, "prune_attach_in.blend")
+    _build_prune_attach_blend(scene)
+    out = os.path.join(tmp, "prune_attach_out.blend")
+    report = os.path.join(tmp, "prune_attach_report.json")
+
+    # The real, destructive invocation.
+    rc, out_txt = _run_cli("prune_bones.py",
+                           ["--in", scene, "--out", out, "--report", report])
+    if rc != 1:
+        _fail("prune attach: expected exit 1 (REFUSED), got %d\n%s" % (rc, out_txt))
+    if os.path.exists(out):
+        _fail("prune attach: --out MUST be absent on refusal, but %s exists" % out)
+    if "REFUSED" not in out_txt or "SkirtAttachment" not in out_txt:
+        _fail("prune attach: stdout must say REFUSED and name the offender\n%s" % out_txt)
+
+    if not os.path.exists(report):
+        _fail("prune attach: --report should still be written on refusal")
+        return
+    with open(report, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not data.get("refused") or not data.get("bone_parented_objects"):
+        _fail("prune attach: refusal report must carry refused + offenders, got %r" % data)
+
+    # --whatif carries the same verdict without mutating.
+    rc_wi, wi_txt = _run_cli("prune_bones.py", ["--in", scene, "--whatif"])
+    if rc_wi != 1:
+        _fail("prune attach whatif: expected exit 1 (would refuse), got %d\n%s" % (rc_wi, wi_txt))
+
+    # --force prunes, saves, and still reports the orphan.
+    out_forced = os.path.join(tmp, "prune_attach_forced.blend")
+    rc_f, f_txt = _run_cli("prune_bones.py",
+                           ["--in", scene, "--out", out_forced, "--force"])
+    if rc_f != 0:
+        _fail("prune attach --force: expected exit 0, got %d\n%s" % (rc_f, f_txt))
+    if not os.path.exists(out_forced):
+        _fail("prune attach --force: expected --out written at %s" % out_forced)
+    if "SkirtAttachment" not in f_txt:
+        _fail("prune attach --force: must still name the orphaned attachment\n%s" % f_txt)
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_compat_exit_codes(tmp)
         test_merge_exit_codes(tmp)
         test_prune_exit_code(tmp)
+        test_prune_whatif(tmp)
+        test_prune_refuses_on_bone_parented(tmp)
     if FAILURES:
         for f in FAILURES:
             print("CLI_SEAM_TEST FAIL:", f)
