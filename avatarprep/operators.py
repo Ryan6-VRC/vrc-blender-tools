@@ -225,6 +225,44 @@ class AVATARPREP_OT_merge_armatures(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class AVATARPREP_OT_prune_bones_whatif(bpy.types.Operator):
+    bl_idname = "avatarprep.prune_bones_whatif"
+    bl_label = "Preview Prune (What-If)"
+    bl_description = ("Read-only: report which zero-weight bone chains a prune would "
+                      "delete, and what it would keep (no mutation)")
+    bl_options = {'REGISTER'}  # read-only
+
+    @classmethod
+    def poll(cls, context):
+        return scene_utils.find_armature() is not None
+
+    def execute(self, context):
+        from .core.prune_bones import prune_zero_weight_bones
+        armature = scene_utils.find_armature()
+        if armature is None:
+            self.report({'ERROR'}, "No armature found")
+            return {'CANCELLED'}
+        result = prune_zero_weight_bones(armature, what_if=True)
+        chains = result["chains"]
+        self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept"
+                    % (result["deleted"], len(chains), result["kept"]))
+        # Window the status-bar manifest by CHAIN — the keep/cut unit — rather than
+        # by bone; the full plan lives in the CLI stdout and the --report JSON.
+        for ch in chains[:10]:
+            self.report({'WARNING'}, "Would prune chain %s (%d bone(s)) under %s%s"
+                        % (ch["root"], len(ch["bones"]), ch["parent"] or "<root>",
+                           " [parent weighted]" if ch["parent_weighted"] else ""))
+        if len(chains) > 10:
+            self.report({'WARNING'}, "…and %d more chain(s)" % (len(chains) - 10))
+        # Tripwire — measured empty across the vendor library; anything here means
+        # this asset breaks the assumption the keep rules are built on.
+        for obj in result["bone_parented_objects"]:
+            self.report({'ERROR'}, "Bone-parented %s '%s' rides bone '%s'%s"
+                        % (obj["type"], obj["object"], obj["bone"],
+                           " — THAT BONE WOULD BE PRUNED" if obj["bone_pruned"] else ""))
+        return {'FINISHED'}
+
+
 class AVATARPREP_OT_prune_bones(bpy.types.Operator):
     bl_idname = "avatarprep.prune_bones"
     bl_label = "Prune Zero-Weight Bones"
@@ -300,6 +338,7 @@ classes = (
     AVATARPREP_OT_bake_shapekey,
     AVATARPREP_OT_stamp_base,
     AVATARPREP_OT_merge_armatures,
+    AVATARPREP_OT_prune_bones_whatif,
     AVATARPREP_OT_prune_bones,
     AVATARPREP_OT_compare_armatures,
 )

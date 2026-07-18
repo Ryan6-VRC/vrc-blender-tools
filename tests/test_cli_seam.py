@@ -206,11 +206,51 @@ def test_prune_exit_code(tmp):
         _fail("prune: report deleted_bones should include 'Skirt', got %r" % data)
 
 
+def test_prune_whatif(tmp):
+    """--whatif reports the plan, writes no --out, and leaves the input untouched."""
+    scene = os.path.join(tmp, "prune_whatif_in.blend")
+    _build_prune_blend(scene)
+    before = os.path.getsize(scene), os.path.getmtime(scene)
+    report = os.path.join(tmp, "prune_whatif_report.json")
+
+    # --out omitted entirely: it must not be required under --whatif.
+    rc, out_txt = _run_cli("prune_bones.py",
+                           ["--in", scene, "--whatif", "--report", report])
+    if rc != 0:
+        _fail("prune whatif: expected exit 0, got %d\n%s" % (rc, out_txt))
+    if (os.path.getsize(scene), os.path.getmtime(scene)) != before:
+        _fail("prune whatif: the input .blend was modified")
+    if not os.path.exists(report):
+        _fail("prune whatif: expected --report written at %s" % report)
+        return
+
+    with open(report, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if data.get("what_if") is not True:
+        _fail("prune whatif: report should carry what_if=True, got %r" % data.get("what_if"))
+    if "Skirt" not in data.get("deleted_bones", []):
+        _fail("prune whatif: planned deleted_bones should include 'Skirt', got %r" % data)
+    chains = data.get("chains")
+    if not chains:
+        _fail("prune whatif: expected a non-empty chains list, got %r" % chains)
+    else:
+        chained = [n for ch in chains for n in ch["bones"]]
+        if sorted(chained) != sorted(data.get("deleted_bones", [])):
+            _fail("prune whatif: chains do not partition deleted_bones (%r vs %r)"
+                  % (sorted(chained), sorted(data.get("deleted_bones", []))))
+
+    # Omitting --out WITHOUT --whatif must still be rejected, or the guard is vacuous.
+    rc2, out2 = _run_cli("prune_bones.py", ["--in", scene])
+    if rc2 == 0:
+        _fail("prune: expected nonzero exit when --out is omitted without --whatif\n%s" % out2)
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_compat_exit_codes(tmp)
         test_merge_exit_codes(tmp)
         test_prune_exit_code(tmp)
+        test_prune_whatif(tmp)
     if FAILURES:
         for f in FAILURES:
             print("CLI_SEAM_TEST FAIL:", f)
