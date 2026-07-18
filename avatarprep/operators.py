@@ -264,8 +264,16 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             return {'CANCELLED'}
         if self.whatif:
             chains = result["chains"]
-            self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept"
-                        % (result["deleted"], len(chains), result["kept"]))
+            # The gate verdict, not just the plan: "will this go through?" — the
+            # question would_refuse exists to answer (core docstring).
+            if result["would_refuse"]:
+                verdict = " — WOULD REFUSE (enable Force to orphan the rider)"
+            elif any(o["bone_pruned"] for o in result["bone_parented_objects"]):
+                verdict = " — would proceed under Force, orphaning the rider"
+            else:
+                verdict = ""
+            self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept%s"
+                        % (result["deleted"], len(chains), result["kept"], verdict))
             # Windowed by CHAIN (the keep/cut unit); the full plan is in --report.
             for ch in chains[:10]:
                 self.report({'WARNING'}, "Would prune chain %s (%d bone(s)) under %s%s"
