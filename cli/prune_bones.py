@@ -68,7 +68,7 @@ def main():
             print("AVATARPREP: ERROR no armature found")
             sys.exit(2)
 
-    result = prune_zero_weight_bones(armature, what_if=args.whatif)
+    result = prune_zero_weight_bones(armature, whatif=args.whatif)
 
     if args.whatif:
         print("AVATARPREP: whatif — would prune (kept %d, deleted %d) in %d chain(s)"
@@ -76,7 +76,7 @@ def main():
         for ch in result["chains"]:
             print("AVATARPREP: chain %s (%d bone(s)) under %s%s"
                   % (ch["root"], len(ch["bones"]), ch["parent"] or "<root>",
-                     " [parent WEIGHTED — would-be physbone tip]" if ch["parent_weighted"] else ""))
+                     " [parent weighted]" if ch["parent_weighted"] else ""))
             for name in ch["bones"]:
                 print("AVATARPREP:   would prune", name)
         for tip in result["kept_tips"]:
@@ -96,6 +96,12 @@ def main():
           % (result["kept"], result["deleted"]))
     for name in result["deleted_bones"]:
         print("AVATARPREP: pruned bone", name)
+    # Same tripwire as --whatif, on the path where the damage is already done: a
+    # caller is never obliged to preview, so this must not be preview-only.
+    for obj in result["bone_parented_objects"]:
+        print("AVATARPREP: WARNING bone-parented %s %r rode bone %r%s"
+              % (obj["type"], obj["object"], obj["bone"],
+                 " — THAT BONE WAS PRUNED; the object is now orphaned" if obj["bone_pruned"] else ""))
 
     # Save the deliverable (--out) BEFORE the diagnostic report, so a
     # report-write failure can't discard a successful prune's output.

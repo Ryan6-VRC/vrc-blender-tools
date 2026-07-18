@@ -6,8 +6,8 @@ preserving physbone tips (zero-weight leaf children of weighted bones) and any
 bone that has a weighted descendant.
 
 Bone-parented objects are deliberately NOT a keep reason — see
-``prune_zero_weight_bones`` for the measurement that settled it. ``what_if`` reports
-any it finds as a tripwire.
+``prune_zero_weight_bones`` for the measurement that settled it. BOTH paths report
+any they find as a tripwire; ``whatif`` shows it before you commit.
 """
 
 from typing import List, Optional
@@ -55,8 +55,10 @@ def _group_chains(bones, delete: set, weighted: set) -> List[dict]:
             "root": b.name,
             "bones": members,
             "parent": b.parent.name if b.parent else None,
-            # A chain hanging off a WEIGHTED bone is the over-prune risk: its root
-            # would be a kept physbone tip but for having children.
+            # The chain root would be a kept physbone tip but for having children.
+            # NOT a rare alarm: measured across five real avatars this is true of
+            # nearly every chain (clothing hangs off weighted body bones), so read it
+            # as "where this chain attaches to the body", not as a shortlist.
             "parent_weighted": bool(b.parent and b.parent.name in weighted),
         })
     return out
@@ -83,7 +85,7 @@ def _bone_parented_objects(armature, delete: set) -> List[dict]:
 
 def prune_zero_weight_bones(armature,
                             meshes: Optional[List[bpy.types.Object]] = None,
-                            what_if: bool = False
+                            whatif: bool = False
                             ) -> dict:
     """Remove bones that have no weight in any mesh and no structural role.
 
@@ -114,8 +116,13 @@ def prune_zero_weight_bones(armature,
     drove it was deleted, so a physbone-driven prop silently went rigid. A scan of
     the vendor library (113 FBX, 22810 bones, 1151 meshes across avatars and
     outfits) found ZERO non-skeleton objects parented to a bone; avatars attach by
-    skinning. ``what_if`` reports any bone-parented object it finds so an asset that
-    breaks that assumption surfaces before the destructive op rather than downstream.
+    skinning. That measurement licenses dropping the KEEP rule; it does not license a
+    silent destructive path — prune runs on a ``.blend`` mid-pipeline, after import,
+    merge and any hand-authoring, which is not the population that was scanned. So
+    ``bone_parented_objects`` is reported on BOTH paths (``whatif`` merely shows it
+    before you commit): nothing obliges a caller to preview, and a whatif-only
+    tripwire would leave the destructive path with neither the old keep rule nor a
+    warning.
 
     Weights are read as stored in the vertex groups; deform-time modifiers are
     ignored (e.g. a Mirror modifier with vertex-group flip weights the mirrored
@@ -128,22 +135,23 @@ def prune_zero_weight_bones(armature,
         meshes: Explicit list of mesh objects to scan. If ``None``, all scene
             meshes bound to ``armature`` (via an ARMATURE modifier OR parented
             to it) are used.
-        what_if: Preview only — compute the removal plan, delete nothing, and
+        whatif: Preview only — compute the removal plan, delete nothing, and
             return it enriched (see below). The plan is the same object the
             destructive path consumes, so preview and execute cannot disagree.
 
     Returns:
-        Execute: ``{"kept": int, "deleted": int, "deleted_bones": List[str]}``.
+        Execute: ``{"kept": int, "deleted": int, "deleted_bones": List[str],
+        "bone_parented_objects": List[dict]}``.
 
-        ``what_if`` returns those same three keys (``deleted_bones`` being the
-        planned removals) plus, for the keep/cut judgment the preview exists to
-        support:
+        ``whatif`` returns those same keys (``deleted_bones`` being the planned
+        removals) plus, for the keep/cut judgment the preview exists to support:
 
-        - ``what_if``: ``True``, so a caller can't mistake a preview for a run.
+        - ``whatif``: ``True``, so a caller can't mistake a preview for a run.
         - ``chains``: removals grouped as rooted chains — you spare a chain, not a
-          bone. Each is ``{"root", "bones", "parent", "parent_weighted"}``;
-          ``parent_weighted`` marks the over-prune risk case (a chain hanging off a
-          weighted bone, i.e. one that would be a physbone tip but for its children).
+          bone. Each is ``{"root", "bones", "parent", "parent_weighted"}``. The chain
+          list is the payload; ``parent_weighted`` is context (where the chain meets
+          the body), not a shortlist — on real avatars it is true of nearly every
+          chain, since clothing hangs off weighted body bones.
         - ``kept_tips``: the rule-(b) keeps, the only non-obvious ones — a rule-(a)
           keep explains itself.
         - ``bone_parented_objects``: the tripwire above. Non-empty means this asset
@@ -177,15 +185,21 @@ def prune_zero_weight_bones(armature,
 
     delete = [b.name for b in bones if b.name not in keep]
 
-    if what_if:
+    # Computed on BOTH paths, deliberately. Nothing obliges a caller to preview first
+    # (the UI ships two independent buttons; the CLI is two independent invocations),
+    # so a whatif-only tripwire would leave the destructive path with neither the old
+    # attachment keep rule nor any warning that it just orphaned an attachment.
+    bone_parented = _bone_parented_objects(armature, set(delete))
+
+    if whatif:
         return {
-            "what_if": True,
+            "whatif": True,
             "kept": len(keep),
             "deleted": len(delete),
             "deleted_bones": list(delete),
             "chains": _group_chains(bones, set(delete), weighted),
             "kept_tips": tips,
-            "bone_parented_objects": _bone_parented_objects(armature, set(delete)),
+            "bone_parented_objects": bone_parented,
         }
 
     # Switch to Edit Mode to remove bones (headless-safe; the context manager
@@ -200,4 +214,5 @@ def prune_zero_weight_bones(armature,
                 deleted_bones.append(n)
 
     return {"kept": len(keep), "deleted": len(deleted_bones),
-            "deleted_bones": deleted_bones}
+            "deleted_bones": deleted_bones,
+            "bone_parented_objects": bone_parented}

@@ -88,6 +88,22 @@ def _build_prune_blend(path):
     _save_scene(path)
 
 
+def _build_prune_attach_blend(path):
+    """Prune scene plus an Empty bone-parented to the doomed ``Skirt``."""
+    _clear_scene()
+    arm = _make_armature("Rig", [
+        ("Spine", Vector((0, 0, 1.0)), None),
+        ("Skirt", Vector((0, 0, -0.3)), None),  # orphan zero-weight -> pruned
+    ])
+    _make_mesh("Body", arm, "Spine", Vector((0, 0, 1.0)))
+    empty = bpy.data.objects.new("SkirtAttachment", None)
+    bpy.context.collection.objects.link(empty)
+    empty.parent = arm
+    empty.parent_type = 'BONE'
+    empty.parent_bone = 'Skirt'
+    _save_scene(path)
+
+
 def _build_clean_blend(path):
     _clear_scene()
     _make_armature("Base", [
@@ -226,8 +242,8 @@ def test_prune_whatif(tmp):
 
     with open(report, encoding="utf-8") as fh:
         data = json.load(fh)
-    if data.get("what_if") is not True:
-        _fail("prune whatif: report should carry what_if=True, got %r" % data.get("what_if"))
+    if data.get("whatif") is not True:
+        _fail("prune whatif: report should carry whatif=True, got %r" % data.get("whatif"))
     if "Skirt" not in data.get("deleted_bones", []):
         _fail("prune whatif: planned deleted_bones should include 'Skirt', got %r" % data)
     chains = data.get("chains")
@@ -245,12 +261,46 @@ def test_prune_whatif(tmp):
         _fail("prune: expected nonzero exit when --out is omitted without --whatif\n%s" % out2)
 
 
+def test_prune_execute_warns_on_bone_parented(tmp):
+    """The destructive path must warn about an orphaned attachment, not just --whatif.
+
+    Nothing obliges a caller to preview first, so a whatif-only tripwire would leave
+    this run silent after irreversibly orphaning the Empty.
+    """
+    scene = os.path.join(tmp, "prune_attach_in.blend")
+    _build_prune_attach_blend(scene)
+    out = os.path.join(tmp, "prune_attach_out.blend")
+    report = os.path.join(tmp, "prune_attach_report.json")
+
+    # No --whatif: the real, destructive invocation.
+    rc, out_txt = _run_cli("prune_bones.py",
+                           ["--in", scene, "--out", out, "--report", report])
+    if rc != 0:
+        _fail("prune attach: expected exit 0, got %d\n%s" % (rc, out_txt))
+    if "SkirtAttachment" not in out_txt:
+        _fail("prune attach: execute stdout must name the orphaned attachment\n%s" % out_txt)
+    if "WARNING bone-parented" not in out_txt:
+        _fail("prune attach: execute stdout must carry the bone-parented WARNING\n%s" % out_txt)
+
+    if not os.path.exists(report):
+        _fail("prune attach: expected --report written at %s" % report)
+        return
+    with open(report, encoding="utf-8") as fh:
+        data = json.load(fh)
+    rows = data.get("bone_parented_objects")
+    if not rows:
+        _fail("prune attach: execute report must carry bone_parented_objects, got %r" % data)
+    elif not rows[0].get("bone_pruned"):
+        _fail("prune attach: the report row must flag bone_pruned=True, got %r" % rows)
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_compat_exit_codes(tmp)
         test_merge_exit_codes(tmp)
         test_prune_exit_code(tmp)
         test_prune_whatif(tmp)
+        test_prune_execute_warns_on_bone_parented(tmp)
     if FAILURES:
         for f in FAILURES:
             print("CLI_SEAM_TEST FAIL:", f)

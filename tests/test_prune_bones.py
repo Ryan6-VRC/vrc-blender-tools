@@ -32,7 +32,7 @@ def _build_armature():
 
     Bone layout::
 
-        Spine  (weighted) ─── Chest      (weighted)
+        Spine  (weighted) ─── Chest      (weighted) ─── Cloth1 (zero) ─── Cloth2 (zero)
                └──────────── Upper      (weighted) ─── Upper_end  (zero-weight leaf)
         Skirt  (zero)     ─── Skirt_end  (zero-weight leaf)
         Hook   (zero)     ← Empty object parented here via BONE parent type
@@ -40,8 +40,14 @@ def _build_armature():
                               (fully zero-weight chain — deleted whole)
 
     ``Hook`` is deliberately still here after the attachment keep rule was removed:
-    it is the fixture for the what-if tripwire (a bone-parented object whose bone the
-    prune WILL take), which is the only place that case is now surfaced.
+    it is the fixture for the bone-parented tripwire (an object whose bone the prune
+    WILL take), which both paths now report.
+
+    ``Cloth1→Cloth2`` hangs off the WEIGHTED ``Chest``, so its chain carries
+    ``parent_weighted=True`` — the over-prune signal. Without it every chain root in
+    this fixture is parented to None and that flag is only ever asserted False.
+    ``Cloth1`` is not saved by rule (b) despite its weighted parent: it has a child,
+    so it is not a depth-1 leaf.
     """
     arm_data = bpy.data.armatures.new("TestArmatureData")
     arm_obj = bpy.data.objects.new("TestArmature", arm_data)
@@ -86,6 +92,17 @@ def _build_armature():
     hook = ebs.new("Hook")
     hook.head = Vector((0.0, 0.5, 0.3))
     hook.tail = Vector((0.0, 0.5, 0.5))
+
+    # Zero-weight chain off a WEIGHTED parent — the parent_weighted over-prune case.
+    cloth1 = ebs.new("Cloth1")
+    cloth1.head = Vector((0.0, -0.2, 0.6))
+    cloth1.tail = Vector((0.0, -0.2, 0.4))
+    cloth1.parent = chest
+
+    cloth2 = ebs.new("Cloth2")
+    cloth2.head = Vector((0.0, -0.2, 0.4))
+    cloth2.tail = Vector((0.0, -0.2, 0.2))
+    cloth2.parent = cloth1
 
     # Fully zero-weight multi-bone chain off an unweighted root. None of these
     # carry weight, so the whole chain must be deleted (only depth-1 zero-weight
@@ -153,16 +170,16 @@ def main():
     # ── what-if FIRST, on the intact armature ────────────────────────────────
     bones_before = {b.name for b in arm_obj.data.bones}
     try:
-        preview = prune_zero_weight_bones(arm_obj, what_if=True)
+        preview = prune_zero_weight_bones(arm_obj, whatif=True)
     except Exception as e:
-        print("PRUNE_TEST FAIL: what_if exception:", e)
+        print("PRUNE_TEST FAIL: whatif exception:", e)
         sys.exit(1)
 
     # The whole point of the preview: it must not touch the armature.
     if {b.name for b in arm_obj.data.bones} != bones_before:
-        failures.append("what_if MUTATED the armature (bones changed)")
-    if preview.get("what_if") is not True:
-        failures.append("expected preview['what_if'] is True, got %r" % preview.get("what_if"))
+        failures.append("whatif MUTATED the armature (bones changed)")
+    if preview.get("whatif") is not True:
+        failures.append("expected preview['whatif'] is True, got %r" % preview.get("whatif"))
 
     # Tripwire: the Empty rides Hook, and Hook is on the chopping block.
     bpo = preview.get("bone_parented_objects") or []
@@ -182,8 +199,22 @@ def main():
     if len(chained) != len(set(chained)):
         failures.append("a bone appears in more than one chain: %r" % chained)
     chain_roots = {ch["root"] for ch in chains}
-    if chain_roots != {"Skirt", "Hook", "Scalp"}:
-        failures.append("expected chain roots {Skirt, Hook, Scalp}, got %r" % sorted(chain_roots))
+    if chain_roots != {"Skirt", "Hook", "Scalp", "Cloth1"}:
+        failures.append("expected chain roots {Skirt, Hook, Scalp, Cloth1}, got %r" % sorted(chain_roots))
+
+    # parent_weighted: true ONLY for the chain hanging off the weighted Chest. Assert
+    # both polarities — a flag that is only ever checked False proves nothing.
+    by_root = {ch["root"]: ch for ch in chains}
+    if by_root.get("Cloth1", {}).get("parent_weighted") is not True:
+        failures.append("expected Cloth1 chain parent_weighted=True (parent Chest is weighted), got %r"
+                        % by_root.get("Cloth1"))
+    if by_root.get("Cloth1", {}).get("parent") != "Chest":
+        failures.append("expected Cloth1 chain parent == 'Chest', got %r" % by_root.get("Cloth1"))
+    if sorted(by_root.get("Cloth1", {}).get("bones") or []) != ["Cloth1", "Cloth2"]:
+        failures.append("expected Cloth1 chain to hold both cloth bones, got %r" % by_root.get("Cloth1"))
+    for root in ("Skirt", "Hook", "Scalp"):
+        if by_root.get(root, {}).get("parent_weighted") is not False:
+            failures.append("expected %s chain parent_weighted=False, got %r" % (root, by_root.get(root)))
 
     # Upper_end is the only rule-(b) keep.
     tips = {t["bone"] for t in (preview.get("kept_tips") or [])}
@@ -226,19 +257,35 @@ def main():
     expect_absent("Hook")
     expect_absent("Skirt")        # zero-weight, no weighted descendants
     expect_absent("Skirt_end")    # zero-weight leaf, parent not weighted
+    expect_absent("Cloth1")       # zero-weight under a weighted parent, but has a child
+    expect_absent("Cloth2")       # zero-weight leaf, parent (Cloth1) not weighted
     # Fully zero-weight chain off an unweighted root: deleted whole.
     expect_absent("Scalp")
     expect_absent("Hair1")
     expect_absent("Hair2")
     expect_absent("Hair3")
 
+    # The tripwire must ALSO be on the destructive path — nothing obliges a caller to
+    # preview, so a whatif-only warning would leave execute silent about the orphan.
+    exec_bpo = result.get("bone_parented_objects")
+    if not isinstance(exec_bpo, list):
+        failures.append("execute result must carry bone_parented_objects, got %r" % exec_bpo)
+    else:
+        exec_hook = [o for o in exec_bpo if o.get("bone") == "Hook"]
+        if len(exec_hook) != 1 or not exec_hook[0].get("bone_pruned"):
+            failures.append("execute path must report the orphaned Hook attachment, got %r" % exec_bpo)
+        if exec_bpo != preview.get("bone_parented_objects"):
+            failures.append("execute tripwire != preview tripwire: %r vs %r"
+                            % (exec_bpo, preview.get("bone_parented_objects")))
+
     # Guard the return dict so a miscounted result is caught too.
     if result.get("kept") != 4:
         failures.append("expected result['kept'] == 4, got %r" % result.get("kept"))
-    if result.get("deleted") != 7:
-        failures.append("expected result['deleted'] == 7, got %r" % result.get("deleted"))
+    if result.get("deleted") != 9:
+        failures.append("expected result['deleted'] == 9, got %r" % result.get("deleted"))
 
-    expected_deleted = {"Skirt", "Skirt_end", "Hook", "Scalp", "Hair1", "Hair2", "Hair3"}
+    expected_deleted = {"Skirt", "Skirt_end", "Hook", "Cloth1", "Cloth2",
+                        "Scalp", "Hair1", "Hair2", "Hair3"}
     deleted_bones = result.get("deleted_bones")
     if not isinstance(deleted_bones, list):
         failures.append("expected result['deleted_bones'] to be a list, got %r" % type(deleted_bones))

@@ -242,7 +242,7 @@ class AVATARPREP_OT_prune_bones_whatif(bpy.types.Operator):
         if armature is None:
             self.report({'ERROR'}, "No armature found")
             return {'CANCELLED'}
-        result = prune_zero_weight_bones(armature, what_if=True)
+        result = prune_zero_weight_bones(armature, whatif=True)
         chains = result["chains"]
         self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept"
                     % (result["deleted"], len(chains), result["kept"]))
@@ -290,6 +290,13 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             self.report({'WARNING'}, "Pruned bone: %s" % name)
         if len(deleted) > 10:
             self.report({'WARNING'}, "…and %d more pruned bone(s)" % (len(deleted) - 10))
+        # Same tripwire the preview reports, on the path where the damage is already
+        # done — the two buttons are independent, so nothing forces a preview first.
+        for obj in result["bone_parented_objects"]:
+            self.report({'ERROR'}, "Bone-parented %s '%s' rode bone '%s'%s"
+                        % (obj["type"], obj["object"], obj["bone"],
+                           " — THAT BONE WAS PRUNED; the object is now orphaned"
+                           if obj["bone_pruned"] else ""))
         return {'FINISHED'}
 
 
