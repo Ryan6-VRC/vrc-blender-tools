@@ -225,50 +225,18 @@ class AVATARPREP_OT_merge_armatures(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class AVATARPREP_OT_prune_bones_whatif(bpy.types.Operator):
-    bl_idname = "avatarprep.prune_bones_whatif"
-    bl_label = "Preview Prune (What-If)"
-    bl_description = ("Read-only: report which zero-weight bone chains a prune would "
-                      "delete, and what it would keep (no mutation)")
-    bl_options = {'REGISTER'}  # read-only
-
-    @classmethod
-    def poll(cls, context):
-        return scene_utils.find_armature() is not None
-
-    def execute(self, context):
-        from .core.prune_bones import prune_zero_weight_bones
-        armature = scene_utils.find_armature()
-        if armature is None:
-            self.report({'ERROR'}, "No armature found")
-            return {'CANCELLED'}
-        result = prune_zero_weight_bones(armature, whatif=True)
-        chains = result["chains"]
-        self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept"
-                    % (result["deleted"], len(chains), result["kept"]))
-        # Windowed by CHAIN (the keep/cut unit); the full plan is in --report.
-        for ch in chains[:10]:
-            self.report({'WARNING'}, "Would prune chain %s (%d bone(s)) under %s%s"
-                        % (ch["root"], len(ch["bones"]), ch["parent"] or "<root>",
-                           " [parent weighted]" if ch["parent_weighted"] else ""))
-        if len(chains) > 10:
-            self.report({'WARNING'}, "…and %d more chain(s)" % (len(chains) - 10))
-        # Tripwire — measured empty across the vendor library; anything here means
-        # this asset breaks the assumption the keep rules are built on.
-        for obj in result["bone_parented_objects"]:
-            self.report({'ERROR'}, "Bone-parented %s '%s' rides bone '%s'%s"
-                        % (obj["type"], obj["object"], obj["bone"],
-                           " — THAT BONE WOULD BE PRUNED" if obj["bone_pruned"] else ""))
-        return {'FINISHED'}
-
-
 class AVATARPREP_OT_prune_bones(bpy.types.Operator):
     bl_idname = "avatarprep.prune_bones"
     bl_label = "Prune Zero-Weight Bones"
     bl_description = ("Delete zero-weight bones orphaned by dropped meshes "
-                      "(checkpoint/save first — no undo; over-pruning is unrecoverable)")
+                      "(checkpoint/save first — no undo; over-pruning is unrecoverable). "
+                      "What-If previews the removal plan without mutating")
     bl_options = {'REGISTER'}  # NOT UNDO: destructive edit-bone removal
 
+    whatif: BoolProperty(name="What-If (Preview)", default=False,
+                         description="Read-only: report which zero-weight bone chains "
+                                     "a prune would delete, and what it would keep "
+                                     "(no mutation)")
     force: BoolProperty(name="Force", default=False,
                         description="Prune even when an object rides a doomed bone, "
                                     "orphaning it")
@@ -284,7 +252,8 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             self.report({'ERROR'}, "No armature found")
             return {'CANCELLED'}
         try:
-            result = prune_zero_weight_bones(armature, force=self.force)
+            result = prune_zero_weight_bones(armature, whatif=self.whatif,
+                                             force=self.force)
         except PruneRefused as refused:
             # CANCELLED, not FINISHED: a red line above a finished op reads as advisory.
             for o in refused.offenders:
@@ -293,6 +262,32 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             self.report({'ERROR'}, "Prune REFUSED — nothing was pruned. Re-weight or "
                                    "re-parent the object, or enable Force to orphan it.")
             return {'CANCELLED'}
+        if self.whatif:
+            chains = result["chains"]
+            # The gate verdict, not just the plan: "will this go through?" — the
+            # question would_refuse exists to answer (core docstring).
+            if result["would_refuse"]:
+                verdict = " — WOULD REFUSE (enable Force to orphan the rider)"
+            elif any(o["bone_pruned"] for o in result["bone_parented_objects"]):
+                verdict = " — would proceed under Force, orphaning the rider"
+            else:
+                verdict = ""
+            self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept%s"
+                        % (result["deleted"], len(chains), result["kept"], verdict))
+            # Windowed by CHAIN (the keep/cut unit); the full plan is in --report.
+            for ch in chains[:10]:
+                self.report({'WARNING'}, "Would prune chain %s (%d bone(s)) under %s%s"
+                            % (ch["root"], len(ch["bones"]), ch["parent"] or "<root>",
+                               " [parent weighted]" if ch["parent_weighted"] else ""))
+            if len(chains) > 10:
+                self.report({'WARNING'}, "…and %d more chain(s)" % (len(chains) - 10))
+            # Tripwire — measured empty across the vendor library; anything here means
+            # this asset breaks the assumption the keep rules are built on.
+            for obj in result["bone_parented_objects"]:
+                self.report({'ERROR'}, "Bone-parented %s '%s' rides bone '%s'%s"
+                            % (obj["type"], obj["object"], obj["bone"],
+                               " — THAT BONE WOULD BE PRUNED" if obj["bone_pruned"] else ""))
+            return {'FINISHED'}
         self.report({'INFO'}, "Pruned (kept %d, deleted %d)"
                     % (result["kept"], result["deleted"]))
         # Window the status-bar manifest (the full list lives in the CLI stdout
@@ -356,7 +351,6 @@ classes = (
     AVATARPREP_OT_bake_shapekey,
     AVATARPREP_OT_stamp_base,
     AVATARPREP_OT_merge_armatures,
-    AVATARPREP_OT_prune_bones_whatif,
     AVATARPREP_OT_prune_bones,
     AVATARPREP_OT_compare_armatures,
 )

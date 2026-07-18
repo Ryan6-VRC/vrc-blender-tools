@@ -9,7 +9,7 @@ Exit codes: 0 = merged (verdict PASS, --out saved) · 1 = verdict FAIL (--out NO
 saved) · 2 = ERROR (bad armature name, mid-merge exception, write failure).
 
 --whatif previews: the gates run for real, nothing mutates, nothing is saved (--out
-optional and ignored); exit 0 = would merge, 1 = would FAIL.
+must be omitted; passing it errors); exit 0 = would merge, 1 = would FAIL.
 
 On FAIL the safety net is not saving --out; --report (if given) is still written
 with the FULL result dict (carries postcheck) so a postcheck FAIL can be triaged.
@@ -40,7 +40,10 @@ def _parse_args():
     p.add_argument("--skip-apply-transforms", dest="skip_apply_transforms",
                    action="store_true")
     p.add_argument("--report", dest="report", default=None)
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.whatif and args.out_path:
+        p.error("--out is meaningless under --whatif (preview mutates nothing)")
+    return args
 
 
 def main():

@@ -40,8 +40,6 @@ class AVATARPREP_PT_main(bpy.types.Panel):
                      text="Compare Armatures", icon='ARMATURE_DATA')
         col.operator("avatarprep.merge_armatures",
                      text="Merge Armatures", icon='AUTOMERGE_ON')
-        col.operator("avatarprep.prune_bones_whatif",
-                     text="Preview Prune (What-If)", icon='VIEWZOOM')
         col.operator("avatarprep.prune_bones",
                      text="Prune Zero-Weight Bones", icon='BONE_DATA')
 

@@ -5,7 +5,8 @@ Run:
       --in <in.blend> --out <out.blend> --edge <edge.json> [--skip-shapekeys] \
       [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
 
-  # Read-only gate: validate the edge against the scene, no mutation, no --out.
+  # Read-only gate: validate the edge against the scene. No mutation; --out
+  # must be omitted (passing it errors — a preview never writes a deliverable).
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --edge <edge.json> --whatif [--skip-shapekeys] \
       [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
@@ -39,6 +40,8 @@ def _parse_args():
     args = p.parse_args(argv)
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")
+    if args.whatif and args.out_path:
+        p.error("--out is meaningless under --whatif (preview mutates nothing)")
     return args
 
 

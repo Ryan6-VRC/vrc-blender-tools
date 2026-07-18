@@ -4,7 +4,8 @@ Run:
   blender <in.blend> --background --factory-startup --python cli/prune_bones.py -- \
       --in <in.blend> --out <out.blend> [--armature <name>] [--force] [--report <report.json>]
 
-  # Read-only preview: the removal plan, grouped into chains. No mutation, no --out.
+  # Read-only preview: the removal plan, grouped into chains. No mutation; --out
+  # must be omitted (passing it errors — a preview never writes a deliverable).
   blender <in.blend> --background --factory-startup --python cli/prune_bones.py -- \
       --in <in.blend> --whatif [--armature <name>] [--report <report.json>]
 
@@ -13,7 +14,7 @@ is for: the removal list drives a keep/cut call, and reading it must not cost yo
 armature.
 
 Exit codes: 0 = pruned (--out saved) · 1 = REFUSED (--out NOT saved) · 2 = ERROR
-(bad name, write failure).
+(bad name, write failure, --out combined with --whatif).
 
 The single gate is an object parented to a bone the prune would delete; --force
 prunes anyway. Rationale lives on prune_bones.prune_zero_weight_bones. --whatif
@@ -45,6 +46,8 @@ def _parse_args():
     args = p.parse_args(argv)
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")
+    if args.whatif and args.out_path:
+        p.error("--out is meaningless under --whatif (preview mutates nothing)")
     return args
 
 
