@@ -8,20 +8,16 @@ Run:
   blender <in.blend> --background --factory-startup --python cli/prune_bones.py -- \
       --in <in.blend> --whatif [--armature <name>] [--report <report.json>]
 
-Over-pruning surfaces downstream, not here (see docs/blender.md) — which is what
---whatif is for: the removal list drives a keep/cut call, and reading it must not
-cost you the armature.
+Over-pruning surfaces downstream, not here (docs/blender.md) — which is what --whatif
+is for: the removal list drives a keep/cut call, and reading it must not cost you the
+armature.
 
 Exit codes: 0 = pruned (--out saved) · 1 = REFUSED (--out NOT saved) · 2 = ERROR
 (bad name, write failure).
 
-Prune has ONE gate, and it is the only thing it refuses on: an object parented to a
-bone the prune would delete (see prune_bones.PruneRefused). It is a gate rather than
-a warning because the plan is known before anything is mutated, and a warn-then-prune
-run exits 0 — indistinguishable, to an agent reading exit codes, from a clean run on
-an asset it just broke. --force prunes anyway, orphaning the attachment. Under
---whatif the gate is evaluated but nothing is mutated: exit 0 = would prune,
-1 = would refuse (mirrors merge_armatures).
+The single gate is an object parented to a bone the prune would delete; --force
+prunes anyway. Rationale lives on prune_bones.prune_zero_weight_bones. --whatif
+evaluates the gate without mutating: exit 0 = would prune, 1 = would refuse.
 """
 import os
 import sys
@@ -83,9 +79,8 @@ def main():
     try:
         result = prune_zero_weight_bones(armature, whatif=args.whatif, force=args.force)
     except PruneRefused as refused:
-        # Gate, not error: nothing was mutated and --out is deliberately unwritten
-        # (merge_armatures' FAIL shape). --report still lands so the refusal is
-        # triageable without re-running.
+        # merge_armatures' FAIL shape: --out unwritten, --report still landed so the
+        # refusal is triageable without a re-run.
         print("AVATARPREP: prune REFUSED —", refused)
         for o in refused.offenders:
             print("AVATARPREP: OFFENDER bone-parented %s %r rides doomed bone %r"
@@ -109,16 +104,13 @@ def main():
         for tip in result["kept_tips"]:
             print("AVATARPREP: kept tip %s (physbone tail of weighted %s)"
                   % (tip["bone"], tip["parent"]))
-        # Tripwire: measured empty across the vendor library, so anything here means
-        # this asset breaks the assumption the keep rules are designed around.
         for obj in result["bone_parented_objects"]:
             print("AVATARPREP: WARNING bone-parented %s %r rides bone %r%s"
                   % (obj["type"], obj["object"], obj["bone"],
                      " — THAT BONE WOULD BE PRUNED" if obj["bone_pruned"] else ""))
         if args.report:
             write_report(args.report, result)
-        # Carry the gate verdict in the exit code, so a preview answers "will this go
-        # through?" without parsing stdout (merge_armatures' whatif shape).
+        # Gate verdict in the exit code, so a caller need not parse stdout.
         if result["would_refuse"]:
             print("AVATARPREP: whatif — a real run would REFUSE (pass --force to override)")
             sys.exit(1)
@@ -128,8 +120,7 @@ def main():
           % (result["kept"], result["deleted"]))
     for name in result["deleted_bones"]:
         print("AVATARPREP: pruned bone", name)
-    # Riders of bones that SURVIVED are reported without blocking; a rider of a doomed
-    # bone never reaches here (it raised above) unless --force deliberately orphaned it.
+    # Only riders of SURVIVING bones reach here, unless --force let a doomed one through.
     for obj in result["bone_parented_objects"]:
         print("AVATARPREP: WARNING bone-parented %s %r rode bone %r%s"
               % (obj["type"], obj["object"], obj["bone"],

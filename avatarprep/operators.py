@@ -246,8 +246,7 @@ class AVATARPREP_OT_prune_bones_whatif(bpy.types.Operator):
         chains = result["chains"]
         self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept"
                     % (result["deleted"], len(chains), result["kept"]))
-        # Window the status-bar manifest by CHAIN — the keep/cut unit — rather than
-        # by bone; the full plan lives in the CLI stdout and the --report JSON.
+        # Windowed by CHAIN (the keep/cut unit); the full plan is in --report.
         for ch in chains[:10]:
             self.report({'WARNING'}, "Would prune chain %s (%d bone(s)) under %s%s"
                         % (ch["root"], len(ch["bones"]), ch["parent"] or "<root>",
@@ -287,8 +286,7 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
         try:
             result = prune_zero_weight_bones(armature, force=self.force)
         except PruneRefused as refused:
-            # Gate: nothing was mutated. CANCELLED, not FINISHED — a red line above a
-            # "finished" op reads as advisory, and this one isn't.
+            # CANCELLED, not FINISHED: a red line above a finished op reads as advisory.
             for o in refused.offenders:
                 self.report({'ERROR'}, "Bone-parented %s '%s' rides doomed bone '%s'"
                             % (o["type"], o["object"], o["bone"]))
@@ -304,8 +302,7 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             self.report({'WARNING'}, "Pruned bone: %s" % name)
         if len(deleted) > 10:
             self.report({'WARNING'}, "…and %d more pruned bone(s)" % (len(deleted) - 10))
-        # Riders of SURVIVING bones — reported, not blocking. A rider of a doomed bone
-        # never reaches here (it raised above) unless Force deliberately orphaned it.
+        # Only riders of SURVIVING bones reach here, unless Force let a doomed one through.
         for obj in result["bone_parented_objects"]:
             self.report({'WARNING'}, "Bone-parented %s '%s' rode bone '%s'%s"
                         % (obj["type"], obj["object"], obj["bone"],

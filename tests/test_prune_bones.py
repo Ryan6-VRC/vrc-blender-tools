@@ -39,15 +39,10 @@ def _build_armature():
         Scalp  (zero)     ─── Hair1 (zero) ─── Hair2 (zero) ─── Hair3 (zero)
                               (fully zero-weight chain — deleted whole)
 
-    ``Hook`` is deliberately still here after the attachment keep rule was removed:
-    it is the fixture for the bone-parented tripwire (an object whose bone the prune
-    WILL take), which both paths now report.
-
-    ``Cloth1→Cloth2`` hangs off the WEIGHTED ``Chest``, so its chain carries
-    ``parent_weighted=True`` — the over-prune signal. Without it every chain root in
-    this fixture is parented to None and that flag is only ever asserted False.
-    ``Cloth1`` is not saved by rule (b) despite its weighted parent: it has a child,
-    so it is not a depth-1 leaf.
+    ``Hook`` carries the Empty that trips the refusal gate. ``Cloth1→Cloth2`` is the
+    only chain under a WEIGHTED parent, so it is the sole case asserting
+    ``parent_weighted=True``; ``Cloth1`` is not spared by rule (b) because it has a
+    child, so it is not a depth-1 leaf.
     """
     arm_data = bpy.data.armatures.new("TestArmatureData")
     arm_obj = bpy.data.objects.new("TestArmature", arm_data)
@@ -202,8 +197,7 @@ def main():
     if chain_roots != {"Skirt", "Hook", "Scalp", "Cloth1"}:
         failures.append("expected chain roots {Skirt, Hook, Scalp, Cloth1}, got %r" % sorted(chain_roots))
 
-    # parent_weighted: true ONLY for the chain hanging off the weighted Chest. Assert
-    # both polarities — a flag that is only ever checked False proves nothing.
+    # Both polarities — a flag only ever checked False proves nothing.
     by_root = {ch["root"]: ch for ch in chains}
     if by_root.get("Cloth1", {}).get("parent_weighted") is not True:
         failures.append("expected Cloth1 chain parent_weighted=True (parent Chest is weighted), got %r"
@@ -238,7 +232,7 @@ def main():
         failures.append("expected PruneRefused, got %s: %s" % (type(e).__name__, e))
     else:
         failures.append("expected PruneRefused (HookAttachment rides the doomed Hook), but the prune ran")
-    # The whole point of a gate over a warning: nothing moved.
+    # A gate that mutates is a warning.
     if {b.name for b in arm_obj.data.bones} != bones_pre_gate:
         failures.append("a REFUSED prune must mutate nothing, but the armature changed")
 
@@ -272,10 +266,7 @@ def main():
     expect_present("Chest")       # (a) weighted
     expect_present("Upper")       # (a) weighted
     expect_present("Upper_end")   # (b) zero-weight leaf, parent weighted
-    # Holding a bone-parented Empty is NOT a keep reason: it broke ancestor-closure
-    # and only half-worked (name binding survived, driving chain didn't). Measured
-    # absent across the vendor library; the what-if tripwire covers it instead.
-    expect_absent("Hook")
+    expect_absent("Hook")         # holding an attachment is not a keep reason
     expect_absent("Skirt")        # zero-weight, no weighted descendants
     expect_absent("Skirt_end")    # zero-weight leaf, parent not weighted
     expect_absent("Cloth1")       # zero-weight under a weighted parent, but has a child
@@ -286,8 +277,7 @@ def main():
     expect_absent("Hair2")
     expect_absent("Hair3")
 
-    # Under --force the orphan is deliberate, but must still be reported — the run
-    # that knowingly breaks the attachment is exactly the one that has to say so.
+    # Under force the orphan is deliberate, and still has to be reported.
     exec_bpo = result.get("bone_parented_objects")
     if not isinstance(exec_bpo, list):
         failures.append("execute result must carry bone_parented_objects, got %r" % exec_bpo)

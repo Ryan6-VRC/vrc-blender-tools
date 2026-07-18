@@ -5,10 +5,9 @@ After clothing meshes are removed from an avatar, the bone chains that drove the
 preserving physbone tips (zero-weight leaf children of weighted bones) and any
 bone that has a weighted descendant.
 
-Bone-parented objects are deliberately NOT a keep reason — see
-``prune_zero_weight_bones`` for the measurement that settled it. Instead they are a
-GATE: an object riding a doomed bone raises :class:`PruneRefused` before anything is
-mutated, unless ``force``.
+Holding a bone-parented object is not a keep reason; it is a gate. See
+``prune_zero_weight_bones`` for why both, and for the ancestor-closure constraint
+any future keep rule has to satisfy.
 """
 
 from typing import List, Optional
@@ -21,12 +20,8 @@ from . import scene_utils
 class PruneRefused(ValueError):
     """Raised when an object rides a bone this prune would delete. Names the offenders.
 
-    The gate the removed attachment keep rule used to be. Reporting the collision
-    while pruning anyway is a notice, not a guard: the plan is known BEFORE Edit Mode
-    opens, so the tool can still decline — and an agent driving the CLI reads an exit
-    code, not a warning line. Raising (rather than returning a flag) is what makes it
-    unignorable. ``force=True`` proceeds anyway; ``whatif`` never raises — a preview
-    reports, and its ``would_refuse`` says what a real run would do.
+    Raised before Edit Mode opens, so nothing is mutated. ``force`` proceeds anyway;
+    ``whatif`` never raises and reports ``would_refuse`` instead.
     """
 
     def __init__(self, offenders):
@@ -53,10 +48,9 @@ def _weighted_bone_names(armature, meshes):
 def _group_chains(bones, delete: set, weighted: set) -> List[dict]:
     """Group the planned removals into rooted chains — the unit of a keep/cut call.
 
-    A chain root is a doomed bone whose parent survives (or is None); its members
-    are every doomed bone beneath it. Because the keep set is ancestor-closed, a
-    surviving parent is a real boundary, so these chains partition the removals
-    exactly — no bone lands in two chains or none.
+    Partitions the removals exactly, which holds only because the keep set is
+    ancestor-closed: a surviving parent is then a real boundary, so no bone can land
+    in two chains or in none.
     """
     out = []
     for b in bones:
@@ -75,21 +69,18 @@ def _group_chains(bones, delete: set, weighted: set) -> List[dict]:
             "root": b.name,
             "bones": members,
             "parent": b.parent.name if b.parent else None,
-            # The chain root would be a kept physbone tip but for having children.
-            # NOT a rare alarm: measured across five real avatars this is true of
-            # nearly every chain (clothing hangs off weighted body bones), so read it
-            # as "where this chain attaches to the body", not as a shortlist.
+            # Near-universal on real avatars, so it narrows nothing — see the caller
+            # docstring before reading it as an alarm.
             "parent_weighted": bool(b.parent and b.parent.name in weighted),
         })
     return out
 
 
 def _bone_parented_objects(armature, delete: set) -> List[dict]:
-    """Objects riding a bone via ``parent_type='BONE'`` — the assumption tripwire.
+    """Objects riding a bone via ``parent_type='BONE'``.
 
-    Scans all of ``bpy.data.objects`` rather than the bound-mesh set: such an object
-    may live in any collection and need not be a mesh. Measured empty across the
-    vendor library; a non-empty result means this asset is the exception.
+    Scans all of ``bpy.data.objects``, not the bound-mesh set: such an object may
+    live in any collection and need not be a mesh.
     """
     out = []
     for o in bpy.data.objects:
@@ -121,33 +112,29 @@ def prune_zero_weight_bones(armature,
 
     All other bones are deleted from the armature in Edit Mode.
 
-    **The keep set is closed under ancestors**, which is why this op can never
-    silently re-route a surviving bone: (a) implies the parent also has a weighted
-    descendant, and (b)'s parent is weighted by definition, so a kept bone's parent
-    is always kept too. Blender's ``edit_bones.remove`` splices children onto the
-    removed bone's parent, so a keep rule that ISN'T ancestor-closed would move a
-    survivor to a new hierarchy path while leaving its name, rest pose and the
-    counts below unchanged — an invisible break. Any future keep rule must preserve
-    ancestor-closure or surface the re-routing.
+    **Both rules are weight-structural, which keeps the keep set closed under
+    ancestors** — (a)'s parent inherits the weighted descendant, (b)'s parent is
+    weighted outright. That closure is the constraint, not a coincidence:
+    ``edit_bones.remove`` splices children onto the removed bone's parent, so a keep
+    rule that breaks closure re-routes a survivor to a new hierarchy path while its
+    name, rest pose and every count here stay identical. Nothing downstream can see
+    it. **Any future keep rule must preserve ancestor-closure or report the
+    re-routing.**
 
-    **Bone-parented objects are not a keep reason.** An earlier rule kept bones
-    holding an object parented via ``parent_type='BONE'``. It was removed: it broke
-    ancestor-closure (the attachment's zero-weight ancestors were still pruned), and
-    it only half-worked — the object's name binding survived while the chain that
-    drove it was deleted, so a physbone-driven prop silently went rigid. A scan of
-    the vendor library (113 FBX, 22810 bones, 1151 meshes across avatars and
-    outfits) found ZERO non-skeleton objects parented to a bone; avatars attach by
-    skinning. That measurement licenses dropping the KEEP rule; it does not license a
-    silent destructive path — prune runs on a ``.blend`` mid-pipeline, after import,
-    merge and any hand-authoring, which is not the population that was scanned.
+    **Holding a bone-parented object is not a keep reason — it is a gate.** Keeping
+    such a bone is what breaks closure (its zero-weight ancestors still go), and it
+    only half-helps: the object's name binding survives while the chain that drove it
+    is deleted, so a physbone-driven prop goes rigid. Instead, an object riding a
+    doomed bone raises :class:`PruneRefused` before Edit Mode opens. A warning here
+    would be a notice where the removed rule was a guard — and a warn-then-prune run
+    exits 0, which to a caller reading exit codes is a clean run on a broken asset.
+    ``force`` prunes anyway; riders of surviving bones are reported, not blocked.
 
-    So the collision is a **gate**, not a notice: the plan is known before Edit Mode
-    opens, and if any object rides a bone this prune would delete, it raises
-    :class:`PruneRefused` having mutated nothing. Reporting-and-pruning-anyway would
-    read as a clean success to an agent driving by exit code, on an asset it just
-    broke. Pass ``force=True`` to prune regardless (the attachment is then orphaned —
-    deliberately). ``bone_parented_objects`` is still reported on both paths, since a
-    non-pruned bone's rider is worth surfacing without blocking.
+    The gate is near-dead weight on vendor input: 113 FBX / 22810 bones across the
+    library carry ZERO bone-parented non-skeleton objects, because avatars attach by
+    skinning. It exists because that scan covered vendor FBX *sources* while this
+    runs on a ``.blend`` after import, merge and hand-authoring — so a refusal means
+    this file acquired one along the way.
 
     Weights are read as stored in the vertex groups; deform-time modifiers are
     ignored (e.g. a Mirror modifier with vertex-group flip weights the mirrored
@@ -160,37 +147,27 @@ def prune_zero_weight_bones(armature,
         meshes: Explicit list of mesh objects to scan. If ``None``, all scene
             meshes bound to ``armature`` (via an ARMATURE modifier OR parented
             to it) are used.
-        whatif: Preview only — compute the removal plan, delete nothing, and
-            return it enriched (see below). The plan is the same object the
-            destructive path consumes, so preview and execute cannot disagree.
-            Never raises; reports the gate verdict as ``would_refuse``.
-        force: Prune even when an object rides a doomed bone, orphaning it. Without
-            this, that case raises :class:`PruneRefused` and nothing is mutated.
+        whatif: Preview only, returning the plan enriched (see below). Consumes the
+            same computed plan the destructive path does, so the two cannot disagree.
+            Never raises.
+        force: Prune despite the gate, orphaning the rider.
 
     Raises:
-        PruneRefused: an object is parented to a bone the plan would delete and
-            ``force`` is not set. Raised before Edit Mode opens — nothing mutated.
+        PruneRefused: an object rides a bone the plan would delete, without
+            ``force``. Nothing is mutated.
 
     Returns:
-        Execute: ``{"kept": int, "deleted": int, "deleted_bones": List[str],
-        "bone_parented_objects": List[dict]}``.
+        Execute: ``{"kept", "deleted", "deleted_bones", "bone_parented_objects"}``.
 
-        ``whatif`` returns those same keys (``deleted_bones`` being the planned
-        removals) plus, for the keep/cut judgment the preview exists to support:
+        ``whatif`` adds ``whatif=True``, ``would_refuse`` (the gate verdict, so a
+        preview answers "will this go through?" and not only "what would it take?"),
+        ``kept_tips`` (the rule-(b) keeps), and ``chains``:
 
-        - ``whatif``: ``True``, so a caller can't mistake a preview for a run.
-        - ``chains``: removals grouped as rooted chains — you spare a chain, not a
-          bone. Each is ``{"root", "bones", "parent", "parent_weighted"}``. The chain
-          list is the payload; ``parent_weighted`` is context (where the chain meets
-          the body), not a shortlist — on real avatars it is true of nearly every
-          chain, since clothing hangs off weighted body bones.
-        - ``kept_tips``: the rule-(b) keeps, the only non-obvious ones — a rule-(a)
-          keep explains itself.
-        - ``bone_parented_objects``: the tripwire above. Non-empty means this asset
-          violates the measured assumption; read it before pruning.
-        - ``would_refuse``: ``True`` when a real run would raise
-          :class:`PruneRefused` — the gate verdict, so a preview answers "will this
-          go through?" and not merely "what would it take?".
+        - ``chains`` groups the removals as rooted chains — the unit you spare or
+          cut, since sparing one bone of a doomed chain is rarely what you mean.
+          ``parent_weighted`` reads as *where the chain meets the body*, not as a
+          shortlist: on real avatars nearly every chain has it, clothing being hung
+          off weighted body bones.
     """
     if meshes is None:
         meshes = scene_utils.get_bound_meshes(armature)
@@ -213,16 +190,11 @@ def prune_zero_weight_bones(armature,
         if b.name in weighted or has_weighted_descendant(b):
             keep.add(b.name)
         elif b.parent and b.parent.name in weighted and len(b.children) == 0:
-            # Only depth-1 zero-weight leaves of a weighted bone are preserved
-            # (physbone tail); longer zero-weight chains are deleted entirely.
             keep.add(b.name)
             tips.append({"bone": b.name, "parent": b.parent.name})
 
     delete = [b.name for b in bones if b.name not in keep]
 
-    # Computed on BOTH paths, deliberately, and BEFORE Edit Mode opens — knowing the
-    # collision only in the preview would leave the destructive path with neither the
-    # old attachment keep rule nor any guard.
     bone_parented = _bone_parented_objects(armature, set(delete))
     orphaned = [o for o in bone_parented if o["bone_pruned"]]
 
@@ -235,13 +207,10 @@ def prune_zero_weight_bones(armature,
             "chains": _group_chains(bones, set(delete), weighted),
             "kept_tips": tips,
             "bone_parented_objects": bone_parented,
-            # What a real run would do — so a preview carries the gate verdict, not
-            # just the plan (mirrors merge_armatures' whatif).
             "would_refuse": bool(orphaned) and not force,
         }
 
-    # The gate. Nothing has been mutated yet, so declining here costs nothing; once
-    # Edit Mode removes the bone the attachment is orphaned irreversibly.
+    # Last point at which declining is still free.
     if orphaned and not force:
         raise PruneRefused(orphaned)
 

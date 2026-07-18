@@ -262,18 +262,13 @@ def test_prune_whatif(tmp):
 
 
 def test_prune_refuses_on_bone_parented(tmp):
-    """An object riding a doomed bone is a GATE, not a warning.
-
-    The plan is known before anything mutates, so the tool declines: exit 1, --out
-    unwritten, nothing pruned. A warn-then-prune run would exit 0 — indistinguishable,
-    to an agent reading exit codes, from a clean run on an asset it just broke.
-    """
+    """An object riding a doomed bone refuses: exit 1, --out unwritten, nothing pruned."""
     scene = os.path.join(tmp, "prune_attach_in.blend")
     _build_prune_attach_blend(scene)
     out = os.path.join(tmp, "prune_attach_out.blend")
     report = os.path.join(tmp, "prune_attach_report.json")
 
-    # No --whatif: the real, destructive invocation — which must refuse.
+    # The real, destructive invocation.
     rc, out_txt = _run_cli("prune_bones.py",
                            ["--in", scene, "--out", out, "--report", report])
     if rc != 1:
@@ -291,12 +286,12 @@ def test_prune_refuses_on_bone_parented(tmp):
     if not data.get("refused") or not data.get("bone_parented_objects"):
         _fail("prune attach: refusal report must carry refused + offenders, got %r" % data)
 
-    # --whatif carries the gate verdict in its exit code, mutating nothing.
+    # --whatif carries the same verdict without mutating.
     rc_wi, wi_txt = _run_cli("prune_bones.py", ["--in", scene, "--whatif"])
     if rc_wi != 1:
         _fail("prune attach whatif: expected exit 1 (would refuse), got %d\n%s" % (rc_wi, wi_txt))
 
-    # --force overrides: prunes, saves, and still reports the deliberate orphan.
+    # --force prunes, saves, and still reports the orphan.
     out_forced = os.path.join(tmp, "prune_attach_forced.blend")
     rc_f, f_txt = _run_cli("prune_bones.py",
                            ["--in", scene, "--out", out_forced, "--force"])
