@@ -303,6 +303,37 @@ def test_prune_refuses_on_bone_parented(tmp):
         _fail("prune attach --force: must still name the orphaned attachment\n%s" % f_txt)
 
 
+def test_whatif_rejects_out(tmp):
+    """--out under --whatif is a hard parse error: exit 2, nothing written (#8).
+
+    Guards the false receipt: before this, the CLIs accepted --whatif --out,
+    wrote nothing, and exited 0 — a success code for a file that never appeared.
+    """
+    prune_scene = os.path.join(tmp, "whatif_out_prune.blend")
+    _build_prune_blend(prune_scene)
+    merge_scene = os.path.join(tmp, "whatif_out_merge.blend")
+    _build_clean_blend(merge_scene)
+
+    cases = (
+        ("prune_bones.py", ["--in", prune_scene]),
+        ("apply_proportion_edge.py",
+         ["--in", prune_scene, "--edge", os.path.join(tmp, "edge.json")]),
+        ("merge_armatures.py",
+         ["--in", merge_scene, "--base", "Base", "--merge", "Merge"]),
+    )
+    for script, args in cases:
+        ghost = os.path.join(tmp, "ghost_%s.blend" % script.split(".")[0])
+        rc, out = _run_cli(script, args + ["--whatif", "--out", ghost])
+        if rc != 2:
+            _fail("%s: expected exit 2 for --whatif --out, got %d\n%s"
+                  % (script, rc, out))
+        if os.path.exists(ghost):
+            _fail("%s: --out must never be written under --whatif, but %s exists"
+                  % (script, ghost))
+        if "--whatif" not in out:
+            _fail("%s: the rejection should name --whatif\n%s" % (script, out))
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_compat_exit_codes(tmp)
@@ -310,6 +341,7 @@ def main():
         test_prune_exit_code(tmp)
         test_prune_whatif(tmp)
         test_prune_refuses_on_bone_parented(tmp)
+        test_whatif_rejects_out(tmp)
     if FAILURES:
         for f in FAILURES:
             print("CLI_SEAM_TEST FAIL:", f)
