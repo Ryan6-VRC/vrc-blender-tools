@@ -6,8 +6,9 @@ preserving physbone tips (zero-weight leaf children of weighted bones) and any
 bone that has a weighted descendant.
 
 Bone-parented objects are deliberately NOT a keep reason — see
-``prune_zero_weight_bones`` for the measurement that settled it. BOTH paths report
-any they find as a tripwire; ``whatif`` shows it before you commit.
+``prune_zero_weight_bones`` for the measurement that settled it. Instead they are a
+GATE: an object riding a doomed bone raises :class:`PruneRefused` before anything is
+mutated, unless ``force``.
 """
 
 from typing import List, Optional
@@ -15,6 +16,25 @@ from typing import List, Optional
 import bpy
 
 from . import scene_utils
+
+
+class PruneRefused(ValueError):
+    """Raised when an object rides a bone this prune would delete. Names the offenders.
+
+    The gate the removed attachment keep rule used to be. Reporting the collision
+    while pruning anyway is a notice, not a guard: the plan is known BEFORE Edit Mode
+    opens, so the tool can still decline — and an agent driving the CLI reads an exit
+    code, not a warning line. Raising (rather than returning a flag) is what makes it
+    unignorable. ``force=True`` proceeds anyway; ``whatif`` never raises — a preview
+    reports, and its ``would_refuse`` says what a real run would do.
+    """
+
+    def __init__(self, offenders):
+        self.offenders = offenders
+        super().__init__(
+            "refusing to prune: %d object(s) ride a bone this prune would delete — %s"
+            % (len(offenders),
+               ", ".join("%r on bone %r" % (o["object"], o["bone"]) for o in offenders)))
 
 
 def _weighted_bone_names(armature, meshes):
@@ -85,7 +105,8 @@ def _bone_parented_objects(armature, delete: set) -> List[dict]:
 
 def prune_zero_weight_bones(armature,
                             meshes: Optional[List[bpy.types.Object]] = None,
-                            whatif: bool = False
+                            whatif: bool = False,
+                            force: bool = False
                             ) -> dict:
     """Remove bones that have no weight in any mesh and no structural role.
 
@@ -118,11 +139,15 @@ def prune_zero_weight_bones(armature,
     outfits) found ZERO non-skeleton objects parented to a bone; avatars attach by
     skinning. That measurement licenses dropping the KEEP rule; it does not license a
     silent destructive path — prune runs on a ``.blend`` mid-pipeline, after import,
-    merge and any hand-authoring, which is not the population that was scanned. So
-    ``bone_parented_objects`` is reported on BOTH paths (``whatif`` merely shows it
-    before you commit): nothing obliges a caller to preview, and a whatif-only
-    tripwire would leave the destructive path with neither the old keep rule nor a
-    warning.
+    merge and any hand-authoring, which is not the population that was scanned.
+
+    So the collision is a **gate**, not a notice: the plan is known before Edit Mode
+    opens, and if any object rides a bone this prune would delete, it raises
+    :class:`PruneRefused` having mutated nothing. Reporting-and-pruning-anyway would
+    read as a clean success to an agent driving by exit code, on an asset it just
+    broke. Pass ``force=True`` to prune regardless (the attachment is then orphaned —
+    deliberately). ``bone_parented_objects`` is still reported on both paths, since a
+    non-pruned bone's rider is worth surfacing without blocking.
 
     Weights are read as stored in the vertex groups; deform-time modifiers are
     ignored (e.g. a Mirror modifier with vertex-group flip weights the mirrored
@@ -138,6 +163,13 @@ def prune_zero_weight_bones(armature,
         whatif: Preview only — compute the removal plan, delete nothing, and
             return it enriched (see below). The plan is the same object the
             destructive path consumes, so preview and execute cannot disagree.
+            Never raises; reports the gate verdict as ``would_refuse``.
+        force: Prune even when an object rides a doomed bone, orphaning it. Without
+            this, that case raises :class:`PruneRefused` and nothing is mutated.
+
+    Raises:
+        PruneRefused: an object is parented to a bone the plan would delete and
+            ``force`` is not set. Raised before Edit Mode opens — nothing mutated.
 
     Returns:
         Execute: ``{"kept": int, "deleted": int, "deleted_bones": List[str],
@@ -156,6 +188,9 @@ def prune_zero_weight_bones(armature,
           keep explains itself.
         - ``bone_parented_objects``: the tripwire above. Non-empty means this asset
           violates the measured assumption; read it before pruning.
+        - ``would_refuse``: ``True`` when a real run would raise
+          :class:`PruneRefused` — the gate verdict, so a preview answers "will this
+          go through?" and not merely "what would it take?".
     """
     if meshes is None:
         meshes = scene_utils.get_bound_meshes(armature)
@@ -185,11 +220,11 @@ def prune_zero_weight_bones(armature,
 
     delete = [b.name for b in bones if b.name not in keep]
 
-    # Computed on BOTH paths, deliberately. Nothing obliges a caller to preview first
-    # (the UI ships two independent buttons; the CLI is two independent invocations),
-    # so a whatif-only tripwire would leave the destructive path with neither the old
-    # attachment keep rule nor any warning that it just orphaned an attachment.
+    # Computed on BOTH paths, deliberately, and BEFORE Edit Mode opens — knowing the
+    # collision only in the preview would leave the destructive path with neither the
+    # old attachment keep rule nor any guard.
     bone_parented = _bone_parented_objects(armature, set(delete))
+    orphaned = [o for o in bone_parented if o["bone_pruned"]]
 
     if whatif:
         return {
@@ -200,7 +235,15 @@ def prune_zero_weight_bones(armature,
             "chains": _group_chains(bones, set(delete), weighted),
             "kept_tips": tips,
             "bone_parented_objects": bone_parented,
+            # What a real run would do — so a preview carries the gate verdict, not
+            # just the plan (mirrors merge_armatures' whatif).
+            "would_refuse": bool(orphaned) and not force,
         }
+
+    # The gate. Nothing has been mutated yet, so declining here costs nothing; once
+    # Edit Mode removes the bone the attachment is orphaned irreversibly.
+    if orphaned and not force:
+        raise PruneRefused(orphaned)
 
     # Switch to Edit Mode to remove bones (headless-safe; the context manager
     # guarantees a return to OBJECT mode even if a remove() fails, so a failure

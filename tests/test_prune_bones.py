@@ -159,7 +159,7 @@ def main():
     _clear_scene()
     _add_repo_root_to_path()
 
-    from avatarprep.core.prune_bones import prune_zero_weight_bones
+    from avatarprep.core.prune_bones import prune_zero_weight_bones, PruneRefused
 
     arm_obj = _build_armature()
     _build_mesh(arm_obj)
@@ -221,9 +221,30 @@ def main():
     if tips != {"Upper_end"}:
         failures.append("expected kept_tips == {Upper_end}, got %r" % sorted(tips))
 
-    # ── execute, and hold it to the plan the preview published ───────────────
+    # The preview must carry the GATE verdict, not just the plan: HookAttachment
+    # rides the doomed Hook, so a real run refuses.
+    if preview.get("would_refuse") is not True:
+        failures.append("expected preview['would_refuse'] is True (Hook is doomed and ridden), got %r"
+                        % preview.get("would_refuse"))
+
+    # ── the gate: an unforced run must REFUSE and mutate nothing ─────────────
+    bones_pre_gate = {b.name for b in arm_obj.data.bones}
     try:
-        result = prune_zero_weight_bones(arm_obj)
+        prune_zero_weight_bones(arm_obj)
+    except PruneRefused as refused:
+        if {o["object"] for o in refused.offenders} != {"HookAttachment"}:
+            failures.append("expected PruneRefused to name HookAttachment, got %r" % refused.offenders)
+    except Exception as e:
+        failures.append("expected PruneRefused, got %s: %s" % (type(e).__name__, e))
+    else:
+        failures.append("expected PruneRefused (HookAttachment rides the doomed Hook), but the prune ran")
+    # The whole point of a gate over a warning: nothing moved.
+    if {b.name for b in arm_obj.data.bones} != bones_pre_gate:
+        failures.append("a REFUSED prune must mutate nothing, but the armature changed")
+
+    # ── execute under force, and hold it to the plan the preview published ───
+    try:
+        result = prune_zero_weight_bones(arm_obj, force=True)
     except Exception as e:
         print("PRUNE_TEST FAIL: exception:", e)
         sys.exit(1)
@@ -265,8 +286,8 @@ def main():
     expect_absent("Hair2")
     expect_absent("Hair3")
 
-    # The tripwire must ALSO be on the destructive path — nothing obliges a caller to
-    # preview, so a whatif-only warning would leave execute silent about the orphan.
+    # Under --force the orphan is deliberate, but must still be reported — the run
+    # that knowingly breaks the attachment is exactly the one that has to say so.
     exec_bpo = result.get("bone_parented_objects")
     if not isinstance(exec_bpo, list):
         failures.append("execute result must carry bone_parented_objects, got %r" % exec_bpo)

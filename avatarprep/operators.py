@@ -270,17 +270,31 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
                       "(checkpoint/save first — no undo; over-pruning is unrecoverable)")
     bl_options = {'REGISTER'}  # NOT UNDO: destructive edit-bone removal
 
+    force: BoolProperty(name="Force", default=False,
+                        description="Prune even when an object rides a doomed bone, "
+                                    "orphaning it")
+
     @classmethod
     def poll(cls, context):
         return scene_utils.find_armature() is not None
 
     def execute(self, context):
-        from .core.prune_bones import prune_zero_weight_bones
+        from .core.prune_bones import prune_zero_weight_bones, PruneRefused
         armature = scene_utils.find_armature()
         if armature is None:
             self.report({'ERROR'}, "No armature found")
             return {'CANCELLED'}
-        result = prune_zero_weight_bones(armature)
+        try:
+            result = prune_zero_weight_bones(armature, force=self.force)
+        except PruneRefused as refused:
+            # Gate: nothing was mutated. CANCELLED, not FINISHED — a red line above a
+            # "finished" op reads as advisory, and this one isn't.
+            for o in refused.offenders:
+                self.report({'ERROR'}, "Bone-parented %s '%s' rides doomed bone '%s'"
+                            % (o["type"], o["object"], o["bone"]))
+            self.report({'ERROR'}, "Prune REFUSED — nothing was pruned. Re-weight or "
+                                   "re-parent the object, or enable Force to orphan it.")
+            return {'CANCELLED'}
         self.report({'INFO'}, "Pruned (kept %d, deleted %d)"
                     % (result["kept"], result["deleted"]))
         # Window the status-bar manifest (the full list lives in the CLI stdout
@@ -290,12 +304,12 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             self.report({'WARNING'}, "Pruned bone: %s" % name)
         if len(deleted) > 10:
             self.report({'WARNING'}, "…and %d more pruned bone(s)" % (len(deleted) - 10))
-        # Same tripwire the preview reports, on the path where the damage is already
-        # done — the two buttons are independent, so nothing forces a preview first.
+        # Riders of SURVIVING bones — reported, not blocking. A rider of a doomed bone
+        # never reaches here (it raised above) unless Force deliberately orphaned it.
         for obj in result["bone_parented_objects"]:
-            self.report({'ERROR'}, "Bone-parented %s '%s' rode bone '%s'%s"
+            self.report({'WARNING'}, "Bone-parented %s '%s' rode bone '%s'%s"
                         % (obj["type"], obj["object"], obj["bone"],
-                           " — THAT BONE WAS PRUNED; the object is now orphaned"
+                           " — THAT BONE WAS PRUNED under Force; the object is now orphaned"
                            if obj["bone_pruned"] else ""))
         return {'FINISHED'}
 

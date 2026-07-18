@@ -261,37 +261,51 @@ def test_prune_whatif(tmp):
         _fail("prune: expected nonzero exit when --out is omitted without --whatif\n%s" % out2)
 
 
-def test_prune_execute_warns_on_bone_parented(tmp):
-    """The destructive path must warn about an orphaned attachment, not just --whatif.
+def test_prune_refuses_on_bone_parented(tmp):
+    """An object riding a doomed bone is a GATE, not a warning.
 
-    Nothing obliges a caller to preview first, so a whatif-only tripwire would leave
-    this run silent after irreversibly orphaning the Empty.
+    The plan is known before anything mutates, so the tool declines: exit 1, --out
+    unwritten, nothing pruned. A warn-then-prune run would exit 0 — indistinguishable,
+    to an agent reading exit codes, from a clean run on an asset it just broke.
     """
     scene = os.path.join(tmp, "prune_attach_in.blend")
     _build_prune_attach_blend(scene)
     out = os.path.join(tmp, "prune_attach_out.blend")
     report = os.path.join(tmp, "prune_attach_report.json")
 
-    # No --whatif: the real, destructive invocation.
+    # No --whatif: the real, destructive invocation — which must refuse.
     rc, out_txt = _run_cli("prune_bones.py",
                            ["--in", scene, "--out", out, "--report", report])
-    if rc != 0:
-        _fail("prune attach: expected exit 0, got %d\n%s" % (rc, out_txt))
-    if "SkirtAttachment" not in out_txt:
-        _fail("prune attach: execute stdout must name the orphaned attachment\n%s" % out_txt)
-    if "WARNING bone-parented" not in out_txt:
-        _fail("prune attach: execute stdout must carry the bone-parented WARNING\n%s" % out_txt)
+    if rc != 1:
+        _fail("prune attach: expected exit 1 (REFUSED), got %d\n%s" % (rc, out_txt))
+    if os.path.exists(out):
+        _fail("prune attach: --out MUST be absent on refusal, but %s exists" % out)
+    if "REFUSED" not in out_txt or "SkirtAttachment" not in out_txt:
+        _fail("prune attach: stdout must say REFUSED and name the offender\n%s" % out_txt)
 
     if not os.path.exists(report):
-        _fail("prune attach: expected --report written at %s" % report)
+        _fail("prune attach: --report should still be written on refusal")
         return
     with open(report, encoding="utf-8") as fh:
         data = json.load(fh)
-    rows = data.get("bone_parented_objects")
-    if not rows:
-        _fail("prune attach: execute report must carry bone_parented_objects, got %r" % data)
-    elif not rows[0].get("bone_pruned"):
-        _fail("prune attach: the report row must flag bone_pruned=True, got %r" % rows)
+    if not data.get("refused") or not data.get("bone_parented_objects"):
+        _fail("prune attach: refusal report must carry refused + offenders, got %r" % data)
+
+    # --whatif carries the gate verdict in its exit code, mutating nothing.
+    rc_wi, wi_txt = _run_cli("prune_bones.py", ["--in", scene, "--whatif"])
+    if rc_wi != 1:
+        _fail("prune attach whatif: expected exit 1 (would refuse), got %d\n%s" % (rc_wi, wi_txt))
+
+    # --force overrides: prunes, saves, and still reports the deliberate orphan.
+    out_forced = os.path.join(tmp, "prune_attach_forced.blend")
+    rc_f, f_txt = _run_cli("prune_bones.py",
+                           ["--in", scene, "--out", out_forced, "--force"])
+    if rc_f != 0:
+        _fail("prune attach --force: expected exit 0, got %d\n%s" % (rc_f, f_txt))
+    if not os.path.exists(out_forced):
+        _fail("prune attach --force: expected --out written at %s" % out_forced)
+    if "SkirtAttachment" not in f_txt:
+        _fail("prune attach --force: must still name the orphaned attachment\n%s" % f_txt)
 
 
 def main():
@@ -300,7 +314,7 @@ def main():
         test_merge_exit_codes(tmp)
         test_prune_exit_code(tmp)
         test_prune_whatif(tmp)
-        test_prune_execute_warns_on_bone_parented(tmp)
+        test_prune_refuses_on_bone_parented(tmp)
     if FAILURES:
         for f in FAILURES:
             print("CLI_SEAM_TEST FAIL:", f)
