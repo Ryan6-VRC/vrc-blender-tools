@@ -166,6 +166,39 @@ def test_compat_exit_codes(tmp):
         _fail("compat bogus name: expected ERROR line\n%s" % out)
 
 
+def test_compat_merge_in(tmp):
+    """--merge-in: two separately-saved rigs BOTH named 'Armature' (the canonical
+    collision) compare across files; the auto-suffix is reported, verdict clean."""
+    base_f = os.path.join(tmp, "mi_base.blend")
+    merge_f = os.path.join(tmp, "mi_merge.blend")
+    _clear_scene()
+    _make_armature("Armature", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("Spine", Vector((0, 0, 1.2)), "Hips"),
+    ])
+    _save_scene(base_f)
+    _clear_scene()
+    _make_armature("Armature", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("Tail", Vector((0, -0.1, 1.0)), "Hips"),
+    ])
+    _save_scene(merge_f)
+
+    rc, out = _run_cli("compare_armatures.py",
+                       ["--in", base_f, "--base", "Armature",
+                        "--merge", "Armature", "--merge-in", merge_f])
+    if rc != 0:
+        _fail("merge-in: expected exit 0, got %d\n%s" % (rc, out))
+    if "compat PASS" not in out or "merge-in resolved" not in out:
+        _fail("merge-in: expected PASS + resolved line\n%s" % out)
+
+    rc, out = _run_cli("compare_armatures.py",
+                       ["--in", base_f, "--base", "Armature",
+                        "--merge", "Nope", "--merge-in", merge_f])
+    if rc != 2 or "ERROR" not in out:
+        _fail("merge-in bogus name: expected exit 2 + ERROR, got %d\n%s" % (rc, out))
+
+
 def test_merge_exit_codes(tmp):
     clean = os.path.join(tmp, "merge_clean.blend")
     dirty = os.path.join(tmp, "merge_dirty.blend")
@@ -337,6 +370,7 @@ def test_whatif_rejects_out(tmp):
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_compat_exit_codes(tmp)
+        test_compat_merge_in(tmp)
         test_merge_exit_codes(tmp)
         test_prune_exit_code(tmp)
         test_prune_whatif(tmp)
