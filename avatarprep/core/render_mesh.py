@@ -166,10 +166,12 @@ def render(
     angles=None,      # subset of {front,back,left,right,top,bottom}; None/empty -> [front, back]
     shading: str = "solid",  # "solid" | "vertexcolor"
     resolution: int = 1024,  # per-tile square edge cap in px; must be >= 1; never upscales
+    out_dir=None,            # sheet destination; None -> the persistent temp home (30d prune).
+                             # An explicit dir is the caller's to manage — never pruned.
 ) -> str:
     """Render the scene's render-visible meshes (optionally narrowed by ``only`` names) from
-    ``angles`` to one stamped contact-sheet PNG in the persistent ``avatarprep_rendermesh`` temp
-    subdir; return the one-line summary (OK or FAIL). Never raises for an EXPECTED refusal — it
+    ``angles`` to one stamped contact-sheet PNG in ``out_dir`` (default: the persistent
+    ``avatarprep_rendermesh`` temp subdir); return the one-line summary (OK or FAIL). Never raises for an EXPECTED refusal — it
     returns the FAIL line;
     a genuinely unexpected error propagates (the cli maps that to exit 2).
 
@@ -396,7 +398,9 @@ def render(
             # DEDICATED subdir (not the bare temp root) mirrors RenderAvatar's per-project cache, so a
             # grab-dir scanner sees only rendermesh sheets, not the whole busy temp root. The per-angle
             # intermediate tiles above stay in bpy.app.tempdir — they're intra-process scratch.
-            out_dir = os.path.join(tempfile.gettempdir(), "avatarprep_rendermesh")
+            default_home = out_dir is None
+            if default_home:
+                out_dir = os.path.join(tempfile.gettempdir(), "avatarprep_rendermesh")
             os.makedirs(out_dir, exist_ok=True)
             path = os.path.join(out_dir, "rendermesh_%s_%s.png" % (lbl, stamp))
             sh, sw = sheet.shape[0], sheet.shape[1]
@@ -409,7 +413,8 @@ def render(
             out.save()
             bpy.data.images.remove(out)
             loaded_images.remove(out)
-            _prune_old_sheets(out_dir)  # bound the persistent dir (the just-written sheet is newest)
+            if default_home:  # only our own home is bounded; an explicit dir is the caller's
+                _prune_old_sheets(out_dir)
 
     finally:
         for o, v in touched_hide.items():

@@ -3,7 +3,15 @@
 Run:
   blender <in.blend> --background --factory-startup --python cli/bake_shapekey.py -- \
       --in <in.blend> --out <out.blend> --mesh <MeshName> --key <KeyName> \
-      [--value 1.0] [--protect-group neck]
+      [--value 1.0] [--protect-group neck] [--head-mesh-names Body]
+
+``--head-mesh-names`` is the comma-separated head-refusal list (default ``Body`` —
+a NAME CONVENTION standing in for a geometric check; suffix/case-insensitive).
+Baking a mesh on the list is refused because the bake recomputes its normals and
+profiles never morph the head. Passing your own list (or '' to disable) is an
+explicit assertion about where the head lives on THIS rig — e.g. a combined-mesh
+rig whose ``Body`` includes the head keeps the refusal; a torso-only ``Body``
+with the face on ``Face`` wants ``--head-mesh-names Face``.
 """
 import os
 import sys
@@ -26,6 +34,7 @@ def _parse_args():
     p.add_argument("--key", dest="key", required=True)
     p.add_argument("--value", dest="value", type=float, default=1.0)
     p.add_argument("--protect-group", dest="protect_group", default="neck")
+    p.add_argument("--head-mesh-names", dest="head_mesh_names", default="Body")
     return p.parse_args(argv)
 
 
@@ -40,11 +49,17 @@ def main():
     if mesh is None or mesh.type != 'MESH':
         print("AVATARPREP: ERROR mesh %r not found or not a mesh" % args.mesh)
         sys.exit(1)
+    head_names = tuple(n.strip() for n in args.head_mesh_names.split(",") if n.strip())
     try:
         report = shapekey_bake.bake_shapekey_to_basis(
-            mesh, args.key, args.value, protect_group=args.protect_group)
+            mesh, args.key, args.value, protect_group=args.protect_group,
+            head_mesh_names=head_names)
     except shapekey_bake.BakeError as e:
         print("AVATARPREP: ERROR", e)
+        if "head mesh" in str(e):
+            print("AVATARPREP: NOTE the head list is --head-mesh-names (default "
+                  "'Body', a name convention); overriding it asserts where the "
+                  "head lives on this rig — see the CLI docstring")
         sys.exit(1)
     print("AVATARPREP: baked %s=%g into Basis on %s (cumulative=%g, protected_loops=%d)"
           % (report["key"], report["value"], report["mesh"],
