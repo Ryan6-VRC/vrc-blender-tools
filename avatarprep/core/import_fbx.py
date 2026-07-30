@@ -20,8 +20,30 @@ from mathutils import Vector
 from . import scene_utils
 
 
+def _read_unit_scale_factor(path: str):
+    """The source file's ``GlobalSettings.UnitScaleFactor`` (cm per file unit:
+    ``100.0`` = meter-unit file, ``1.0`` = cm-unit file), or ``None`` if
+    unreadable. Read from the FILE because the importer normalizes both classes
+    into identical scene state — nothing scene-side records which the vendor
+    shipped. Diagnostic only: never fails an import."""
+    try:
+        from io_scene_fbx import parse_fbx
+        root, _ = parse_fbx.parse(path)
+        for gs in (e for e in root.elems if e.id == b"GlobalSettings"):
+            for p70 in (c for c in gs.elems if c.id == b"Properties70"):
+                for p in p70.elems:
+                    if p.props[0] == b"UnitScaleFactor":
+                        return float(p.props[4])
+    except Exception:
+        pass
+    return None
+
+
 def import_fbx(path: str, **settings) -> Dict[str, Any]:
-    """Import ``path`` as FBX and return an :func:`observe_import` snapshot.
+    """Import ``path`` as FBX and return an :func:`observe_import` snapshot,
+    plus ``unit_scale_factor`` — the source file's unit class (see
+    :func:`_read_unit_scale_factor`; ``export_unity_fbx``'s docstring says what
+    to make of it).
 
     Any keyword in ``settings`` is forwarded to ``bpy.ops.wm.fbx_import`` (e.g.
     ``global_scale``, ``use_custom_normals``, ``ignore_leaf_bones``).
@@ -65,7 +87,9 @@ def import_fbx(path: str, **settings) -> Dict[str, Any]:
     for arm in (o for o in new_objects if o.type == 'ARMATURE'):
         scene_utils.write_stamp(arm, scene_utils.STAMP_STATE, "unproportioned")
 
-    return observe_import(new_objects)
+    snap = observe_import(new_objects)
+    snap["unit_scale_factor"] = _read_unit_scale_factor(path)
+    return snap
 
 
 def observe_import(objects=None) -> Dict[str, Any]:
