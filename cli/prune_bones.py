@@ -40,7 +40,9 @@ def _parse_args():
     p.add_argument("--out", dest="out_path", default=None,   # not required under --whatif
                    help="Where to save the pruned .blend; omit under --whatif")
     p.add_argument("--armature", dest="armature", default=None,
-                   help="Armature object to target; required when the scene has more than one")
+                   help="Armature object to prune. Omitted, the active armature is used, "
+                        "else the FIRST one in the scene — this door does not refuse an "
+                        "ambiguous file, so pass it explicitly on a multi-armature scene")
     p.add_argument("--whatif", dest="whatif", action="store_true",
                    help="Report the removal plan as rooted chains; no mutation, no --out")
     p.add_argument("--force", dest="force", action="store_true",

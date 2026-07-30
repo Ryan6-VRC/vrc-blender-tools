@@ -42,7 +42,10 @@ def _parse_args():
                    help="Rename a --merge bone before matching, so it unions with the "
                         "differently-named --base bone. Repeatable")
     p.add_argument("--force", action="store_true",
-                   help="Merge even when the compat gate reports offenders")
+                   help="Merge even when the compat gate reports STRUCTURAL offenders "
+                        "(renames, parent or position mismatches). Stamp offenders need "
+                        "--force-stamps; the two overrides are deliberately separate, so "
+                        "forcing past one cannot wave past the other")
     p.add_argument("--force-stamps", dest="force_stamps", action="store_true",
                    help="Merge even when the two armatures' provenance stamps disagree")
     p.add_argument("--whatif", action="store_true",

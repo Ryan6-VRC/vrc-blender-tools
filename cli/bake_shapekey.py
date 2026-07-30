@@ -39,13 +39,16 @@ def _parse_args():
     p.add_argument("--value", dest="value", type=float, default=1.0,
                    help="Fraction of the key to bake in (default 1.0 = fully)")
     p.add_argument("--protect-group", dest="protect_group", default="neck",
-                   help="Vertex group held at its Basis position through the bake "
-                        "(default 'neck', which keeps the seam to the head still)")
+                   help="Vertex group whose authored custom split normals survive the bake "
+                        "(default 'neck'). Geometry still moves — the fold into Basis is "
+                        "whole-mesh; this only keeps the seam to the head from shading wrong")
     p.add_argument("--head-mesh-names", dest="head_mesh_names", default="Body",
-                   help="Comma-separated meshes to REFUSE to bake, matched "
-                        "case-insensitively by suffix (default 'Body'). The bake "
-                        "recomputes normals and profiles never morph the head, so this "
-                        "asserts where the head lives on THIS rig; pass '' to disable")
+                   help="Comma-separated meshes to REFUSE to bake (default 'Body'). Matched "
+                        "by EXACT name, case-insensitively and ignoring Blender's .001 "
+                        "duplicate suffix: 'Body' catches 'body' and 'Body.001', but NOT "
+                        "'Char_Body'. The bake recomputes normals and profiles never morph "
+                        "the head, so this asserts where the head lives on THIS rig; pass "
+                        "'' to disable")
     return p.parse_args(argv)
 
 

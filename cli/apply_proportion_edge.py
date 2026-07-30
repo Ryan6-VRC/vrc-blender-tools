@@ -30,8 +30,9 @@ def _parse_args():
                    help=".blend to apply the edge to")
     p.add_argument("--out", dest="out_path", default=None,   # not required under --whatif
                    help="Where to save the edited .blend; omit under --whatif")
-    p.add_argument("--edge", dest="edge", required=True,
-                   help="Proportion-edge JSON describing the bone and shape-key changes")
+    p.add_argument("--edge", dest="edge", required=True, metavar="EDGE.JSON",
+                   help="Path to the proportion-edge JSON describing the bone and "
+                        "shape-key changes")
     p.add_argument("--armature", dest="armature", default=None,
                    help="Armature object to target; required when the scene has more than one")
     p.add_argument("--whatif", dest="whatif", action="store_true",
