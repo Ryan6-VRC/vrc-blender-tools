@@ -34,13 +34,25 @@ from cli._common import enable_avatarprep, resolve_arm, write_report
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="compare_armatures")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--base", dest="base", required=True)
-    p.add_argument("--merge", dest="merge", required=True)
-    p.add_argument("--merge-in", dest="merge_in", default=None)
-    p.add_argument("--tol", dest="tol", type=float, default=1e-4)
-    p.add_argument("--noise-tol", dest="noise_tol", type=float, default=1e-3)
-    p.add_argument("--report", dest="report", default=None)
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend to open read-only; nothing here mutates or saves")
+    p.add_argument("--base", dest="base", required=True,
+                   help="Armature object treated as the reference side of the diff")
+    p.add_argument("--merge", dest="merge", required=True,
+                   help="Armature object compared against --base. With --merge-in, names "
+                        "the armature in THAT file rather than in --in")
+    p.add_argument("--merge-in", dest="merge_in", default=None,
+                   help="Second .blend or .fbx to pull --merge from, appended/imported in "
+                        "memory only — so two rigs both named 'Armature' compare without a "
+                        "hand-rolled append script")
+    p.add_argument("--tol", dest="tol", type=float, default=1e-4,
+                   help="Positional distance under which bones count as coincident "
+                        "(default 1e-4)")
+    p.add_argument("--noise-tol", dest="noise_tol", type=float, default=1e-3,
+                   help="Upper edge of the named-warning noise tier (default 1e-3); above "
+                        "it a bone is an offender and the verdict FAILs")
+    p.add_argument("--report", dest="report", default=None,
+                   help="Write the full diff here as JSON")
     return p.parse_args(argv)
 
 

@@ -28,13 +28,24 @@ from cli._common import enable_avatarprep
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="bake_shapekey")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", required=True)
-    p.add_argument("--mesh", dest="mesh", required=True)
-    p.add_argument("--key", dest="key", required=True)
-    p.add_argument("--value", dest="value", type=float, default=1.0)
-    p.add_argument("--protect-group", dest="protect_group", default="neck")
-    p.add_argument("--head-mesh-names", dest="head_mesh_names", default="Body")
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend holding the mesh to bake")
+    p.add_argument("--out", dest="out_path", required=True,
+                   help="Where to save the baked .blend")
+    p.add_argument("--mesh", dest="mesh", required=True,
+                   help="Mesh object whose shape key is baked into its Basis")
+    p.add_argument("--key", dest="key", required=True,
+                   help="Shape key to bake")
+    p.add_argument("--value", dest="value", type=float, default=1.0,
+                   help="Fraction of the key to bake in (default 1.0 = fully)")
+    p.add_argument("--protect-group", dest="protect_group", default="neck",
+                   help="Vertex group held at its Basis position through the bake "
+                        "(default 'neck', which keeps the seam to the head still)")
+    p.add_argument("--head-mesh-names", dest="head_mesh_names", default="Body",
+                   help="Comma-separated meshes to REFUSE to bake, matched "
+                        "case-insensitively by suffix (default 'Body'). The bake "
+                        "recomputes normals and profiles never morph the head, so this "
+                        "asserts where the head lives on THIS rig; pass '' to disable")
     return p.parse_args(argv)
 
 

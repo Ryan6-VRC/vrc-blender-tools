@@ -31,8 +31,10 @@ def _parse_args():
     else:
         argv = []
     p = argparse.ArgumentParser(prog="apply_pose")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", required=True)
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend whose armature pose becomes its rest pose")
+    p.add_argument("--out", dest="out_path", required=True,
+                   help="Where to save the result")
     p.add_argument("--scale-test", action="store_true",
                    help="Scale the armature pose by 1.2x before applying (test)")
     return p.parse_args(argv)
