@@ -2,12 +2,16 @@
 
 Run:
   blender <in.blend> --background --factory-startup --python cli/report_stamps.py -- \
-      --in <in.blend>
+      --in <in.blend> [--shapekeys [SUBSTR]]
 
 The read/query counterpart of stamp_base — inspects a file's avatarprep_base /
 avatarprep_state (per armature) and avatarprep_baked (per baked mesh) in one call.
 Opens the blend read-only; never saves. A report never "fails" — exit 0 always
 (a bad --in / open failure is the only ERROR exit 2).
+
+``--shapekeys`` additionally lists shape-key NAMES per mesh (every scene mesh,
+basis excluded), optionally narrowed by a case-insensitive substring — the
+enumeration door for "which key is the blink" that otherwise forces ad-hoc bpy.
 """
 import os
 import sys
@@ -26,6 +30,7 @@ def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="report_stamps")
     p.add_argument("--in", dest="in_path", required=True)
+    p.add_argument("--shapekeys", dest="shapekeys", nargs="?", const="", default=None)
     return p.parse_args(argv)
 
 
@@ -59,6 +64,20 @@ def main():
             _print_mesh("armature %s" % a["name"], m)
     for m in report["unbound"]:
         _print_mesh("unbound", m)
+
+    if args.shapekeys is not None:
+        needle = args.shapekeys.casefold()
+        listing = {}
+        for ob in bpy.context.scene.objects:
+            if ob.type != 'MESH':
+                continue
+            sk = ob.data.shape_keys
+            all_keys = [k.name for k in sk.key_blocks[1:]] if sk else []
+            names = [n for n in all_keys if needle in n.casefold()]
+            listing[ob.name] = names
+            print("AVATARPREP: mesh %s shapekeys[%d/%d]: %s"
+                  % (ob.name, len(names), len(all_keys), ", ".join(names)))
+        report["shapekeys"] = listing
 
     print("AVATARPREP: report_stamps =", json.dumps(report))
     sys.exit(0)

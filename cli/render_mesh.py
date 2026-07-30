@@ -3,7 +3,12 @@
 Run:
   blender --background --factory-startup --python cli/render_mesh.py -- \
       --in <file.blend> [--label <name>] [--only a,b,c] \
-      [--angles front,back] [--shading solid|vertexcolor] [--resolution 1024]
+      [--angles front,back] [--shading solid|vertexcolor] [--resolution 1024] \
+      [--out <dir>]
+
+``--out`` writes the sheet into that directory instead of the default persistent
+temp home (``<TEMP>/avatarprep_rendermesh``, 30-day self-pruned); an explicit
+directory is the caller's to manage and is never pruned.
 
 Opens ``--in`` read-only via wm.open_mainfile (never saved), calls
 ``avatarprep.core.render_mesh.render()``, prints the one-line summary, and exits:
@@ -45,6 +50,7 @@ def _parse_args():
     p.add_argument("--angles", dest="angles", default=None)
     p.add_argument("--shading", dest="shading", default="solid")
     p.add_argument("--resolution", dest="resolution", type=int, default=1024)
+    p.add_argument("--out", dest="out_dir", default=None)
     return p.parse_args(argv)
 
 
@@ -80,6 +86,7 @@ def main():
             angles=_split(args.angles),
             shading=args.shading,
             resolution=args.resolution,
+            out_dir=os.path.abspath(args.out_dir) if args.out_dir else None,
         )
     except Exception as e:
         print("AVATARPREP: rendermesh ? => FAIL: %s" % e)

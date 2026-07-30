@@ -10,6 +10,12 @@ modified versions is permitted, modification/adjustment is permitted, and credit
 is not required. It is NOT covered by this repository's MIT LICENSE; it remains
 under the VN3 license above.
 
+DERIVED ASSETS: files in this repository derived from this avatar (rendered
+calibration/reference images, converted .blend/.fbx intermediates, and any
+other fixture-derived artifacts, wherever committed) are modified versions of
+the model and remain under the same VN3 license, not the repository's MIT
+LICENSE.
+
 REVOCABILITY: the VN3 license can be terminated by the licensor at any time.
 Because git history is permanent, this asset persists in clones even after a
 revocation. Check the licensor's site for current status. Bundling it is an

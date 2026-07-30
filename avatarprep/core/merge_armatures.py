@@ -14,11 +14,23 @@ unless the caller resolves it via ``rename_map`` or overrides with ``force``.
 the scene untouched (postcheck outcomes are not predicted).
 """
 
+import math
 from typing import Any, Dict, List, Optional
 
 import bpy
 
 from . import scene_utils
+
+
+def _validate_tols(tol: float, noise_tol: float) -> None:
+    """Both finite and ``0 <= tol <= noise_tol`` — anything else silently
+    inverts the tier's semantics (a loosened ``tol`` above ``noise_tol`` turns
+    passes into offenders and narrows rename co-location; ``noise_tol=inf``
+    waves every positional offender past the destructive merge)."""
+    if not (math.isfinite(tol) and math.isfinite(noise_tol)) \
+            or tol < 0 or noise_tol < tol:
+        raise ValueError("tolerances must be finite with 0 <= tol <= noise_tol, "
+                         "got tol=%r noise_tol=%r" % (tol, noise_tol))
 
 
 def _world_heads(arm: bpy.types.Object) -> Dict[str, Any]:
@@ -32,8 +44,19 @@ def _world_heads(arm: bpy.types.Object) -> Dict[str, Any]:
 
 def compare_armatures(base_arm: bpy.types.Object,
                       merge_arm: bpy.types.Object,
-                      *, tol: float = 1e-4) -> Dict[str, Any]:
-    """Read-only diff of two armature skeletons. Mutates nothing."""
+                      *, tol: float = 1e-4,
+                      noise_tol: float = 1e-3) -> Dict[str, Any]:
+    """Read-only diff of two armature skeletons. Mutates nothing.
+
+    Two positional thresholds: a matched bone further apart than ``noise_tol``
+    (1 mm) is a ``position_mismatches`` offender (gates the merge); one in
+    ``(tol, noise_tol]`` lands in ``position_noise`` — named in warnings, never
+    an offender. Calibration: our own export/import round-trip is ~1e-7, but two
+    *separately authored* vendor FBXes (outfit vs the base it was built for)
+    carry sub-millimeter rounding (0.000222 measured on the canonical case), so
+    a single strict threshold false-FAILs exactly the compare this tool exists
+    for. Rename co-location uses ``noise_tol`` for the same reason."""
+    _validate_tols(tol, noise_tol)
     base_heads = _world_heads(base_arm)
     merge_heads = _world_heads(merge_arm)
     base_names, merge_names = set(base_heads), set(merge_heads)
@@ -47,13 +70,13 @@ def compare_armatures(base_arm: bpy.types.Object,
     merge_parent = {b.name: (b.parent.name if b.parent else None)
                     for b in merge_arm.data.bones}
 
-    # Suspected renames: an only-in-merge bone co-located (<= tol) with an
+    # Suspected renames: an only-in-merge bone co-located (<= noise_tol) with an
     # only-in-base bone. Nearest-distance, stable secondary sort on base name.
     suspected_renames: List[Dict[str, Any]] = []
     for m in only_in_merge:
         mh = merge_heads[m]
         cands = [((mh - base_heads[b]).length, b) for b in only_in_base]
-        cands = [c for c in cands if c[0] <= tol]
+        cands = [c for c in cands if c[0] <= noise_tol]
         if cands:
             cands.sort(key=lambda c: (c[0], c[1]))
             dist, b = cands[0]
@@ -61,14 +84,17 @@ def compare_armatures(base_arm: bpy.types.Object,
 
     parent_mismatches: List[Dict[str, Any]] = []
     position_mismatches: List[Dict[str, Any]] = []
+    position_noise: List[Dict[str, Any]] = []
     for n in matched:
         if base_parent.get(n) != merge_parent.get(n):
             parent_mismatches.append({"bone": n,
                                       "base_parent": base_parent.get(n),
                                       "merge_parent": merge_parent.get(n)})
         dist = (base_heads[n] - merge_heads[n]).length
-        if dist > tol:
+        if dist > noise_tol:
             position_mismatches.append({"bone": n, "dist": round(dist, 8)})
+        elif dist > tol:
+            position_noise.append({"bone": n, "dist": round(dist, 8)})
 
     # Stamp dimensions — base identity + proportion state. This per-dimension
     # (KEY, label) list encodes the gate-vs-advisory choice: base + state feed the
@@ -90,6 +116,10 @@ def compare_armatures(base_arm: bpy.types.Object,
             stamp_mismatches.append({"dimension": label, "kind": kind,
                                      "base": base_raw, "merge": merge_raw})
 
+    for r in position_noise:
+        warnings.append("position noise: %r (%.6f) — above tol, below noise_tol; "
+                        "not gating" % (r["bone"], r["dist"]))
+
     structural_clean = not (suspected_renames or parent_mismatches or position_mismatches)
     stamp_clean = not stamp_mismatches
     return {
@@ -99,6 +129,7 @@ def compare_armatures(base_arm: bpy.types.Object,
         "suspected_renames": suspected_renames,
         "parent_mismatches": parent_mismatches,
         "position_mismatches": position_mismatches,
+        "position_noise": position_noise,
         "stamp_mismatches": stamp_mismatches,
         "warnings": warnings,
         "structural_clean": structural_clean,
@@ -251,12 +282,14 @@ def merge_armatures(base_arm: bpy.types.Object,
                     *, rename_map: Optional[Dict[str, str]] = None,
                     force: bool = False, force_stamps: bool = False,
                     apply_transforms: bool = True,
-                    whatif: bool = False, tol: float = 1e-4) -> Dict[str, Any]:
+                    whatif: bool = False, tol: float = 1e-4,
+                    noise_tol: float = 1e-3) -> Dict[str, Any]:
     """Union-merge ``merge_arm`` into ``base_arm`` by bone name. Single-shot and
     destructive — checkpoint (git/save) before calling. ``whatif=True`` stops at the
     compat gate: preflight + rename_map validation + compat run for real, then the
     rename_map is rolled back and the predicted verdict returned — scene untouched,
     no join. See module docstring."""
+    _validate_tols(tol, noise_tol)  # before Phase 2 — a raise must precede any mutation
     rename_map = dict(rename_map or {})
 
     # Same-object base==merge is a catastrophic self-merge (two typos both
@@ -305,7 +338,7 @@ def merge_armatures(base_arm: bpy.types.Object,
     # safety-critical skeleton-doubling gate); ``force_stamps`` overrides the
     # advisory STAMP offenders only — so forcing past a harmless base mislabel
     # cannot silently wave past a real structural mismatch, and vice versa.
-    report = compare_armatures(base_arm, merge_arm, tol=tol)
+    report = compare_armatures(base_arm, merge_arm, tol=tol, noise_tol=noise_tol)
     structural_fail = (not report["structural_clean"]) and not force
     stamp_fail = (not report["stamp_clean"]) and not force_stamps
     if structural_fail or stamp_fail:
@@ -337,6 +370,28 @@ def merge_armatures(base_arm: bpy.types.Object,
 
     # --- Phase 4: mutate ---
     if apply_transforms:
+        # An import-parked object rotation must NOT be baked into bone/mesh data
+        # by the apply — a merged rig would then export 180° off the vendor frame
+        # with an identity object rotation the exporter's residue-clear cannot
+        # see. Clear both rotations UNAPPLIED first (undo discarded — the apply
+        # below consumes the state), so the apply bakes the vendor frame. Safe
+        # only when the clears move both rigs identically: equal world rotations
+        # AND (identity rotation or equal origins) — each rig rotates about its
+        # own origin. Otherwise keep the old world-frame bake and say so.
+        bpy.context.view_layer.update()  # matrix_world is stale after direct rotation writes
+        bw, mw = base_arm.matrix_world, merge_arm.matrix_world
+        rot_delta = bw.to_quaternion().rotation_difference(mw.to_quaternion()).angle
+        identity_rot = bw.to_quaternion().angle < 1e-6 and mw.to_quaternion().angle < 1e-6
+        origins_close = (bw.translation - mw.translation).length < 1e-6
+        if rot_delta < 1e-6 and (identity_rot or origins_close):
+            moved: set = set()
+            for arm in (base_arm, merge_arm):
+                scene_utils.clear_object_rotation(arm, moved)
+        else:
+            report["warnings"].append(
+                "object rotations/origins differ between base and merge — baking "
+                "the world frame; the merged rig's exported orientation will not "
+                "match either source's vendor frame")
         for arm in (base_arm, merge_arm):
             _apply_object_transform(arm)
             for m in scene_utils.get_bound_meshes(arm):

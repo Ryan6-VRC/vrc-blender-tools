@@ -261,6 +261,76 @@ def test_compat_flags_rename():
         _fail("compat: expected Hips matched, got %r" % rep["matched"])
 
 
+def test_position_noise_tier():
+    """Sub-noise_tol deltas (FBX cross-vendor rounding scale, e.g. the measured
+    0.000222 toe delta) are NAMED but never gate; above noise_tol still FAILs."""
+    _clear_scene()
+    base = _make_armature("Base", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("Toe_L", Vector((0.1, 0, 0.02)), "Hips"),
+    ])
+    merge = _make_armature("Merge", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("Toe_L", Vector((0.1, 0, 0.02 + 5e-4)), "Hips"),  # noise tier
+    ])
+    from avatarprep.core.merge_armatures import compare_armatures, merge_armatures
+    rep = compare_armatures(base, merge)
+    if not rep["clean"] or rep["position_mismatches"]:
+        _fail("noise: 5e-4 delta must be clean with no offenders, got %r" % rep)
+    if not any(x["bone"] == "Toe_L" for x in rep["position_noise"]):
+        _fail("noise: expected Toe_L in position_noise, got %r" % rep["position_noise"])
+    if not any("position noise" in w and "Toe_L" in w for w in rep["warnings"]):
+        _fail("noise: expected a position-noise warning line, got %r" % rep["warnings"])
+    res = merge_armatures(base, merge, whatif=True)
+    if res["verdict"] != "PASS":
+        _fail("noise: merge gate must pass on a noise-tier delta, got %r" % res)
+
+    _clear_scene()
+    base = _make_armature("Base", [("Hips", Vector((0, 0, 1.0)), None)])
+    merge = _make_armature("Merge", [("Hips", Vector((0, 0, 1.0 + 5e-3)), None)])
+    rep = compare_armatures(base, merge)
+    if rep["clean"] or not any(x["bone"] == "Hips" for x in rep["position_mismatches"]):
+        _fail("noise: 5e-3 delta must remain a position_mismatch offender, got %r" % rep)
+
+
+def test_tolerance_validation():
+    """A tol/noise_tol pair that inverts the tier's semantics must raise, from
+    both doors, before any mutation."""
+    _clear_scene()
+    base, merge = _twin_pair()
+    from avatarprep.core.merge_armatures import compare_armatures, merge_armatures
+    for kw in ({"tol": 1e-2, "noise_tol": 1e-3}, {"noise_tol": float("inf")},
+               {"tol": float("nan")}, {"tol": -1.0}):
+        for fn in (compare_armatures, merge_armatures):
+            try:
+                fn(base, merge, **kw)
+                _fail("tol-validation: %s(%r) did not raise" % (fn.__name__, kw))
+            except ValueError:
+                pass
+    if [b.name for b in merge.data.bones] != ["Hips", "Spine"]:
+        _fail("tol-validation: merge armature mutated by a rejected call")
+
+
+def test_rename_colocation_uses_noise_tol():
+    """A renamed bone displaced by rounding noise must still be caught as a
+    suspected rename (co-location widened to noise_tol)."""
+    _clear_scene()
+    base = _make_armature("Base", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("Breast_L", Vector((0.1, 0, 1.3)), "Hips"),
+    ])
+    merge = _make_armature("Merge", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("breast_L", Vector((0.1, 0, 1.3 + 5e-4)), "Hips"),
+    ])
+    from avatarprep.core.merge_armatures import compare_armatures
+    rep = compare_armatures(base, merge)
+    if not any(x["merge"] == "breast_L" and x["base"] == "Breast_L"
+               for x in rep["suspected_renames"]):
+        _fail("noise-rename: expected suspected rename at 5e-4 co-location, got %r"
+              % rep["suspected_renames"])
+
+
 def _scene_armatures():
     return [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
 
@@ -641,6 +711,9 @@ def test_whatif():
 def main():
     _add_repo_root_to_path()
     test_compat_flags_rename()
+    test_position_noise_tier()
+    test_tolerance_validation()
+    test_rename_colocation_uses_noise_tol()
     test_guard_unmutated()
     test_same_armature_guard()
     test_clean_merge_weights()

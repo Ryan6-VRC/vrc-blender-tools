@@ -4,6 +4,7 @@ Thin wrapper over ``bpy.ops.export_scene.fbx`` with the parameter set Unity /
 VRChat expect for avatar import (each value is documented inline below).
 """
 
+import math
 from typing import Optional
 
 import bpy
@@ -19,6 +20,7 @@ def export_unity_fbx(filepath: str,
                      path_mode: str = 'COPY',
                      embed_textures: bool = True,
                      use_selection: bool = False,
+                     keep_object_rotation: bool = False,
                      **extra) -> str:
     """Export ``filepath`` as an FBX using the CATS / Unity recipe.
 
@@ -30,6 +32,26 @@ def export_unity_fbx(filepath: str,
       * ``apply_scale_options='FBX_SCALE_ALL'``
       * ``embed_textures=True``
       * ``path_mode='COPY'`` (required for embedding to work)
+
+    **Orientation:** an armature *object* rotation is treated as importer
+    residue, not content — ``wm.fbx_import`` represents a source FBX's axis
+    convention as an object rotation (e.g. -180° Z), and the exporter re-derives
+    its own conversion, so carrying it through double-counts: the file gains an
+    extra 180° and Unity shows the avatar backwards. A Blender re-import cannot
+    see this (the importer symmetrically undoes it); parsing the file can, and
+    ``tests/test_fbx_orientation.py`` pins it against the Felis fixture. Each
+    exported armature's object rotation is therefore cleared UNAPPLIED for the
+    export (bone/mesh data untouched) and restored after. A deliberately rotated
+    armature is the rare exception: pass ``keep_object_rotation=True``.
+
+    **Scale:** ``FBX_SCALE_ALL`` is this repo's canonical export layout — a
+    ``UnitScaleFactor=100`` (meter-unit) file with no compensating node scales,
+    identical to what meter-unit vendors ship. Vendors also ship cm-unit
+    (``UnitScaleFactor=1``) files — the import snapshot's ``unit_scale_factor``
+    names the source's class — but owned exports do NOT mimic the source: Unity
+    normalizes file units at import, and world-space parity there is the owning
+    skill's gate. (``FBX_SCALE_NONE`` instead writes a cm-unit file with 100x
+    root node scales; measured, and not what any probed vendor ships.)
 
     ``armature_obj`` scopes the export to one rig: it selects that armature plus
     its bound meshes and exports selection-only. Because a scoped export is by
@@ -46,6 +68,18 @@ def export_unity_fbx(filepath: str,
         object_types = {'EMPTY', 'ARMATURE', 'MESH', 'OTHER'}
 
     from . import scene_utils
+
+    # A non-unit scene scale silently changes the exported unit layout
+    # (measured: METRIC scale_length=0.01 writes UnitScaleFactor~1, the cm-unit
+    # layout, breaking the canonical-layout contract above; system NONE ignores
+    # scale_length). Refuse loud — the remedy is the scene setting, not a flag.
+    us = bpy.context.scene.unit_settings
+    if us.system != 'NONE' and abs(us.scale_length - 1.0) > 1e-9:
+        raise ValueError(
+            "scene unit_settings.scale_length=%r would change the exported unit "
+            "layout away from the canonical meter-unit file (UnitScaleFactor=100); "
+            "set scene.unit_settings.scale_length = 1.0 (rescale the content if it "
+            "relied on it) and re-export" % us.scale_length)
 
     # ``select_all`` (and the FBX exporter) poll for OBJECT mode; a caller that left
     # the scene in POSE/EDIT — apply_proportion_edge exits in POSE on its object-only
@@ -80,5 +114,32 @@ def export_unity_fbx(filepath: str,
     )
     kwargs.update(extra)
 
-    bpy.ops.export_scene.fbx('EXEC_DEFAULT', **kwargs)
+    # Clear importer-residue object rotation on every exported armature (see
+    # docstring), restore after. Children ride along via parenting; a
+    # modifier-bound NON-descendant mesh (a bound shape get_bound_meshes
+    # supports) is carried by the same delta inside clear_object_rotation —
+    # otherwise the file would ship its geometry 180° off the skeleton.
+    if keep_object_rotation:
+        cleared = []
+    elif armature_obj is not None:
+        cleared = [armature_obj]
+    else:
+        cleared = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
+    undo = []
+    moved = set()
+    try:
+        for o in cleared:
+            old_rot = tuple(round(math.degrees(a), 3)
+                            for a in o.matrix_world.to_euler())
+            delta, u = scene_utils.clear_object_rotation(o, moved)
+            undo += u
+            if any(abs(delta[i][j] - (1.0 if i == j else 0.0)) > 1e-9
+                   for i in range(4) for j in range(4)):
+                print("AVATARPREP: export cleared object rotation on %r "
+                      "(was %s deg; import-convention residue — pass "
+                      "keep_object_rotation=True if it was deliberate)"
+                      % (o.name, old_rot))
+        bpy.ops.export_scene.fbx('EXEC_DEFAULT', **kwargs)
+    finally:
+        scene_utils.restore_transforms(undo)
     return filepath

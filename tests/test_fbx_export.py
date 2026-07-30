@@ -107,6 +107,64 @@ def main():
     check(exc is None, "scoped export from OBJECT raised: %s" % exc)
     check(written, "scoped export from OBJECT wrote no file")
 
+    # 4. Scale layout: FBX_SCALE_ALL (the canonical default) writes a meter-unit
+    # file (UnitScaleFactor=100, no compensating node scales) — what meter-unit
+    # vendors ship; FBX_SCALE_NONE instead writes a cm-unit file with 100x root
+    # scales. Pins the layout the export_unity_fbx docstring documents.
+    from avatarprep.core import fbx_export
+    from io_scene_fbx import parse_fbx
+
+    def _layout(path):
+        root, _ = parse_fbx.parse(path)
+        gs = next(e for e in root.elems if e.id == b"GlobalSettings")
+        usf = None
+        for p70 in (c for c in gs.elems if c.id == b"Properties70"):
+            for p in p70.elems:
+                if p.props[0] == b"UnitScaleFactor":
+                    usf = float(p.props[4])
+        objects = next(e for e in root.elems if e.id == b"Objects")
+        arm_scale = (1.0, 1.0, 1.0)
+        for e in objects.elems:
+            if e.id != b"Model":
+                continue
+            name = e.props[1].decode("utf-8", "replace").split("\x00")[0]
+            if name != "Armature":
+                continue
+            for p70 in (c for c in e.elems if c.id == b"Properties70"):
+                for p in p70.elems:
+                    if p.props[0] == b"Lcl Scaling":
+                        arm_scale = tuple(float(v) for v in p.props[4:7])
+        return usf, arm_scale
+
+    for opt, want_usf, want_scale in (('FBX_SCALE_ALL', 100.0, 1.0),
+                                      ('FBX_SCALE_NONE', 1.0, 100.0)):
+        arm = _make_rig()
+        out = os.path.join(tempfile.mkdtemp(), "scale_%s.fbx" % opt)
+        fbx_export.export_unity_fbx(out, armature_obj=arm,
+                                    apply_scale_options=opt)
+        usf, arm_scale = _layout(out)
+        check(usf == want_usf, "%s: UnitScaleFactor %s (want %s)"
+              % (opt, usf, want_usf))
+        check(all(abs(s - want_scale) < 1e-3 for s in arm_scale),
+              "%s: armature node scale %s (want %s)" % (opt, arm_scale, want_scale))
+
+    # 5. A non-unit scene scale silently rewrites the layout (measured:
+    # scale_length=0.01 writes USF~1) — the exporter must refuse, not comply.
+    arm = _make_rig()
+    us = bpy.context.scene.unit_settings
+    us.system, us.scale_length = 'METRIC', 0.01
+    try:
+        raised = None
+        try:
+            fbx_export.export_unity_fbx(
+                os.path.join(tempfile.mkdtemp(), "sl.fbx"), armature_obj=arm)
+        except ValueError as e:
+            raised = e
+        check(raised is not None and "scale_length" in str(raised),
+              "non-unit scale_length must refuse loud, got %r" % raised)
+    finally:
+        us.scale_length = 1.0
+
     if FAILURES:
         print("FBXEXPORT_TEST FAIL:", "; ".join(FAILURES))
         sys.exit(1)
