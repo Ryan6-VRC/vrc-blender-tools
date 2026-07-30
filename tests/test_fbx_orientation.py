@@ -10,8 +10,15 @@ double-counts it and the exported file gains an extra 180 deg (avatar faces
 backwards in Unity). A Blender re-import comparison CANNOT detect this — the
 importer symmetrically undoes the exporter (measured: identity to ~1e-7 even on
 the defective export) — so the oracle parses the written FBX instead: the
-armature node's ``Lcl Rotation`` must be pure axis conversion (-90, 0, 0), the
-orientation vendor meter-unit files ship (identity node in a Z-up file).
+armature node's ``Lcl Rotation`` must be pure axis conversion (-90, 0, 0), what
+Blender's exporter writes into the Y-up file it declares. The Felis fixture
+encodes the same world layout differently — an identity node in a self-declared
+Z-up file — so its node rotation is not the value ours must match.
+
+Scope limit: this oracle sees only the file. The same 180 deg also has a switch
+in the consumer, Unity's per-asset ``bakeAxisConversion``, so a green run here
+does not mean the avatar faces forward in a project. ``fbx_export`` documents
+the polarity; checking it takes a Unity import at a named setting, not a parse.
 
 Prints FBXORIENT_TEST OK / FBXORIENT_TEST FAIL: <reason>.
 """

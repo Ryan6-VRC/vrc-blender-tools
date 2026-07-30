@@ -44,6 +44,16 @@ def export_unity_fbx(filepath: str,
     export (bone/mesh data untouched) and restored after. A deliberately rotated
     armature is the rare exception: pass ``keep_object_rotation=True``.
 
+    That 180° has a second switch on the consumer side: Unity's per-asset
+    ``bakeAxisConversion`` applies the same rotation, and no test here can see it
+    (they parse the written file; this one lives in the Unity importer). This
+    export is correct at Unity's default, OFF — turning it on for our output
+    faces the avatar backwards. Vendor files declaring a non-Unity axis system
+    ship it ON (the Felis fixture: Z-up/+Y-front, ``bakeAxisConversion: 1``) and
+    then sit bone-for-bone on this export, so the two assets agree at *opposite*
+    settings by construction: copying a vendor's importer settings onto an owned
+    re-export is exactly how to break it.
+
     **Scale:** ``FBX_SCALE_ALL`` is this repo's canonical export layout — a
     ``UnitScaleFactor=100`` (meter-unit) file with no compensating node scales,
     identical to what meter-unit vendors ship. Vendors also ship cm-unit
