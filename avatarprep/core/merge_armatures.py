@@ -14,11 +14,23 @@ unless the caller resolves it via ``rename_map`` or overrides with ``force``.
 the scene untouched (postcheck outcomes are not predicted).
 """
 
+import math
 from typing import Any, Dict, List, Optional
 
 import bpy
 
 from . import scene_utils
+
+
+def _validate_tols(tol: float, noise_tol: float) -> None:
+    """Both finite and ``0 <= tol <= noise_tol`` — anything else silently
+    inverts the tier's semantics (a loosened ``tol`` above ``noise_tol`` turns
+    passes into offenders and narrows rename co-location; ``noise_tol=inf``
+    waves every positional offender past the destructive merge)."""
+    if not (math.isfinite(tol) and math.isfinite(noise_tol)) \
+            or tol < 0 or noise_tol < tol:
+        raise ValueError("tolerances must be finite with 0 <= tol <= noise_tol, "
+                         "got tol=%r noise_tol=%r" % (tol, noise_tol))
 
 
 def _world_heads(arm: bpy.types.Object) -> Dict[str, Any]:
@@ -43,8 +55,8 @@ def compare_armatures(base_arm: bpy.types.Object,
     *separately authored* vendor FBXes (outfit vs the base it was built for)
     carry sub-millimeter rounding (0.000222 measured on the canonical case), so
     a single strict threshold false-FAILs exactly the compare this tool exists
-    for. Rename co-location uses ``noise_tol`` for the same reason (widening
-    only ever ADDS refusals — the safe direction)."""
+    for. Rename co-location uses ``noise_tol`` for the same reason."""
+    _validate_tols(tol, noise_tol)
     base_heads = _world_heads(base_arm)
     merge_heads = _world_heads(merge_arm)
     base_names, merge_names = set(base_heads), set(merge_heads)
@@ -277,6 +289,7 @@ def merge_armatures(base_arm: bpy.types.Object,
     compat gate: preflight + rename_map validation + compat run for real, then the
     rename_map is rolled back and the predicted verdict returned — scene untouched,
     no join. See module docstring."""
+    _validate_tols(tol, noise_tol)  # before Phase 2 — a raise must precede any mutation
     rename_map = dict(rename_map or {})
 
     # Same-object base==merge is a catastrophic self-merge (two typos both
@@ -357,6 +370,28 @@ def merge_armatures(base_arm: bpy.types.Object,
 
     # --- Phase 4: mutate ---
     if apply_transforms:
+        # An import-parked object rotation must NOT be baked into bone/mesh data
+        # by the apply — a merged rig would then export 180° off the vendor frame
+        # with an identity object rotation the exporter's residue-clear cannot
+        # see. Clear both rotations UNAPPLIED first (undo discarded — the apply
+        # below consumes the state), so the apply bakes the vendor frame. Safe
+        # only when the clears move both rigs identically: equal world rotations
+        # AND (identity rotation or equal origins) — each rig rotates about its
+        # own origin. Otherwise keep the old world-frame bake and say so.
+        bpy.context.view_layer.update()  # matrix_world is stale after direct rotation writes
+        bw, mw = base_arm.matrix_world, merge_arm.matrix_world
+        rot_delta = bw.to_quaternion().rotation_difference(mw.to_quaternion()).angle
+        identity_rot = bw.to_quaternion().angle < 1e-6 and mw.to_quaternion().angle < 1e-6
+        origins_close = (bw.translation - mw.translation).length < 1e-6
+        if rot_delta < 1e-6 and (identity_rot or origins_close):
+            moved: set = set()
+            for arm in (base_arm, merge_arm):
+                scene_utils.clear_object_rotation(arm, moved)
+        else:
+            report["warnings"].append(
+                "object rotations/origins differ between base and merge — baking "
+                "the world frame; the merged rig's exported orientation will not "
+                "match either source's vendor frame")
         for arm in (base_arm, merge_arm):
             _apply_object_transform(arm)
             for m in scene_utils.get_bound_meshes(arm):

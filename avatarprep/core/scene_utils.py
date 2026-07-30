@@ -159,6 +159,63 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     return {"armatures": armatures, "unbound": unbound}
 
 
+def _is_descendant(obj, ancestor) -> bool:
+    p = obj.parent
+    while p is not None:
+        if p == ancestor:
+            return True
+        p = p.parent
+    return False
+
+
+def clear_object_rotation(obj, already_moved: Optional[set] = None):
+    """Set ``obj``'s object-level rotation to identity UNAPPLIED — data untouched,
+    and nothing moves relative to the rig: child objects ride along via
+    parenting, and modifier-bound NON-descendant meshes (a bound shape
+    ``get_bound_meshes`` supports) are carried by the same world-space delta.
+
+    Returns ``(delta, undo)``: ``delta`` is the world rotation correction that
+    was applied (identity == the rotation was already clear), ``undo`` is a list
+    replayable by :func:`restore_transforms` (callers that clear permanently —
+    the merge apply path — simply drop it). ``already_moved`` (a name set)
+    prevents a mesh bound to two cleared armatures being carried twice."""
+    if already_moved is None:
+        already_moved = set()
+    undo = [(obj, 'rotation', (obj.rotation_euler[:],
+                               obj.rotation_quaternion[:],
+                               obj.rotation_axis_angle[:]))]
+    bpy.context.view_layer.update()  # matrix_world is stale after direct rotation writes
+    old_world = obj.matrix_world.copy()
+    obj.rotation_euler = (0.0, 0.0, 0.0)
+    obj.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    obj.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
+    bpy.context.view_layer.update()
+    delta = obj.matrix_world @ old_world.inverted()
+    identity = all(abs(delta[i][j] - (1.0 if i == j else 0.0)) < 1e-9
+                   for i in range(4) for j in range(4))
+    if not identity:
+        for m in get_bound_meshes(obj):
+            if m.name in already_moved or _is_descendant(m, obj):
+                continue
+            undo.append((m, 'matrix_basis', m.matrix_basis.copy()))
+            m.matrix_world = delta @ m.matrix_world
+            already_moved.add(m.name)
+        bpy.context.view_layer.update()
+    return delta, undo
+
+
+def restore_transforms(undo) -> None:
+    """Replay a :func:`clear_object_rotation` undo list (newest first)."""
+    for obj, kind, val in reversed(undo):
+        if kind == 'rotation':
+            eul, quat, aa = val
+            obj.rotation_euler = eul
+            obj.rotation_quaternion = quat
+            obj.rotation_axis_angle = aa
+        else:
+            obj.matrix_basis = val
+
+
 @contextmanager
 def edit_mode(arm: bpy.types.Object):
     """Enter EDIT mode on ``arm`` and yield its ``edit_bones``, guaranteeing a

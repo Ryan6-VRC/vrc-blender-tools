@@ -293,6 +293,24 @@ def test_position_noise_tier():
         _fail("noise: 5e-3 delta must remain a position_mismatch offender, got %r" % rep)
 
 
+def test_tolerance_validation():
+    """A tol/noise_tol pair that inverts the tier's semantics must raise, from
+    both doors, before any mutation."""
+    _clear_scene()
+    base, merge = _twin_pair()
+    from avatarprep.core.merge_armatures import compare_armatures, merge_armatures
+    for kw in ({"tol": 1e-2, "noise_tol": 1e-3}, {"noise_tol": float("inf")},
+               {"tol": float("nan")}, {"tol": -1.0}):
+        for fn in (compare_armatures, merge_armatures):
+            try:
+                fn(base, merge, **kw)
+                _fail("tol-validation: %s(%r) did not raise" % (fn.__name__, kw))
+            except ValueError:
+                pass
+    if [b.name for b in merge.data.bones] != ["Hips", "Spine"]:
+        _fail("tol-validation: merge armature mutated by a rejected call")
+
+
 def test_rename_colocation_uses_noise_tol():
     """A renamed bone displaced by rounding noise must still be caught as a
     suspected rename (co-location widened to noise_tol)."""
@@ -694,6 +712,7 @@ def main():
     _add_repo_root_to_path()
     test_compat_flags_rename()
     test_position_noise_tier()
+    test_tolerance_validation()
     test_rename_colocation_uses_noise_tol()
     test_guard_unmutated()
     test_same_armature_guard()

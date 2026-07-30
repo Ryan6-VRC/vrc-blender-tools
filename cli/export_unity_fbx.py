@@ -3,10 +3,13 @@
 Run with::
 
     blender <in.blend> --background --factory-startup \
-        --python cli/export_unity_fbx.py -- --in <in.blend> --out <out.fbx> [--no-embed]
+        --python cli/export_unity_fbx.py -- --in <in.blend> --out <out.fbx> \
+        [--armature <name>] [--no-embed] [--keep-object-rotation]
 
 Loads ``--in``, enables AvatarPrep from the bundled source package, and writes
-``--out`` using the CATS export recipe.
+``--out`` using the CATS export recipe. ``--keep-object-rotation`` keeps a
+deliberate armature object rotation in the export (by default it is cleared as
+import-convention residue — ``export_unity_fbx``'s docstring owns the why).
 """
 
 import os
@@ -35,6 +38,10 @@ def _parse_args():
                         "re-export: selection-only, strips paths, no texture embed)")
     p.add_argument("--no-embed", dest="no_embed", action="store_true",
                    help="Do not embed textures (whole-scene export only)")
+    p.add_argument("--keep-object-rotation", dest="keep_object_rotation",
+                   action="store_true",
+                   help="Keep a deliberate armature object rotation instead of "
+                        "clearing it as import-convention residue")
     return p.parse_args(argv)
 
 
@@ -70,8 +77,13 @@ def main():
 
     # A scoped export forces its own strip/no-embed recipe; --no-embed only
     # applies to the whole-scene path.
-    fbx_export.export_unity_fbx(out_path, armature_obj=armature,
-                                embed_textures=not args.no_embed)
+    try:
+        fbx_export.export_unity_fbx(out_path, armature_obj=armature,
+                                    embed_textures=not args.no_embed,
+                                    keep_object_rotation=args.keep_object_rotation)
+    except ValueError as e:  # e.g. non-unit scene scale_length (layout refusal)
+        print("AVATARPREP: ERROR", e)
+        sys.exit(1)
 
     size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
     print("AVATARPREP: exported FBX ->", out_path, "(%d bytes)" % size)

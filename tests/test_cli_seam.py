@@ -198,6 +198,62 @@ def test_compat_merge_in(tmp):
     if rc != 2 or "ERROR" not in out:
         _fail("merge-in bogus name: expected exit 2 + ERROR, got %d\n%s" % (rc, out))
 
+    # An unreadable --merge-in must be an in-grammar ERROR exit 2 — an uncaught
+    # raise leaves Blender's exit at 0, which is this CLI's compat-PASS code.
+    rc, out = _run_cli("compare_armatures.py",
+                       ["--in", base_f, "--base", "Armature",
+                        "--merge", "Armature",
+                        "--merge-in", os.path.join(tmp, "missing.blend")])
+    if rc != 2 or "ERROR" not in out:
+        _fail("merge-in missing file: expected exit 2 + ERROR, got %d\n%s" % (rc, out))
+
+    # .fbx branch: a typo'd --merge must never silently pick the only armature,
+    # and a genuine collision suffix (Armature -> Armature.001) must resolve.
+    merge_fbx = os.path.join(tmp, "mi_merge.fbx")
+    _clear_scene()
+    arm = _make_armature("Armature", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("Tail", Vector((0, -0.1, 1.0)), "Hips"),
+    ])
+    if REPO_ROOT not in sys.path:
+        sys.path.insert(0, REPO_ROOT)
+    from avatarprep.core import fbx_export
+    fbx_export.export_unity_fbx(merge_fbx, armature_obj=arm)
+
+    rc, out = _run_cli("compare_armatures.py",
+                       ["--in", base_f, "--base", "Armature",
+                        "--merge", "Armature", "--merge-in", merge_fbx])
+    if rc != 0 or "merge-in resolved" not in out:
+        _fail("merge-in fbx suffix: expected exit 0 + resolved line, got %d\n%s"
+              % (rc, out))
+    if "stamp missing" not in out:
+        _fail("merge-in fbx: expected the popped-stamp missing warning, got\n%s" % out)
+
+    rc, out = _run_cli("compare_armatures.py",
+                       ["--in", base_f, "--base", "Armature",
+                        "--merge", "Typo", "--merge-in", merge_fbx])
+    if rc != 2 or "ERROR" not in out:
+        _fail("merge-in fbx typo: expected exit 2 + ERROR (never silently pick "
+              "the only armature), got %d\n%s" % (rc, out))
+
+    # .fbx branch stamp neutrality: a stamped base vs a fresh vendor FBX must
+    # warn-and-pass, not FAIL on provenance the import itself just invented.
+    stamped_f = os.path.join(tmp, "mi_stamped.blend")
+    _clear_scene()
+    a = _make_armature("Armature", [
+        ("Hips", Vector((0, 0, 1.0)), None),
+        ("Tail", Vector((0, -0.1, 1.0)), "Hips"),
+    ])
+    a["avatarprep_base"] = "manuka"
+    a["avatarprep_state"] = "proportioned-x"
+    _save_scene(stamped_f)
+    rc, out = _run_cli("compare_armatures.py",
+                       ["--in", stamped_f, "--base", "Armature",
+                        "--merge", "Armature", "--merge-in", merge_fbx])
+    if rc != 0:
+        _fail("merge-in fbx vs stamped base: expected exit 0 (stamp missing is a "
+              "warning, not an invented mismatch), got %d\n%s" % (rc, out))
+
 
 def test_merge_exit_codes(tmp):
     clean = os.path.join(tmp, "merge_clean.blend")

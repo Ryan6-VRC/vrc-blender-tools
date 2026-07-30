@@ -44,21 +44,32 @@ def _parse_args():
     return p.parse_args(argv)
 
 
+def _is_numeric_suffix_of(name, base):
+    """True for Blender's collision suffixes only (``Armature.001`` of
+    ``Armature``) — never for a genuinely different rig (``Armature.NoirLace``)."""
+    return name.startswith(base + ".") and name[len(base) + 1:].isdigit()
+
+
 def _load_merge_side(path, merge_name):
     """Bring ``merge_name`` from a second file into the open scene (in memory
     only; this CLI never saves). Returns the armature OBJECT — its scene name
     may be auto-suffixed on collision, which is why the object, not the name,
-    is the handle. In-grammar ERROR + exit 2 on any resolution failure."""
+    is the handle. In-grammar ERROR + exit 2 on any resolution failure,
+    including an unreadable file (an uncaught raise would exit 0 = compat PASS)."""
     import bpy
     path = os.path.abspath(path)
     ext = os.path.splitext(path)[1].lower()
     if ext == ".blend":
-        with bpy.data.libraries.load(path, link=False) as (data_from, data_to):
-            if merge_name not in data_from.objects:
-                print("AVATARPREP: ERROR --merge %r not found in --merge-in %s"
-                      % (merge_name, path))
-                sys.exit(2)
-            data_to.objects = [merge_name]
+        try:
+            with bpy.data.libraries.load(path, link=False) as (data_from, data_to):
+                if merge_name not in data_from.objects:
+                    print("AVATARPREP: ERROR --merge %r not found in --merge-in %s"
+                          % (merge_name, path))
+                    sys.exit(2)
+                data_to.objects = [merge_name]
+        except Exception as e:  # SystemExit above passes through untouched
+            print("AVATARPREP: ERROR --merge-in unreadable: %s" % e)
+            sys.exit(2)
         obj = data_to.objects[0]
         if obj is None or obj.type != 'ARMATURE':
             print("AVATARPREP: ERROR --merge %r in --merge-in is not an armature"
@@ -66,23 +77,33 @@ def _load_merge_side(path, merge_name):
             sys.exit(2)
         bpy.context.scene.collection.objects.link(obj)
     elif ext == ".fbx":
-        from avatarprep.core import import_fbx
+        from avatarprep.core import import_fbx, scene_utils
         before = set(bpy.data.objects)
-        import_fbx.import_fbx(path)
+        try:
+            import_fbx.import_fbx(path)
+        except Exception as e:
+            print("AVATARPREP: ERROR --merge-in unreadable: %s" % e)
+            sys.exit(2)
         new_arms = [o for o in bpy.data.objects
                     if o not in before and o.type == 'ARMATURE']
-        # The requested name may have been auto-suffixed by the collision with
-        # the base scene, so match among the NEW armatures only.
-        named = [o for o in new_arms if o.name == merge_name]
-        if len(new_arms) == 1:
-            obj = new_arms[0]
-        elif len(named) == 1:
-            obj = named[0]
-        else:
-            print("AVATARPREP: ERROR --merge %r is ambiguous in --merge-in %s "
-                  "(imported armatures: %s)"
-                  % (merge_name, path, [o.name for o in new_arms]))
+        # Match --merge among the NEW armatures only, accepting Blender's
+        # numeric collision suffix (the base scene may own the plain name).
+        # No exactly-one shortcut: a typo must never silently pick "the one".
+        named = [o for o in new_arms
+                 if o.name == merge_name or _is_numeric_suffix_of(o.name, merge_name)]
+        if len(named) != 1:
+            print("AVATARPREP: ERROR --merge %r matched %d of the imported "
+                  "armatures in --merge-in %s (imported: %s)"
+                  % (merge_name, len(named), path, [o.name for o in new_arms]))
             sys.exit(2)
+        obj = named[0]
+        # A compare door must not invent provenance it then gates on:
+        # import_fbx stamps state=unproportioned, which is a GATING dimension —
+        # left in place, the verdict would depend on the merge side's container
+        # format (.fbx FAILs where the same rig via .blend warns-and-passes).
+        for key in (scene_utils.STAMP_BASE, scene_utils.STAMP_STATE):
+            if key in obj:
+                del obj[key]
     else:
         print("AVATARPREP: ERROR --merge-in must be a .blend or .fbx, got %s" % path)
         sys.exit(2)
@@ -106,7 +127,11 @@ def main():
     else:
         merge = resolve_arm(args.merge, "merge")
 
-    report = compare_armatures(base, merge, tol=args.tol, noise_tol=args.noise_tol)
+    try:
+        report = compare_armatures(base, merge, tol=args.tol, noise_tol=args.noise_tol)
+    except ValueError as e:  # bad --tol/--noise-tol pair
+        print("AVATARPREP: ERROR", e)
+        sys.exit(2)
     verdict = "PASS" if report["clean"] else "FAIL"
     counts = ("matched=%d only_in_base=%d only_in_merge=%d renames=%d "
               "parent_mismatch=%d position_mismatch=%d position_noise=%d "

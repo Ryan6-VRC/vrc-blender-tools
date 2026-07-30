@@ -148,6 +148,23 @@ def main():
         check(all(abs(s - want_scale) < 1e-3 for s in arm_scale),
               "%s: armature node scale %s (want %s)" % (opt, arm_scale, want_scale))
 
+    # 5. A non-unit scene scale silently rewrites the layout (measured:
+    # scale_length=0.01 writes USF~1) — the exporter must refuse, not comply.
+    arm = _make_rig()
+    us = bpy.context.scene.unit_settings
+    us.system, us.scale_length = 'METRIC', 0.01
+    try:
+        raised = None
+        try:
+            fbx_export.export_unity_fbx(
+                os.path.join(tempfile.mkdtemp(), "sl.fbx"), armature_obj=arm)
+        except ValueError as e:
+            raised = e
+        check(raised is not None and "scale_length" in str(raised),
+              "non-unit scale_length must refuse loud, got %r" % raised)
+    finally:
+        us.scale_length = 1.0
+
     if FAILURES:
         print("FBXEXPORT_TEST FAIL:", "; ".join(FAILURES))
         sys.exit(1)

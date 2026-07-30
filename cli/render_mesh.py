@@ -86,7 +86,7 @@ def main():
             angles=_split(args.angles),
             shading=args.shading,
             resolution=args.resolution,
-            out_dir=args.out_dir,
+            out_dir=os.path.abspath(args.out_dir) if args.out_dir else None,
         )
     except Exception as e:
         print("AVATARPREP: rendermesh ? => FAIL: %s" % e)
