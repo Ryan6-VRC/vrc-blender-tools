@@ -43,7 +43,10 @@ def _parse_args():
                    help="Retarget one of the edge's bone names onto this rig's spelling. "
                         "Repeatable")
     p.add_argument("--shapekey-override", action="append", default=[], metavar="NAME=VALUE",
-                   help="Override one of the edge's shape-key values. Repeatable")
+                   help="Set an edge shape-key's value. NAME=null DROPS that key from the "
+                        "edge, and a NAME the edge does not carry is ADDED to it — an added "
+                        "key must exist on some bound mesh or the run refuses, so a typo'd "
+                        "name surfaces as 'shapekey not found on any mesh'. Repeatable")
     p.add_argument("--report", dest="report", default=None,
                    help="Write the full result dict here as JSON")
     args = p.parse_args(argv)
