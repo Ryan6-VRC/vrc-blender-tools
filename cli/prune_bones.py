@@ -35,14 +35,20 @@ from cli._common import enable_avatarprep, resolve_arm, write_report
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="prune_bones")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", default=None)   # not required under --whatif
-    p.add_argument("--armature", dest="armature", default=None)
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend holding the armature to prune")
+    p.add_argument("--out", dest="out_path", default=None,   # not required under --whatif
+                   help="Where to save the pruned .blend; omit under --whatif")
+    p.add_argument("--armature", dest="armature", default=None,
+                   help="Armature object to prune. Omitted, the active armature is used, "
+                        "else the FIRST one in the scene — this door does not refuse an "
+                        "ambiguous file, so pass it explicitly on a multi-armature scene")
     p.add_argument("--whatif", dest="whatif", action="store_true",
                    help="Report the removal plan as rooted chains; no mutation, no --out")
     p.add_argument("--force", dest="force", action="store_true",
                    help="Prune even when an object rides a doomed bone, orphaning it")
-    p.add_argument("--report", dest="report", default=None)
+    p.add_argument("--report", dest="report", default=None,
+                   help="Write the removal plan and result here as JSON")
     args = p.parse_args(argv)
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")

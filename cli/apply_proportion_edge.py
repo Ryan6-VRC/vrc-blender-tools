@@ -26,17 +26,29 @@ from cli._common import enable_avatarprep, kv, write_report
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="apply_proportion_edge")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", default=None)   # not required under --whatif
-    p.add_argument("--edge", dest="edge", required=True)
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend to apply the edge to")
+    p.add_argument("--out", dest="out_path", default=None,   # not required under --whatif
+                   help="Where to save the edited .blend; omit under --whatif")
+    p.add_argument("--edge", dest="edge", required=True, metavar="EDGE.JSON",
+                   help="Path to the proportion-edge JSON describing the bone and "
+                        "shape-key changes")
     p.add_argument("--armature", dest="armature", default=None,
                    help="Armature object to target; required when the scene has more than one")
     p.add_argument("--whatif", dest="whatif", action="store_true",
                    help="Validate the edge against the scene and report offenders; no mutation, no --out")
-    p.add_argument("--skip-shapekeys", action="store_true")
-    p.add_argument("--bone-override", action="append", default=[])
-    p.add_argument("--shapekey-override", action="append", default=[])
-    p.add_argument("--report", dest="report", default=None)
+    p.add_argument("--skip-shapekeys", action="store_true",
+                   help="Apply only the edge's bone changes, leaving shape keys untouched")
+    p.add_argument("--bone-override", action="append", default=[], metavar="OLD=NEW",
+                   help="Retarget one of the edge's bone names onto this rig's spelling. "
+                        "Repeatable")
+    p.add_argument("--shapekey-override", action="append", default=[], metavar="NAME=VALUE",
+                   help="Set an edge shape-key's value. NAME=null DROPS that key from the "
+                        "edge, and a NAME the edge does not carry is ADDED to it — an added "
+                        "key must exist on some bound mesh or the run refuses, so a typo'd "
+                        "name surfaces as 'shapekey not found on any mesh'. Repeatable")
+    p.add_argument("--report", dest="report", default=None,
+                   help="Write the full result dict here as JSON")
     args = p.parse_args(argv)
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")

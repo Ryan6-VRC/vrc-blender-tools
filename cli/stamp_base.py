@@ -26,8 +26,10 @@ from cli._common import enable_avatarprep, resolve_arm
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="stamp_base")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", required=True)
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend holding the armature to stamp")
+    p.add_argument("--out", dest="out_path", required=True,
+                   help="Where to save the stamped .blend")
     p.add_argument("--armature", dest="armature", required=True,
                    help="name of the armature OBJECT to stamp")
     p.add_argument("--base", dest="base", required=True,

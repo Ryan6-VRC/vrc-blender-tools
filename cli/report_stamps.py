@@ -29,8 +29,12 @@ from cli._common import enable_avatarprep
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="report_stamps")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--shapekeys", dest="shapekeys", nargs="?", const="", default=None)
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend to open read-only and report on; never saved")
+    p.add_argument("--shapekeys", dest="shapekeys", nargs="?", const="", metavar="SUBSTR",
+                   default=None,
+                   help="Also list shape-key names per mesh (basis excluded), optionally "
+                        "narrowed by a case-insensitive substring")
     return p.parse_args(argv)
 
 

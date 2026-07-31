@@ -28,13 +28,27 @@ from cli._common import enable_avatarprep
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="bake_shapekey")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", required=True)
-    p.add_argument("--mesh", dest="mesh", required=True)
-    p.add_argument("--key", dest="key", required=True)
-    p.add_argument("--value", dest="value", type=float, default=1.0)
-    p.add_argument("--protect-group", dest="protect_group", default="neck")
-    p.add_argument("--head-mesh-names", dest="head_mesh_names", default="Body")
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend holding the mesh to bake")
+    p.add_argument("--out", dest="out_path", required=True,
+                   help="Where to save the baked .blend")
+    p.add_argument("--mesh", dest="mesh", required=True,
+                   help="Mesh object whose shape key is baked into its Basis")
+    p.add_argument("--key", dest="key", required=True,
+                   help="Shape key to bake")
+    p.add_argument("--value", dest="value", type=float, default=1.0,
+                   help="Fraction of the key to bake in (default 1.0 = fully)")
+    p.add_argument("--protect-group", dest="protect_group", default="neck",
+                   help="Vertex group whose authored custom split normals survive the bake "
+                        "(default 'neck'). Geometry still moves — the fold into Basis is "
+                        "whole-mesh; this only keeps the seam to the head from shading wrong")
+    p.add_argument("--head-mesh-names", dest="head_mesh_names", default="Body",
+                   help="Comma-separated meshes to REFUSE to bake (default 'Body'). Matched "
+                        "by EXACT name, case-insensitively and ignoring Blender's .001 "
+                        "duplicate suffix: 'Body' catches 'body' and 'Body.001', but NOT "
+                        "'Char_Body'. The bake recomputes normals and profiles never morph "
+                        "the head, so this asserts where the head lives on THIS rig; pass "
+                        "'' to disable")
     return p.parse_args(argv)
 
 

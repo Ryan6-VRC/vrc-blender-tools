@@ -24,9 +24,13 @@ def _parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
     p = argparse.ArgumentParser(prog="import_fbx")
-    p.add_argument("--fbx", dest="fbx_path", required=True)
-    p.add_argument("--out", dest="out_path", required=True)
-    p.add_argument("--global-scale", dest="global_scale", type=float, default=None)
+    p.add_argument("--fbx", dest="fbx_path", required=True,
+                   help="FBX to import into a fresh scene")
+    p.add_argument("--out", dest="out_path", required=True,
+                   help="Where to save the resulting .blend")
+    p.add_argument("--global-scale", dest="global_scale", type=float, default=None,
+                   help="Override the importer's global scale; omit to keep Blender's "
+                        "default, which is what a Unity-bound round trip wants")
     return p.parse_args(argv)
 
 

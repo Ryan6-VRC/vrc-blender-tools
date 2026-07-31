@@ -31,8 +31,10 @@ def _parse_args():
     else:
         argv = []
     p = argparse.ArgumentParser(prog="export_unity_fbx")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", required=True)
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend to export")
+    p.add_argument("--out", dest="out_path", required=True,
+                   help="Where to write the FBX")
     p.add_argument("--armature", dest="armature", default=None,
                    help="Scope the export to this armature + its bound meshes (owned "
                         "re-export: selection-only, strips paths, no texture embed)")

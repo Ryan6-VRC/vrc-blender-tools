@@ -9,10 +9,13 @@ Exit codes: 0 = merged (verdict PASS, --out saved) · 1 = verdict FAIL (--out NO
 saved) · 2 = ERROR (bad armature name, mid-merge exception, write failure).
 
 --whatif previews: the gates run for real, nothing mutates, nothing is saved (--out
-must be omitted; passing it errors); exit 0 = would merge, 1 = would FAIL.
+must be omitted; passing it errors); exit 0 = the preflight and compat gates PASS,
+1 = they FAIL. It is not a merge prediction — the core returns before mutating, so
+the postcheck never runs and a real merge can still FAIL it.
 
 On FAIL the safety net is not saving --out; --report (if given) is still written
-with the FULL result dict (carries postcheck) so a postcheck FAIL can be triaged.
+with the FULL result dict (carrying postcheck when a real merge reached it) so a
+postcheck FAIL can be triaged.
 """
 import os
 import sys
@@ -29,17 +32,39 @@ from cli._common import enable_avatarprep, kv, resolve_arm, write_report
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="merge_armatures")
-    p.add_argument("--in", dest="in_path", required=True)
-    p.add_argument("--out", dest="out_path", default=None)
-    p.add_argument("--base", dest="base", required=True)
-    p.add_argument("--merge", dest="merge", required=True)
-    p.add_argument("--rename", action="append", default=[])
-    p.add_argument("--force", action="store_true")
-    p.add_argument("--force-stamps", dest="force_stamps", action="store_true")
-    p.add_argument("--whatif", action="store_true")
+    p.add_argument("--in", dest="in_path", required=True,
+                   help=".blend holding both armatures")
+    p.add_argument("--out", dest="out_path", default=None,
+                   help="Where to save the merged .blend; omit under --whatif, and "
+                        "nothing is written when the verdict is FAIL")
+    p.add_argument("--base", dest="base", required=True,
+                   help="Armature object that survives the merge and receives the bones")
+    p.add_argument("--merge", dest="merge", required=True,
+                   help="Armature object merged INTO --base")
+    p.add_argument("--rename", action="append", default=[], metavar="OLD=NEW",
+                   help="Rename a --merge bone before matching, so it unions with the "
+                        "differently-named --base bone. Repeatable")
+    p.add_argument("--force", action="store_true",
+                   help="Merge even when the compat gate reports STRUCTURAL offenders "
+                        "(renames, parent or position mismatches). Stamp offenders need "
+                        "--force-stamps; the two overrides are deliberately separate, so "
+                        "forcing past one cannot wave past the other")
+    p.add_argument("--force-stamps", dest="force_stamps", action="store_true",
+                   help="Merge even when the two armatures' provenance stamps disagree")
+    p.add_argument("--whatif", action="store_true",
+                   help="Run the gates for real but mutate and save nothing; exit 0 = the "
+                        "preflight and compat gates PASS, 1 = they FAIL. Not a merge "
+                        "prediction: the core returns before mutating, so the postcheck "
+                        "(leftover/duplicate bones, duplicate objects or vgroups, unbound "
+                        "meshes) is not run and a real merge can still FAIL it")
     p.add_argument("--skip-apply-transforms", dest="skip_apply_transforms",
-                   action="store_true")
-    p.add_argument("--report", dest="report", default=None)
+                   action="store_true",
+                   help="Leave object transforms unapplied instead of baking them first")
+    p.add_argument("--report", dest="report", default=None,
+                   help="Write the full result dict here as JSON, on FAIL too — which is "
+                        "when it is worth reading. It carries postcheck only when a real "
+                        "merge got that far: never under --whatif, and not on a "
+                        "pre-mutation FAIL")
     args = p.parse_args(argv)
     if args.whatif and args.out_path:
         p.error("--out is meaningless under --whatif (preview mutates nothing)")
@@ -72,7 +97,9 @@ def main():
 
     verdict = result.get("verdict")
     if verdict == "PASS":
-        label = "whatif PASS (would merge)" if args.whatif else "PASS"
+        # "gates pass", not "would merge": the whatif path returns before mutating, so the
+        # postcheck that a real run still has to clear was never exercised.
+        label = "whatif PASS (gates pass)" if args.whatif else "PASS"
         print("AVATARPREP: merge %s %s <- %s (unified %d, added %d)"
               % (label, args.base, args.merge, result.get("bones_unified", 0),
                  result.get("bones_added", 0)))
