@@ -54,15 +54,35 @@ class AVATARPREP_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.fbx", options={'HIDDEN'})
 
     embed_textures: BoolProperty(name="Embed Textures", default=True)
+    bake_object_scale: BoolProperty(
+        name="Bake Object Scale",
+        description=("Bake parked object scale into object data so the file ships "
+                     "identity node scales. PERMANENTLY modifies this scene and "
+                     "cannot be undone — turn off to export the transforms as-is"),
+        default=True)
 
     def execute(self, context):
+        # Nested bpy.ops push no undo step, so the bake cannot be rolled back from
+        # the UI whatever this operator's bl_options say. Report on the scene it
+        # changed rather than a plain success: a script reads the console
+        # AVATARPREP: line, an artist never does.
+        scaled = [o.name for o in context.scene.objects
+                  if any(abs(c - 1.0) > 1e-6 for c in o.scale)]
         try:
             fbx_export.export_unity_fbx(self.filepath,
-                                        embed_textures=self.embed_textures)
+                                        embed_textures=self.embed_textures,
+                                        bake_object_scale=self.bake_object_scale)
         except Exception as exc:
             self.report({'ERROR'}, "FBX export failed: %s" % exc)
             return {'CANCELLED'}
-        self.report({'INFO'}, "Exported FBX to %s" % self.filepath)
+        if scaled and self.bake_object_scale:
+            self.report({'WARNING'},
+                        "Exported to %s. Object scale was baked into the data on "
+                        "%d object(s) — this scene is permanently changed and "
+                        "cannot be undone; reload the file to get it back"
+                        % (self.filepath, len(scaled)))
+        else:
+            self.report({'INFO'}, "Exported FBX to %s" % self.filepath)
         return {'FINISHED'}
 
 
