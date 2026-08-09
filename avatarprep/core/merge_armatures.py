@@ -213,12 +213,35 @@ def _process_vertex_groups(meshes) -> None:
                     vg.name = base_n
 
 
-def _preflight_offenders(base_arm, merge_arm) -> List[str]:
+def _preflight_offenders(base_arm, merge_arm,
+                         apply_transforms: bool = True) -> List[str]:
     offenders: List[str] = []
     for label, arm in (("base", base_arm), ("merge", merge_arm)):
         if arm.parent is not None:
             offenders.append("%s armature %r has parent object %r — apply/clear it first"
                              % (label, arm.name, arm.parent.name))
+        # Constraints only bite on the apply path, which reads and writes
+        # matrix_world to decide and replay the axis-convention clear: a
+        # constraint makes matrix_world depsgraph-derived, so the write does not
+        # stick and both the clear and the carry silently do nothing of what they
+        # say. Gated on ``apply_transforms`` because a preflight offender is NOT
+        # force-overridable, and refusing a --skip-apply-transforms merge for a
+        # reason that cannot apply to it would cost the operator their constraint
+        # setup with no escape hatch. The same writes land on bound MESHES, so
+        # they are checked too — guarding only the armatures leaves a constrained
+        # mesh stranded in the vendor frame while both skeletons take the delta,
+        # and the apply bakes that mismatch permanently.
+        if apply_transforms:
+            constrained = [(arm.name, arm.constraints)] if arm.constraints else []
+            constrained += [(m.name, m.constraints)
+                            for m in scene_utils.get_bound_meshes(arm)
+                            if m.constraints]
+            for name, cons in constrained:
+                offenders.append("%s object %r has constraint(s) %s — "
+                                 "apply/remove them first, or pass "
+                                 "apply_transforms=False"
+                                 % (label, name,
+                                    ", ".join(repr(c.name) for c in cons)))
         if arm.data.users > 1:
             offenders.append("%s armature data %r is multi-user (users=%d)"
                              % (label, arm.data.name, arm.data.users))
@@ -352,7 +375,7 @@ def merge_armatures(base_arm: bpy.types.Object,
                 "offenders": [base_arm.name], "report": None}
 
     # --- Phase 1: pre-flight guards (no mutation) ---
-    offenders = _preflight_offenders(base_arm, merge_arm)
+    offenders = _preflight_offenders(base_arm, merge_arm, apply_transforms)
     if offenders:
         return {"verdict": "FAIL", "reason": "preflight",
                 "offenders": offenders, "report": None}
@@ -432,70 +455,100 @@ def merge_armatures(base_arm: bpy.types.Object,
         # must NOT be baked (clear it first, undo discarded — the apply below
         # consumes the state); one that MOVES the up axis is the source's up-axis
         # conversion and MUST be baked, or the merged rig lies down in the .blend.
-        # The helper decides per rig; this gate only asks whether clearing would
-        # move the two rigs identically — equal world rotations AND (identity
-        # rotation or equal origins), since each rig rotates about its own origin.
+        # The helper decides, and this gate only asks whether ONE decision can
+        # serve both rigs — which it can exactly when their world rotations are
+        # equal, whatever their origins.
         bpy.context.view_layer.update()  # matrix_world is stale after direct rotation writes
-        bw, mw = base_arm.matrix_world, merge_arm.matrix_world
-        rot_delta = bw.to_quaternion().rotation_difference(mw.to_quaternion()).angle
-        identity_rot = bw.to_quaternion().angle < 1e-6 and mw.to_quaternion().angle < 1e-6
-        origins_close = (bw.translation - mw.translation).length < 1e-6
-        if rot_delta < 1e-6 and (identity_rot or origins_close):
-            moved: set = set()
-            for arm in (base_arm, merge_arm):
-                # Surface the helper's verdict: a preserved residue returns an
-                # identity delta, so nothing downstream can infer it happened.
-                status, _delta, _undo = scene_utils.clear_axis_convention_rotation(
-                    arm, moved)
-                if status == 'preserved':
-                    report["warnings"].append(
-                        "%r carries an up-axis-moving object rotation (the source's "
-                        "up-axis conversion); baking it into the merged rig's data, "
-                        "which is correct — clearing it first would bake the rig "
-                        "lying down (see export_unity_fbx's orientation docstring)"
-                        % arm.name)
-                elif status == 'cleared':
-                    report["warnings"].append(
-                        "%r carried an up-axis-preserving object rotation; cleared "
-                        "before the apply so the vendor frame is what gets baked "
-                        "(see export_unity_fbx's orientation docstring)" % arm.name)
+        # .copy(): matrix_world is a LIVE wrapper and the clear and carry below
+        # rewrite both rigs, so an aliased read here would mean something else by
+        # the time the warning uses it. (The shift below happens to survive the
+        # aliasing — delta preserves distance from its own axis, so 2r*sin(t/2)
+        # reads the same either way — but nothing should have to depend on that.)
+        bw, mw = base_arm.matrix_world.copy(), merge_arm.matrix_world.copy()
+        bq, mq = bw.to_quaternion(), mw.to_quaternion()
+        # abs(dot), not rotation_difference().angle: quaternions double-cover and
+        # mat3_to_quat flips its sign branch exactly at 180° — the (0,0,-180)
+        # front-axis class this branch exists for. Measured, two rigs whose 3x3s
+        # differ by 1.7e-07 read 360° apart through .angle and miss the gate.
+        # Deliberately looser than the 1e-6 rad it replaces: 1e-9 on 1-|dot| is
+        # ~0.005°, which over a 1 m rig is ~70 µm — an order under the compat
+        # gate's own 1 mm noise_tol, so nothing it admits can matter downstream.
+        if 1.0 - abs(bq.dot(mq)) < 1e-9:
+            # Equal world rotations, so the helper returns the same verdict for
+            # both rigs. Decide once on the base, then REPLAY its delta onto the
+            # merge rig rather than clearing that rig too: a clear rotates a rig
+            # about its OWN origin, so two rigs with differing origins would be
+            # pulled apart by (I - R^-1)(o_base - o_merge) — the world alignment
+            # the compat gate just certified. One delta keeps them rigid and
+            # still lands both object rotations at identity.
+            #
+            # Seeded with the merge rig's parented meshes: they ride along with
+            # the carry below, so the base's clear must not also move the ones it
+            # is modifier-bound to (that lands them at delta**2).
+            moved: set = scene_utils.carried_by_parenting(merge_arm)
+            # Surface the helper's verdict: a preserved residue returns an
+            # identity delta, so nothing downstream can infer it happened.
+            status, delta, _undo = scene_utils.clear_axis_convention_rotation(
+                base_arm, moved)
+            if status == 'preserved':
+                report["warnings"].append(
+                    "%r and %r carry an up-axis-moving object rotation (the "
+                    "source's up-axis conversion); baking it into the merged "
+                    "rig's data, which is correct — clearing it first would bake "
+                    "the rig lying down (see export_unity_fbx's orientation "
+                    "docstring)" % (base_arm.name, merge_arm.name))
+            elif status == 'cleared':
+                scene_utils.apply_world_delta(merge_arm, delta, moved)
+                # Measure the MERGE rig's origin, not the base's: delta rotates
+                # about the base's origin, so the base's origin is its fixed
+                # point and reads 0.0000 for every input — including the case
+                # this sentence exists to disclose. A rotation displaces
+                # different points by different amounts, so the line names which.
+                shift = ((delta @ mw.translation) - mw.translation).length
+                report["warnings"].append(
+                    "%r and %r carried an up-axis-preserving object rotation; "
+                    "cleared before the apply so the vendor frame is what gets "
+                    "baked. %r was carried by %r's clear delta rather than "
+                    "rotated about its own origin, so the two stay rigid; the "
+                    "clear pivots on %r's origin and therefore moves %r's origin "
+                    "%.4f in world space, exactly as a single-rig "
+                    "export_unity_fbx would (see its orientation docstring)"
+                    % (base_arm.name, merge_arm.name, merge_arm.name,
+                       base_arm.name, base_arm.name, merge_arm.name, shift))
         else:
             # No pre-clear happens here, so the apply bakes each rig's CURRENT
-            # world frame permanently. Whether that is merely different or
-            # actively wrong depends on what the rotations are — and the
-            # dangerous case is NOT the one differing classes produce:
+            # world frame permanently. Reaching this branch means the rotations
+            # genuinely DIFFER, so no single delta can clear both — the
+            # equal-rotation path above handles every origin arrangement.
             #
-            #   * A rig carrying an up-axis-PRESERVING rotation reaches here only
-            #     when it could not be safely cleared (equal-rotation but
-            #     differing origins is the way in). Its front-axis residue gets
-            #     baked, so the merged rig ships 180° off its vendor frame under
-            #     an identity object rotation the export gate can no longer see.
-            #     Measured, and unrecoverable. A re-import cannot adjudicate it
-            #     either — the importer symmetrically undoes the exporter.
+            #   * A rig carrying an up-axis-PRESERVING rotation stranded here has
+            #     its front-axis residue baked, so the merged rig ships 180° off
+            #     its vendor frame under an identity object rotation the export
+            #     gate can no longer see. Measured, and unrecoverable. A re-import
+            #     cannot adjudicate it either — the importer symmetrically undoes
+            #     the exporter.
             #   * Rigs whose rotations only MOVE the up axis are baked correctly
-            #     (that is what the same-class branch does deliberately), so for
-            #     them this is a note about which frame was used, not a defect.
-            deg = math.degrees(rot_delta)
-            origin_gap = (bw.translation - mw.translation).length
-            why = ("rotations differ by %.1f°" % deg if deg > 0.05
-                   else "rotations agree but origins differ by %.4f" % origin_gap)
+            #     (that is what the equal-rotation branch does deliberately), so
+            #     for them this is a note about which frame was used, not a defect.
+            angle = bq.rotation_difference(mq).angle
+            deg = math.degrees(min(angle, 2.0 * math.pi - angle))
             stranded = [a.name for a in (base_arm, merge_arm)
                         if a.matrix_world.to_quaternion().angle > 1e-6
                         and not scene_utils.rotation_moves_up_axis(
                             a.matrix_world.to_quaternion())]
             if stranded:
                 report["warnings"].append(
-                    "%s — baking the world frame with %s carrying an uncleared "
-                    "up-axis-preserving rotation; the merged rig will NOT match "
-                    "either source's vendor frame, and a re-import cannot show it "
-                    "(see export_unity_fbx's orientation docstring). Align the "
-                    "origins, or clear that rotation before merging"
-                    % (why, ", ".join(repr(n) for n in stranded)))
+                    "rotations differ by %.1f° — baking the world frame with %s "
+                    "carrying an uncleared up-axis-preserving rotation; the "
+                    "merged rig will NOT match either source's vendor frame, and "
+                    "a re-import cannot show it (see export_unity_fbx's "
+                    "orientation docstring). Clear that rotation before merging"
+                    % (deg, ", ".join(repr(n) for n in stranded)))
             else:
                 report["warnings"].append(
-                    "%s — baking the current world frame rather than either "
-                    "source's own; verify the merged rig's orientation before "
-                    "export" % why)
+                    "rotations differ by %.1f° — baking the current world frame "
+                    "rather than either source's own; verify the merged rig's "
+                    "orientation before export" % deg)
         # Parent-before-child, descendants included — see
         # ``scene_utils.hierarchy_ordered``. Applying an armature does not push
         # its transform into a child's data, so a flat armature-then-bound-meshes

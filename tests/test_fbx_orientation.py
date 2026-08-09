@@ -378,12 +378,64 @@ def test_merge_path_yup_geometry():
           "the data is Z-up and the exporter's own conversion applies)" % (rot,))
 
 
-def test_merge_uncleared_front_axis_warns():
-    """Two up-axis-PRESERVING rigs whose origins differ skip the pre-clear, so the
-    apply bakes their front-axis residue permanently — the merged rig ends 180 deg
-    off its vendor frame under an identity object rotation, which neither the
-    export gate nor a re-import can afterwards detect. The warning is the only
-    signal that exists, so it must name the stranded rig rather than reassure."""
+def _world_heads(arm):
+    """{bone name: world head} — the frame-sensitive quantity the merge moves."""
+    bpy.context.view_layer.update()
+    return {b.name: arm.matrix_world @ b.head_local for b in arm.data.bones}
+
+
+def _clear_delta(arm):
+    """The world delta ``clear_axis_convention_rotation`` will apply to ``arm``:
+    a rotation by R^-1 about the rig's OWN origin, T(o) @ R^-1 @ T(-o)."""
+    from mathutils import Matrix
+    bpy.context.view_layer.update()
+    wm = arm.matrix_world
+    to_origin = Matrix.Translation(wm.translation)
+    return to_origin @ wm.to_quaternion().to_matrix().to_4x4().inverted() \
+        @ to_origin.inverted()
+
+
+def _offset_rig(arm, origin):
+    """Move ``arm``'s object origin to ``origin`` and compensate its bone and mesh
+    data so world layout is unchanged — the shape a source FBX whose ARMATURE node
+    carries a translation imports as (measured), and the only way into the
+    equal-rotation/differing-origin case with the compat gate still passing."""
+    from mathutils import Vector
+    bpy.context.view_layer.update()
+    rot_inv = arm.matrix_world.to_quaternion().to_matrix().inverted()
+    shift = rot_inv @ Vector(origin)
+    with_edit = arm.data.edit_bones if arm.mode == 'EDIT' else None
+    assert with_edit is None
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode='EDIT')
+    for eb in arm.data.edit_bones:
+        eb.head = eb.head - shift
+        eb.tail = eb.tail - shift
+    bpy.ops.object.mode_set(mode='OBJECT')
+    # Only PARENTED meshes need compensating: they ride the armature, so the
+    # move has to be cancelled in their data. An unparented modifier-bound mesh
+    # does not ride it at all — touching it here would displace it from the
+    # skeleton, which is the opposite of what this function promises.
+    for m in [o for o in bpy.data.objects
+              if o.type == 'MESH' and o.parent == arm]:
+        for v in m.data.vertices:
+            v.co = v.co - shift
+    arm.location = Vector(arm.location) + Vector(origin)
+    bpy.context.view_layer.update()
+
+
+def test_merge_differing_origins_keeps_vendor_frame():
+    """Two up-axis-PRESERVING rigs whose origins differ must still bake the VENDOR
+    frame. Clearing each rig about its own origin would pull them apart by
+    (I - R^-1)(o_base - o_merge), so the merge replays the base's clear delta onto
+    the merge rig: one rigid map for both.
+
+    The exported-geometry oracle alone cannot police this — measured, a naive
+    per-rig clear writes byte-identical y extremes to the correct fix. The
+    discriminator is that EVERY bone on BOTH rigs lands at delta @ its pre-merge
+    world head; that is true only when one delta moved the whole assembly."""
+    import tempfile
+    from avatarprep.core import fbx_export
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
     base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
@@ -391,20 +443,206 @@ def test_merge_uncleared_front_axis_warns():
     merge = _parked_rig("Armature.Out",
                         [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
                         mesh_name="TailM", mesh_y=-0.2)        # parks -180 Z
-    merge.location = (0.5, 0.0, 0.0)                           # origins differ
+    # An UNPARENTED modifier-bound mesh: without it the whole mesh-carry loop in
+    # apply_world_delta can be deleted and every other assertion here still
+    # passes (measured) — the merge path's counterpart to test_unparented_bound_mesh.
+    tail_mesh = bpy.data.objects["TailM"]
+    tail_mesh.parent = None
+    tail_mesh.rotation_euler = (0.0, 0.0, math.pi)
+    _offset_rig(merge, (0.5, 0.0, 0.0))
+
+    pre_base, pre_merge = _world_heads(base), _world_heads(merge)
+    # Preconditions. _parked_rig writes rotation_euler without a depsgraph update,
+    # so a fixture built without one silently ends up 1.0 apart in world space and
+    # the compat gate FAILs on a fixture bug rather than on the code under test.
+    check((base.matrix_world.translation - merge.matrix_world.translation).length > 1e-3,
+          "fixture no longer has differing origins — this test exercises nothing")
+    for bone, head in pre_base.items():
+        # 1e-5, tighter than the 1e-4 the post-merge assertion demands: a fixture
+        # drifting into the band between them would fail there instead, blaming
+        # the code under test for a fixture defect.
+        check((head - pre_merge[bone]).length < 1e-5,
+              "fixture bones are not world-aligned (%s: %s vs %s) — the compat "
+              "gate would refuse this for a fixture bug, not the defect"
+              % (bone, tuple(round(v, 4) for v in head),
+                 tuple(round(v, 4) for v in pre_merge[bone])))
+
+    delta = _clear_delta(base)
+    merge_name = merge.name  # the join removes the object; keep the name for the warning check
+    res = merge_armatures(base, merge)
+    check(res["verdict"] == "PASS",
+          "differing-origin merge FAILed unforced: %r" % res.get("offenders"))
+
+    # The discriminating assertion: one rigid map moved everything. Shared bone
+    # names are unified into the base's copy by the merge, so iterating the merge
+    # rig's shared names would re-assert the BASE's bone and police nothing —
+    # only merge-ONLY bones carry the merge rig's frame, and the check demands at
+    # least one so a fixture that lost them cannot pass vacuously.
+    post = _world_heads(base)
+    merge_only = {b: h for b, h in pre_merge.items() if b not in pre_base}
+    check(merge_only, "fixture has no merge-only bone — nothing polices the "
+                      "merge rig's frame, only the base's")
+    for pre in (pre_base, merge_only):
+        for bone, head in pre.items():
+            want = delta @ head
+            got = post.get(bone, post.get(bone + ".merge"))
+            check(got is not None and (got - want).length < 1e-4,
+                  "bone %r landed at %s, want %s (delta @ its pre-merge head) — "
+                  "the two rigs were not moved by ONE delta"
+                  % (bone, got and tuple(round(v, 4) for v in got),
+                     tuple(round(v, 4) for v in want)))
+
+    out = os.path.join(tempfile.mkdtemp(), "merged_origins.fbx")
+    fbx_export.export_unity_fbx(out, armature_obj=base)
+    ymin, ymax = _vertex_y_extremes(out)
+    check(abs(ymin - (-0.2)) < 1e-4 and abs(ymax - 0.1) < 1e-4,
+          "merge baked a flipped frame: y extremes %.4f..%.4f (want -0.2..0.1)"
+          % (ymin, ymax))
+    warns = " ".join((res.get("report") or {}).get("warnings", []))
+    check("carried by" in warns and repr(merge_name) in warns,
+          "the cleared-with-carry warning does not say the merge rig was carried "
+          "(warnings: %r)" % warns)
+    # The DISTANCE, not just the sentence: a 180 deg turn about the base's origin
+    # moves this rig's origin the full 1.0 (2 x 0.5). Measuring the base's origin
+    # instead would print 0.0000 here — it is the delta's fixed point — so the
+    # one disclosure of a permanent world-space move would say nothing moved.
+    check("moves 'Armature.Out''s origin 1.0000" in warns,
+          "the warning does not disclose the true world-space displacement "
+          "(want 1.0000; warnings: %r)" % warns)
+
+
+def _cross_bound_mesh(name, parent_arm, modifier_arm, at):
+    """A mesh PARENTED to one rig and modifier-bound to the other — bound to both
+    as far as get_bound_meshes is concerned, but moved by only one of them."""
+    from mathutils import Vector
+    md = bpy.data.meshes.new(name + "Data")
+    md.from_pydata([(-0.05, 0.0, 0.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.1)],
+                   [], [(0, 1, 2)])
+    md.update()
+    mo = bpy.data.objects.new(name, md)
+    bpy.context.collection.objects.link(mo)
+    mod = mo.modifiers.new("Armature", 'ARMATURE')
+    mod.object = modifier_arm
+    mo.parent = parent_arm
+    mo.matrix_parent_inverse = parent_arm.matrix_world.inverted()
+    mo.location = Vector(at)
     bpy.context.view_layer.update()
-    # force=True because offsetting the origin also moves the bones in world
-    # space, which the compat gate correctly refuses. The gate is not what is
-    # under test here — reaching the APPLY with differing origins is, and force
-    # overrides only the structural category.
-    res = merge_armatures(base, merge, force=True)
+    return mo
+
+
+def _world_verts(mesh_obj):
+    bpy.context.view_layer.update()
+    return [mesh_obj.matrix_world @ v.co for v in mesh_obj.data.vertices]
+
+
+def test_merge_cross_bound_mesh_moves_once():
+    """A mesh bound to BOTH rigs must be moved by the delta exactly once. Parented
+    to one rig it rides along with that rig; if the other rig's clear or carry also
+    moves it explicitly it lands at delta**2 — measured at 180 deg off the skeleton
+    it is bound to, in both parent/modifier orientations."""
+    from avatarprep.core.merge_armatures import merge_armatures
+    _clear_scene()
+    base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
+                       mesh_name="BodyM", mesh_y=0.1)
+    merge = _parked_rig("Armature.Out",
+                        [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
+                        mesh_name="TailM", mesh_y=-0.2)
+    _offset_rig(merge, (0.5, 0.0, 0.0))
+    # Built after the offset so _offset_rig's compensation does not touch them.
+    a = _cross_bound_mesh("ParentedToBase", base, merge, (0.1, 0.3, 1.0))
+    b = _cross_bound_mesh("ParentedToMerge", merge, base, (-0.1, 0.3, 1.0))
+    pre = {m.name: _world_verts(m) for m in (a, b)}
+
+    delta = _clear_delta(base)
+    res = merge_armatures(base, merge)
+    check(res["verdict"] == "PASS",
+          "cross-bound merge FAILed: %r" % res.get("offenders"))
+    for m in (a, b):
+        for got, was in zip(_world_verts(m), pre[m.name]):
+            want = delta @ was
+            check((got - want).length < 1e-4,
+                  "%s vertex landed at %s, want %s — a mesh bound to both rigs "
+                  "was moved twice (delta**2) or not at all"
+                  % (m.name, tuple(round(v, 4) for v in got),
+                     tuple(round(v, 4) for v in want)))
+
+
+def test_merge_differing_origins_identity_rotation_noop():
+    """The plurality class through the collapsed gate: identity rotations, origins
+    differing. There is no residue to clear, so nothing may move."""
+    from avatarprep.core.merge_armatures import merge_armatures
+    _clear_scene()
+    base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
+                       mesh_name="BodyM", mesh_y=0.1, park_z=0.0)
+    merge = _parked_rig("Armature.Out",
+                        [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
+                        mesh_name="TailM", mesh_y=-0.2, park_z=0.0)
+    _offset_rig(merge, (0.5, 0.0, 0.0))
+    pre = dict(_world_heads(base), **_world_heads(merge))
+    res = merge_armatures(base, merge)
+    check(res["verdict"] == "PASS",
+          "identity-rotation differing-origin merge FAILed: %r" % res.get("offenders"))
+    post = _world_heads(base)
+    for bone, head in pre.items():
+        got = post.get(bone, post.get(bone + ".merge"))
+        check(got is not None and (got - head).length < 1e-4,
+              "noop path moved bone %r: %s -> %s"
+              % (bone, tuple(round(v, 4) for v in head),
+                 got and tuple(round(v, 4) for v in got)))
+
+
+def test_merge_differing_rotations_warns():
+    """The other branch, now reachable ONLY with differing rotations: no single
+    delta clears both rigs, so their frames are baked as they stand and the
+    warning is the only signal that exists. It must name the stranded rig, and its
+    remedy must be one the operator can actually execute — 'align the origins' is
+    not (measured: doing it by hand FAILs the compat gate on the re-run)."""
+    from avatarprep.core.merge_armatures import merge_armatures
+    _clear_scene()
+    base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
+                       mesh_name="BodyM", mesh_y=0.1)              # parks -180 Z
+    # Bones authored in the merge rig's OWN frame (R^-1 @ world target) so the two
+    # rigs are world-aligned despite differing rotations — the gate passes on the
+    # seam and the apply branch is what gets tested, no force needed.
+    merge = _parked_rig("Armature.Out",
+                        [("Hips", (0, 0, 1.0), None), ("Tail", (-0.2, 0, 1.0), "Hips")],
+                        mesh_name="TailM", mesh_y=-0.2, park_z=math.pi / 2)
+    bpy.context.view_layer.update()
+    res = merge_armatures(base, merge)
+    check(res["verdict"] == "PASS",
+          "differing-rotation merge FAILed unforced: %r" % res.get("offenders"))
     warns = " ".join((res.get("report") or {}).get("warnings", []))
     check("will NOT match either source's vendor frame" in warns,
           "uncleared front-axis bake did not warn that the vendor frame is lost "
           "(warnings: %r)" % warns)
-    check("origins differ" in warns,
-          "warning blamed rotation for an origins-only divergence (warnings: %r)"
-          % warns)
+    check("rotations differ by 90.0" in warns,
+          "warning did not name the true rotation gap (warnings: %r)" % warns)
+    check("Align the origins" not in warns,
+          "warning still offers the unfollowable align-the-origins remedy "
+          "(warnings: %r)" % warns)
+
+
+def test_merge_antipodal_quaternion_is_equal_rotation():
+    """Two rigs parked at +180 and -180 Z are the SAME rotation, but their
+    quaternions are antipodal and rotation_difference().angle reads 2*pi — measured
+    on 3x3s differing by 1.7e-07. Keyed on that, the gate misses the very
+    (0,0,-180) front-axis class the clear exists for and bakes it."""
+    from avatarprep.core.merge_armatures import merge_armatures
+    _clear_scene()
+    base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
+                       mesh_name="BodyM", mesh_y=0.1, park_z=math.pi)
+    merge = _parked_rig("Armature.Out",
+                        [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
+                        mesh_name="TailM", mesh_y=-0.2, park_z=-math.pi)
+    bpy.context.view_layer.update()
+    check(base.matrix_world.to_quaternion().dot(merge.matrix_world.to_quaternion()) < 0,
+          "fixture quaternions are no longer antipodal — this test exercises nothing")
+    res = merge_armatures(base, merge)
+    check(res["verdict"] == "PASS", "antipodal merge FAILed: %r" % res.get("offenders"))
+    warns = " ".join((res.get("report") or {}).get("warnings", []))
+    check("cleared before the apply" in warns,
+          "antipodal-but-equal rotations were treated as differing, so the "
+          "front-axis residue got baked (warnings: %r)" % warns)
 
 
 def main():
@@ -487,10 +725,18 @@ def main():
     # 6. And the merge path, where a wrongly-baked frame is unrecoverable.
     test_merge_path_yup_geometry()
 
-    # 7. The other way into the merge path's else branch: an up-axis-preserving
-    # rotation that could not be cleared gets baked, losing the vendor frame
-    # silently. Only the warning can say so.
-    test_merge_uncleared_front_axis_warns()
+    # 7. Differing ORIGINS with a shared rotation: one delta must move both rigs,
+    # so the vendor frame survives and the two stay rigid. Plus the identity
+    # (noop) path through the same gate, and the antipodal-quaternion trap that
+    # would route the front-axis class away from the clear.
+    test_merge_differing_origins_keeps_vendor_frame()
+    test_merge_cross_bound_mesh_moves_once()
+    test_merge_differing_origins_identity_rotation_noop()
+    test_merge_antipodal_quaternion_is_equal_rotation()
+
+    # 8. Differing ROTATIONS — the only way into the else branch now. Nothing can
+    # clear both, so the warning is the whole contract.
+    test_merge_differing_rotations_warns()
 
     if FAILURES:
         print("FBXORIENT_TEST FAIL:", "; ".join(FAILURES))

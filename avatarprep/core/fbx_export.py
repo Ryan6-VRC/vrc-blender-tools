@@ -276,7 +276,15 @@ def export_unity_fbx(filepath: str,
     # supports) is carried by the same delta inside the helper — otherwise the
     # file would ship its geometry 180° off the skeleton.
     undo = []
+    # Seeded, not empty: a mesh parented to one candidate and modifier-bound to
+    # another rides along with its parent, so whichever rig the loop reaches
+    # first must not also move it explicitly, or it lands at delta**2 — 180 deg
+    # off both skeletons. The clear records the descendants it skips, which
+    # covers parent-first; scene order decides which comes first, so seed the
+    # whole set up front rather than depending on it.
     moved = set()
+    for o in candidates:
+        moved |= scene_utils.carried_by_parenting(o)
     try:
         for o in candidates:
             # matrix_world is stale after a direct rotation write, and this read
