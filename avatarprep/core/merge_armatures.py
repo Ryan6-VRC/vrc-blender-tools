@@ -280,19 +280,32 @@ def remedy_lines(report) -> List[str]:
     ``structural_offenders`` — every door gets it, the schema gains nothing."""
     out: List[str] = []
     renames = report["suspected_renames"]
+    # The base-side uniqueness test is load-bearing, not belt-and-braces:
+    # compare_armatures picks each only-in-merge bone's NEAREST only-in-base
+    # candidate with no injectivity constraint, so two co-located merge bones
+    # (twist/end bones) can both claim one base bone. The counts still match, and
+    # a rename_map built from the pairs would be rejected downstream as "maps
+    # multiple sources to the same target(s)" — a remedy that cannot be followed.
     if (renames and not report["parent_mismatches"]
             and not report["position_mismatches"]
-            and len(renames) == len(report["only_in_merge"])):
+            and len(renames) == len(report["only_in_merge"])
+            and len({r["base"] for r in renames}) == len(renames)):
         worst = max(r["dist"] for r in renames)
-        # Scoped to the MERGE side on purpose: only_in_base may be large (a base
-        # body against an outfit's partial rig), so "the skeletons match" would
-        # be false. What holds is that the merge side adds no new bone position.
+        # Two deliberate hedges. Scoped to the MERGE side, because only_in_base
+        # may be large (a base body against an outfit's partial rig) and "the
+        # skeletons match" would be false. And "consistent with", because
+        # parent_mismatches is computed only over MATCHED bones — every bone this
+        # line is about is only-in-merge, so its parent has not been compared to
+        # anything yet. The rename re-run is what actually settles that.
         out.append("all %d only-in-merge bones are renames of co-located base "
                    "bones (worst %.2e) — the merge side introduces no bone the "
-                   "base lacks positionally, so this is a naming-convention "
-                   "difference, not an incompatible skeleton. Resolve with "
-                   "merge_armatures rename_map (CLI: --rename OLD=NEW, one per "
-                   "pair above)." % (len(renames), worst))
+                   "base lacks positionally, which is consistent with a "
+                   "naming-convention difference rather than an incompatible "
+                   "skeleton. Resolve with merge_armatures rename_map (CLI: "
+                   "--rename OLD=NEW, one per suspected-rename pair); the re-run "
+                   "will surface any parent mismatch the rename exposes, since "
+                   "these bones were never matched to compare parents."
+                   % (len(renames), worst))
     return out
 
 
@@ -439,17 +452,50 @@ def merge_armatures(base_arm: bpy.types.Object,
                         "%r carries an up-axis-moving object rotation (the source's "
                         "up-axis conversion); baking it into the merged rig's data, "
                         "which is correct — clearing it first would bake the rig "
-                        "lying down" % arm.name)
+                        "lying down (see export_unity_fbx's orientation docstring)"
+                        % arm.name)
+                elif status == 'cleared':
+                    report["warnings"].append(
+                        "%r carried an up-axis-preserving object rotation; cleared "
+                        "before the apply so the vendor frame is what gets baked "
+                        "(see export_unity_fbx's orientation docstring)" % arm.name)
         else:
-            # Rigs in DIFFERENT residue classes land here (measured: a Y-up base
-            # + Z-up outfit differ by 90°). The world-frame bake is CORRECT for
-            # that pairing — the merged rig comes out upright and round-trips —
-            # so this says what was baked, not that the result is wrong.
-            report["warnings"].append(
-                "object rotations/origins differ between base and merge (%.1f° "
-                "apart) — baking the current world frame rather than either "
-                "source's own; verify the merged rig's orientation before export"
-                % math.degrees(rot_delta))
+            # No pre-clear happens here, so the apply bakes each rig's CURRENT
+            # world frame permanently. Whether that is merely different or
+            # actively wrong depends on what the rotations are — and the
+            # dangerous case is NOT the one differing classes produce:
+            #
+            #   * A rig carrying an up-axis-PRESERVING rotation reaches here only
+            #     when it could not be safely cleared (equal-rotation but
+            #     differing origins is the way in). Its front-axis residue gets
+            #     baked, so the merged rig ships 180° off its vendor frame under
+            #     an identity object rotation the export gate can no longer see.
+            #     Measured, and unrecoverable. A re-import cannot adjudicate it
+            #     either — the importer symmetrically undoes the exporter.
+            #   * Rigs whose rotations only MOVE the up axis are baked correctly
+            #     (that is what the same-class branch does deliberately), so for
+            #     them this is a note about which frame was used, not a defect.
+            deg = math.degrees(rot_delta)
+            origin_gap = (bw.translation - mw.translation).length
+            why = ("rotations differ by %.1f°" % deg if deg > 0.05
+                   else "rotations agree but origins differ by %.4f" % origin_gap)
+            stranded = [a.name for a in (base_arm, merge_arm)
+                        if a.matrix_world.to_quaternion().angle > 1e-6
+                        and not scene_utils.rotation_moves_up_axis(
+                            a.matrix_world.to_quaternion())]
+            if stranded:
+                report["warnings"].append(
+                    "%s — baking the world frame with %s carrying an uncleared "
+                    "up-axis-preserving rotation; the merged rig will NOT match "
+                    "either source's vendor frame, and a re-import cannot show it "
+                    "(see export_unity_fbx's orientation docstring). Align the "
+                    "origins, or clear that rotation before merging"
+                    % (why, ", ".join(repr(n) for n in stranded)))
+            else:
+                report["warnings"].append(
+                    "%s — baking the current world frame rather than either "
+                    "source's own; verify the merged rig's orientation before "
+                    "export" % why)
         for arm in (base_arm, merge_arm):
             _apply_object_transform(arm)
             for m in scene_utils.get_bound_meshes(arm):

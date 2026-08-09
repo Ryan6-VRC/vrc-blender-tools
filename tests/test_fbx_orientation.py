@@ -291,8 +291,22 @@ def test_yup_source_preserved(cm_unit, scoped):
           "is gone, re-derive this test" % (label, park_x))
     src_lo, src_hi = _world_bbox()
     src_height = src_hi[2] - src_lo[2]
-    check(src_height > 0.5 * (1.0 if not cm_unit else 1.0),
+    # Both halves import to the SAME world height: the importer normalizes a
+    # cm-unit file into a 0.01 object scale over 100x data, so world space is
+    # unit-agnostic. World height therefore cannot distinguish the halves — the
+    # object scale below is what pins which one this is.
+    check(src_height > 0.5,
           "%s: source imports at height %.4f, expected upright" % (label, src_height))
+
+    # Pin that the cm half really IS cm — otherwise both halves are the same
+    # fixture wearing different labels and only the meter class is covered. The
+    # 0.01 object scale is the half of the class the survey found paired with a
+    # UnitScaleFactor=1 file; the identity class parks 1.0.
+    want_scale = 0.01 if cm_unit else 1.0
+    got_scale = arm.matrix_world.to_scale()[0]
+    check(abs(got_scale - want_scale) < want_scale * 0.05,
+          "%s: imported object scale %.5f, expected ~%.2f — the fixture is not "
+          "the unit class it claims" % (label, got_scale, want_scale))
 
     out = os.path.join(tmp, "out.fbx")
     buf = io.StringIO()
@@ -332,29 +346,65 @@ def test_merge_path_yup_geometry():
     from avatarprep.core import fbx_export
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
-    base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
-                       mesh_name="BodyM", mesh_y=0.1, park_z=0.0)
+    # Y-up CONTENT, like the real class: bones authored along +Y, then parked at
+    # Rx(+90) so the rig stands up in Blender. (_parked_rig authors Z-up content,
+    # so parking it 90 X would lay it DOWN — the mirror image of this scenario,
+    # where a bbox assertion can pass on mesh spread rather than on uprightness.)
+    base = _parked_rig("Armature", [("Hips", (0, 1.0, 0), None)],
+                       mesh_name="BodyM", mesh_y=0.0, park_z=0.0)
     merge = _parked_rig("Armature.Out",
-                        [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
-                        mesh_name="TailM", mesh_y=-0.2, park_z=0.0)
+                        [("Hips", (0, 1.0, 0), None), ("Tail", (0, 1.0, -0.2), "Hips")],
+                        mesh_name="TailM", mesh_y=0.0, park_z=0.0)
     for a in (base, merge):
         a.rotation_euler = (math.radians(90), 0.0, 0.0)
     bpy.context.view_layer.update()
     res = merge_armatures(base, merge)
     check(res["verdict"] == "PASS", "yup merge FAILed: %r" % res.get("offenders"))
     bpy.context.view_layer.update()
-    lo, hi = _world_bbox()
-    # Authored upright: the rig stands along world Z after the bake. A cleared
-    # (wrongly-baked) rotation leaves it along Y instead.
-    check((hi[2] - lo[2]) > (hi[1] - lo[1]),
-          "merge baked a tipped frame: world extent y=%.3f z=%.3f (want the rig "
-          "standing in z)" % (hi[1] - lo[1], hi[2] - lo[2]))
+    # Assert on the BONE, not a bbox: after a correct bake the Y-up content has
+    # become Z-up data, so Hips' world head sits up the world Z axis. A wrongly
+    # cleared rotation leaves the raw Y-up data in place, putting it along +Y.
+    hips = base.data.bones["Hips"]
+    head = base.matrix_world @ hips.head_local
+    check(abs(head[2] - 1.0) < 1e-3 and abs(head[1]) < 1e-3,
+          "merge baked the wrong frame: Hips world head %s (want ~(0,0,1) — the "
+          "up-axis-moving rotation must be BAKED, not cleared)"
+          % (tuple(round(v, 4) for v in head),))
     out = os.path.join(tempfile.mkdtemp(), "merged_yup.fbx")
     fbx_export.export_unity_fbx(out, armature_obj=base)
     rot = _armature_node_rotation(out)
     check(rot is not None and _close(rot[0], -90.0) and _close(rot[2], 0.0),
           "merged yup export node rotation: %s (want ~(-90,0,0) — after the bake "
           "the data is Z-up and the exporter's own conversion applies)" % (rot,))
+
+
+def test_merge_uncleared_front_axis_warns():
+    """Two up-axis-PRESERVING rigs whose origins differ skip the pre-clear, so the
+    apply bakes their front-axis residue permanently — the merged rig ends 180 deg
+    off its vendor frame under an identity object rotation, which neither the
+    export gate nor a re-import can afterwards detect. The warning is the only
+    signal that exists, so it must name the stranded rig rather than reassure."""
+    from avatarprep.core.merge_armatures import merge_armatures
+    _clear_scene()
+    base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
+                       mesh_name="BodyM", mesh_y=0.1)          # parks -180 Z
+    merge = _parked_rig("Armature.Out",
+                        [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
+                        mesh_name="TailM", mesh_y=-0.2)        # parks -180 Z
+    merge.location = (0.5, 0.0, 0.0)                           # origins differ
+    bpy.context.view_layer.update()
+    # force=True because offsetting the origin also moves the bones in world
+    # space, which the compat gate correctly refuses. The gate is not what is
+    # under test here — reaching the APPLY with differing origins is, and force
+    # overrides only the structural category.
+    res = merge_armatures(base, merge, force=True)
+    warns = " ".join((res.get("report") or {}).get("warnings", []))
+    check("will NOT match either source's vendor frame" in warns,
+          "uncleared front-axis bake did not warn that the vendor frame is lost "
+          "(warnings: %r)" % warns)
+    check("origins differ" in warns,
+          "warning blamed rotation for an origins-only divergence (warnings: %r)"
+          % warns)
 
 
 def main():
@@ -436,6 +486,11 @@ def main():
 
     # 6. And the merge path, where a wrongly-baked frame is unrecoverable.
     test_merge_path_yup_geometry()
+
+    # 7. The other way into the merge path's else branch: an up-axis-preserving
+    # rotation that could not be cleared gets baked, losing the vendor frame
+    # silently. Only the warning can say so.
+    test_merge_uncleared_front_axis_warns()
 
     if FAILURES:
         print("FBXORIENT_TEST FAIL:", "; ".join(FAILURES))

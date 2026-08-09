@@ -185,10 +185,30 @@ def export_unity_fbx(filepath: str,
         candidates = [armature_obj]
     else:
         candidates = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
+    # Refuse a parented armature rather than guess which frame the gate should
+    # judge. Under a rotated parent, the object's world rotation and the delta a
+    # local clear produces are different rotations that can disagree about
+    # whether the up axis moves, and no reading of one is defensible for the
+    # other. Nothing here produces a parented armature (wm.fbx_import creates
+    # them at root), so this closes a question rather than blocking real work —
+    # and it matches the preflight merge_armatures already applies.
+    parented = [o.name for o in candidates if o.parent is not None]
+    if parented:
+        raise ValueError(
+            "armature(s) %s have a parent object; the axis-convention gate cannot "
+            "judge a rotation split between parent and object. Clear or apply the "
+            "parent relation, or pass keep_object_rotation=True to export the "
+            "rotations as-is" % ", ".join(repr(n) for n in parented))
+
     undo = []
     moved = set()
     try:
         for o in candidates:
+            # matrix_world is stale after a direct rotation write, and this read
+            # is an oracle now (the tests assert on the emitted line), so a caller
+            # that set rotation_euler and exported without an update would print
+            # one rotation while the gate decided on another.
+            bpy.context.view_layer.update()
             old_rot = tuple(round(math.degrees(a), 3)
                             for a in o.matrix_world.to_euler())
             # Report on ``status``, never on ``delta``: a preserved residue
@@ -199,13 +219,22 @@ def export_unity_fbx(filepath: str,
             if status == 'cleared':
                 print("AVATARPREP: export cleared object rotation on %r "
                       "(was %s deg; axis-convention residue about the up axis — "
-                      "pass keep_object_rotation=True if it was deliberate)"
+                      "pass keep_object_rotation=True if it was deliberate; see "
+                      "export_unity_fbx's orientation docstring)"
                       % (o.name, old_rot))
             elif status == 'preserved':
+                # Says the rotation is preserved WHOLE, not that it is purely an
+                # up-axis conversion: a rotation that also spins about the up axis
+                # keeps that spin too, and would export front-reversed. Claiming
+                # purity here would be false for exactly that residue, and this
+                # line is the only signal the reader gets.
                 print("AVATARPREP: export preserved object rotation on %r "
-                      "(%s deg; it moves the up axis, so it IS the source's "
-                      "up-axis conversion — clearing it would export the rig "
-                      "tipped onto its face)" % (o.name, old_rot))
+                      "(%s deg) whole — it moves the up axis, so clearing it "
+                      "would export the rig tipped onto its face. Any rotation "
+                      "about the up axis it also carries is preserved with it, "
+                      "so check facing if that value is not a pure axis swap "
+                      "(see export_unity_fbx's orientation docstring)"
+                      % (o.name, old_rot))
         bpy.ops.export_scene.fbx('EXEC_DEFAULT', **kwargs)
     finally:
         scene_utils.restore_transforms(undo)

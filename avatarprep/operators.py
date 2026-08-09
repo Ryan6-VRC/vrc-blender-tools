@@ -340,8 +340,14 @@ class AVATARPREP_OT_compare_armatures(bpy.types.Operator):
                     % (verdict, base.name, other.name, len(offenders)))
         for line in offenders[:10]:
             self.report({'WARNING'}, line)
+        # The offender list above is capped at 10; the remedy talks about every
+        # pair, so point at a door that shows them all rather than at "above".
         for line in remedy_lines(report):
             self.report({'INFO'}, line)
+        if len(offenders) > 10:
+            self.report({'INFO'}, "%d offenders total; %d shown — run the "
+                                  "compare_armatures CLI with --report for the "
+                                  "full list" % (len(offenders), 10))
         for line in report["warnings"][:10]:
             self.report({'WARNING'}, line)
         return {'FINISHED'}

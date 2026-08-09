@@ -176,6 +176,17 @@ def _is_descendant(obj, ancestor) -> bool:
 _UP_AXIS_EPS = 0.99996  # cos(0.5 deg)
 
 
+def rotation_moves_up_axis(quat) -> bool:
+    """True when ``quat`` does not leave Blender's +Z fixed — i.e. it encodes an
+    up-axis change rather than a spin about the up axis.
+
+    The discriminator for the whole axis-convention question, shared by the clear
+    gate below and by the merge path's diagnostics so both answer it identically.
+    ``fbx_export``'s orientation docstring is the canon."""
+    up = mathutils.Vector((0.0, 0.0, 1.0))
+    return (quat @ up).dot(up) < _UP_AXIS_EPS
+
+
 def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     """Clear ``obj``'s object-level rotation UNAPPLIED — but ONLY when that
     rotation leaves the up axis fixed. Data untouched either way; nothing moves
@@ -230,9 +241,7 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     # not. ``to_quaternion()`` and not ``to_3x3()``: the latter carries scale, so
     # on a cm-unit source (0.01 object scale) it returns a length-0.01 vector and
     # every such file would read as up-axis-moving whatever its rotation.
-    up = mathutils.Vector((0.0, 0.0, 1.0))
-    moves_up_axis = (delta.to_quaternion() @ up).dot(up) < _UP_AXIS_EPS
-    if moves_up_axis:
+    if rotation_moves_up_axis(delta.to_quaternion()):
         restore_transforms(undo)
         bpy.context.view_layer.update()
         return 'preserved', mathutils.Matrix.Identity(4), []
