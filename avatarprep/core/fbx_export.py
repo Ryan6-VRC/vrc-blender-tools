@@ -234,10 +234,26 @@ def export_unity_fbx(filepath: str,
         scene_utils.check_scale_normalizable(scale_scope)
 
     # --- Mutation starts here. -------------------------------------------------
-    # Bake parked object scale into the data before the rotation gate reads
-    # matrix_world (see the **Scale** section above): a non-uniform scale
-    # contaminates ``matrix_world.to_quaternion()``, so the axis-convention gate
-    # judges a cleaner rotation once this has run.
+    # Bake parked object scale into the data (see the **Scale** section above).
+    #
+    # Running this BEFORE the rotation gate below is currently free rather than
+    # load-bearing, and the difference matters if you touch either. The gate is
+    # scale-INVARIANT today, so moving this call after it changes no field of the
+    # written file — measured: node rotation, node scales and vertex data
+    # identical, only the FBX's embedded timestamp differs, which already differs
+    # between two identical runs. ``to_quaternion`` normalizes columns, so
+    # ``T*R*S`` with diagonal S recovers R whatever S is; and the gate decides on
+    # the clear DELTA, ``(T*S)(T*R*S)^-1 = T*R^-1*T^-1``, where S cancels
+    # adjacently. Shear would break the first of those, but it takes a parent
+    # chain and parented armatures raise above.
+    #
+    # Lose that invariance and the order becomes load-bearing at once: measured on
+    # a gate handed the scale-carrying matrix, a non-uniformly scaled front-axis
+    # rig classifies 'cleared' normalize-first and 'preserved' clear-first, and
+    # the second ships the avatar backwards. So no test can pin the order (nothing
+    # observable changes while the gate is invariant), but the invariance that
+    # makes it safe is pinned — tests/test_fbx_export.py 11c fails before the
+    # order can silently start to matter.
     applied = scene_utils.normalize_object_scale(scale_scope) if bake_object_scale else []
     if applied:
         # One line, not one per object: a cm-unit avatar parks the same scale on
