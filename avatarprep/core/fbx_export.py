@@ -21,6 +21,7 @@ def export_unity_fbx(filepath: str,
                      embed_textures: bool = True,
                      use_selection: bool = False,
                      keep_object_rotation: bool = False,
+                     bake_object_scale: bool = True,
                      **extra) -> str:
     """Export ``filepath`` as an FBX using the CATS / Unity recipe.
 
@@ -91,24 +92,65 @@ def export_unity_fbx(filepath: str,
     settings by construction: copying a vendor's importer settings onto an owned
     re-export is exactly how to break it.
 
-    **Scale:** ``FBX_SCALE_ALL`` writes a ``UnitScaleFactor=100`` file. From a
-    meter-unit source that is this repo's canonical layout — no compensating node
-    scales, identical to what meter-unit vendors ship. **From a cm-unit
-    (``UnitScaleFactor=1``) source it is not:** the importer parks a 0.01 object
-    scale, which this function does not touch, so every Model node in the written
-    file carries ``Lcl Scaling 0.01`` over centimetre-magnitude geometry
-    (measured on Chocolat: 289 nodes). The import snapshot's
-    ``unit_scale_factor`` names the source's class. Scale tracks the source
-    file's unit, NOT the orientation class above — the two are independent, and
-    in the survey the (90,0,0) class is 35 cm-unit against 18 meter-unit files.
+    **Scale:** ``FBX_SCALE_ALL`` writes a ``UnitScaleFactor=100`` file, and this
+    function **bakes every parked object scale into the data first** (via
+    ``scene_utils.normalize_object_scale``), so the written file always carries
+    identity node scales — the canonical layout, identical to what meter-unit
+    vendors ship. Pass ``bake_object_scale=False`` to export the transforms
+    as-is; ``keep_object_rotation`` governs only the rotation gate and does not
+    suppress this.
+
+    That apply is **permanent and unreported by the scene**: the scale moves out
+    of the object transform and into vertices, shape keys and rest bones, the
+    emitted ``AVATARPREP:`` line is the only record, and the scene is NOT
+    restored afterwards (unlike the rotation gate, which clears unapplied).
+
+    It preserves world layout **for the cases it accepts**, which is not all of
+    them — ``check_scale_normalizable`` runs first and refuses the rest, because
+    two were measured to move geometry by metres rather than relocate a number: a
+    posed armature (the bake rescales rest bones but not pose translation
+    channels — 9.9 m on a 0.01 rig) and shear from a non-uniform scale over a
+    rotated descendant (0.041 m, silently dropped in the re-decomposition). Every
+    refusal is raised **before** the first mutation, so a refused export leaves
+    the scene untouched. ``normalize_object_scale`` owns the rest of the
+    reasoning: why the accepted cases are not gated on the parked value, and why
+    parents are applied before children.
+
+    What it fixes: from a cm-unit (``UnitScaleFactor=1``) source the importer
+    parks a 0.01 object scale, and without the apply the written file carried
+    ``Lcl Scaling 0.01`` over centimetre-magnitude geometry on its **root-level
+    nodes only** — measured on Chocolat, 21 of 289 Model nodes (the armature
+    ``Null`` plus 20 root-level ``Mesh`` siblings; all 268 ``LimbNode``s were
+    identity, so it never compounded). The import snapshot's
+    ``unit_scale_factor`` names the source's class, but see
+    ``normalize_object_scale``: the parked *value* does not, which is why this
+    does not gate on it. Scale tracks the source file's unit, NOT the
+    orientation class above — the two are independent, and in the survey the
+    (90,0,0) class is 35 cm-unit against 18 meter-unit files.
+
+    Why it mattered, measured in Unity on that Chocolat pair: the **vendor**
+    cm-unit file imports clean, because Unity's own unit normalization does the
+    work (``useFileScale=True, fileScale=0.01``, all 290 transforms at
+    ``localScale`` 1). An un-normalised re-export is an honest meter-unit file,
+    so Unity sets ``fileScale=1`` and has nothing left to normalize with: the
+    0.01 lands as a literal ``localScale`` on 21 GameObjects with bones at
+    centimetre ``localPosition``. World bounds and humanoid ``humanScale`` are
+    identical either way — so this never broke an avatar, it made our owned
+    re-export structurally worse than the vendor original it replaces, and put
+    it 100x off any meter-clean rig it is merged or animated against.
+
+    **Scope: this covers mesh-only prop FBXs too.** A cm-unit prop with no
+    armature parks the same 0.01 on its mesh objects (measured on
+    ``Telmy_Helmet.fbx``: the export wrote ``Lcl Scaling 0.01``), so props were
+    never exempt from this the way they are exempt from the orientation gate
+    above — do not read the two scopes as one.
 
     Owned exports do not otherwise mimic the source: Unity normalizes file units
-    at import, and world-space parity there is the owning skill's gate. Note the
-    two paths diverge on unit layout even where they agree on world layout — the
-    merge path's ``transform_apply`` bakes scale as well as rotation, so the same
-    cm-unit source exports meter-clean through ``merge_armatures`` and
-    0.01-scaled through this function. (``FBX_SCALE_NONE`` instead writes a
-    cm-unit file with 100x root node scales; measured, and not what any probed
+    at import, and world-space parity there is the owning skill's gate. The two
+    export paths now agree on unit layout as well as world layout —
+    ``merge_armatures``' ``transform_apply`` bakes scale as well as rotation, and
+    reaches the same place by the same means. (``FBX_SCALE_NONE`` instead writes
+    a cm-unit file with 100x root node scales; measured, and not what any probed
     vendor ships.)
 
     ``armature_obj`` scopes the export to one rig: it selects that armature plus
@@ -159,26 +201,10 @@ def export_unity_fbx(filepath: str,
         path_mode = 'STRIP'
         embed_textures = False
 
-    kwargs = dict(
-        filepath=filepath,
-        object_types=object_types,
-        use_mesh_modifiers=use_mesh_modifiers,
-        add_leaf_bones=add_leaf_bones,
-        bake_anim=bake_anim,
-        apply_scale_options=apply_scale_options,
-        path_mode=path_mode,
-        embed_textures=embed_textures,
-        use_selection=use_selection,
-    )
-    kwargs.update(extra)
-
-    # Neutralise the importer's axis-convention residue on every exported
-    # armature (see docstring), restore after. The gate lives in
-    # clear_axis_convention_rotation: a residue that leaves the up axis fixed is
-    # cleared, one that MOVES it is preserved. Children ride along via parenting;
-    # a modifier-bound NON-descendant mesh (a bound shape get_bound_meshes
-    # supports) is carried by the same delta inside the helper — otherwise the
-    # file would ship its geometry 180° off the skeleton.
+    # --- Every refusal runs BEFORE the irreversible scale bake below. -----------
+    # The bake has no undo, so a refusal raised after it leaves the caller with a
+    # permanently rewritten scene AND no file — strictly worse than either
+    # outcome. Anything that can refuse this export belongs above this line.
     if keep_object_rotation:
         candidates = []
     elif armature_obj is not None:
@@ -200,6 +226,55 @@ def export_unity_fbx(filepath: str,
             "parent relation, or pass keep_object_rotation=True to export the "
             "rotations as-is" % ", ".join(repr(n) for n in parented))
 
+    if armature_obj is not None:
+        scale_scope = [armature_obj] + scene_utils.get_bound_meshes(armature_obj)
+    else:
+        scale_scope = list(bpy.context.scene.objects)
+    if bake_object_scale:
+        scene_utils.check_scale_normalizable(scale_scope)
+
+    # --- Mutation starts here. -------------------------------------------------
+    # Bake parked object scale into the data before the rotation gate reads
+    # matrix_world (see the **Scale** section above): a non-uniform scale
+    # contaminates ``matrix_world.to_quaternion()``, so the axis-convention gate
+    # judges a cleaner rotation once this has run.
+    applied = scene_utils.normalize_object_scale(scale_scope) if bake_object_scale else []
+    if applied:
+        # One line, not one per object: a cm-unit avatar parks the same scale on
+        # every root (21 objects on Chocolat), and 21 identical lines would bury
+        # the rotation line printed right after. The values are each object's own
+        # scale at the moment it was applied — a child reads the compounded value
+        # its parent's apply pushed onto it, so more than one value here is normal
+        # and is NOT evidence of more than one conversion.
+        values = sorted({s for _, s in applied})
+        print("AVATARPREP: export applied parked object scale into object data on "
+              "%d object(s) — values %s, objects %s. The written file carries "
+              "identity node scales. This is PERMANENT and the scene is NOT "
+              "restored afterwards (unlike the rotation gate below) — see "
+              "export_unity_fbx's Scale docstring"
+              % (len(applied), ", ".join(repr(v) for v in values),
+                 ", ".join(repr(n) for n, _ in applied)))
+
+    kwargs = dict(
+        filepath=filepath,
+        object_types=object_types,
+        use_mesh_modifiers=use_mesh_modifiers,
+        add_leaf_bones=add_leaf_bones,
+        bake_anim=bake_anim,
+        apply_scale_options=apply_scale_options,
+        path_mode=path_mode,
+        embed_textures=embed_textures,
+        use_selection=use_selection,
+    )
+    kwargs.update(extra)
+
+    # Neutralise the importer's axis-convention residue on every exported
+    # armature (see docstring), restore after. The gate lives in
+    # clear_axis_convention_rotation: a residue that leaves the up axis fixed is
+    # cleared, one that MOVES it is preserved. Children ride along via parenting;
+    # a modifier-bound NON-descendant mesh (a bound shape get_bound_meshes
+    # supports) is carried by the same delta inside the helper — otherwise the
+    # file would ship its geometry 180° off the skeleton.
     undo = []
     moved = set()
     try:

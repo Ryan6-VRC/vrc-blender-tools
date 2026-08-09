@@ -496,10 +496,18 @@ def merge_armatures(base_arm: bpy.types.Object,
                     "%s — baking the current world frame rather than either "
                     "source's own; verify the merged rig's orientation before "
                     "export" % why)
+        # Parent-before-child, descendants included — see
+        # ``scene_utils.hierarchy_ordered``. Applying an armature does not push
+        # its transform into a child's data, so a flat armature-then-bound-meshes
+        # walk stranded the value on any intermediate EMPTY, and could not
+        # converge at all where a parent and child carry reciprocal scales.
         for arm in (base_arm, merge_arm):
-            _apply_object_transform(arm)
-            for m in scene_utils.get_bound_meshes(arm):
-                _apply_object_transform(m)
+            # Seeded from the bound set, not the parent tree: a modifier-bound
+            # NON-descendant mesh is bound but not a child, and dropping it here
+            # would ship its geometry on a different frame from the skeleton.
+            seed = [arm] + scene_utils.get_bound_meshes(arm)
+            for o in scene_utils.hierarchy_ordered(seed):
+                _apply_object_transform(o)
 
     # Snapshot merge bones' original parents BY NAME before the collision rename.
     original_parents = {b.name: (b.parent.name if b.parent else None)
