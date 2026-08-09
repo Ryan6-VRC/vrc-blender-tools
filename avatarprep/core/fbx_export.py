@@ -33,18 +33,55 @@ def export_unity_fbx(filepath: str,
       * ``embed_textures=True``
       * ``path_mode='COPY'`` (required for embedding to work)
 
-    **Orientation:** an armature *object* rotation is treated as importer
-    residue, not content — ``wm.fbx_import`` represents a source FBX's axis
-    convention as an object rotation (e.g. -180° Z), and the exporter re-derives
-    its own conversion, so carrying it through double-counts: the file gains an
-    extra 180° and Unity shows the avatar backwards. A Blender re-import cannot
-    see this (the importer symmetrically undoes it); parsing the file can, and
-    ``tests/test_fbx_orientation.py`` pins it against the Felis fixture. Each
-    exported armature's object rotation is therefore cleared UNAPPLIED for the
-    export (bone/mesh data untouched) and restored after. A deliberately rotated
-    armature is the rare exception: pass ``keep_object_rotation=True``.
+    **Orientation — the canon; other files route here rather than re-derive it.**
+    ``wm.fbx_import`` represents a source FBX's axis convention as an armature
+    *object* rotation and leaves vertex data raw; this exporter writes root node
+    = ``Gm(-90 X) @ matrix_world`` and leaves ``Vertices`` in object-local
+    coordinates. Residue and conversion therefore compose **in the node, not the
+    data**, and the exporter's own -90 X presumes the data it is handed is
+    Blender-Z-up.
 
-    That 180° has a second switch on the consumer side: Unity's per-asset
+    So an object rotation is importer residue **only when it leaves the up axis
+    fixed**, and only then is it cleared UNAPPLIED for the export (bone/mesh data
+    untouched) and restored after. The three residue classes measured across ~250
+    vendor files:
+
+      * **identity** (the plurality) — a Y-up file whose root node already carries
+        -90 X, i.e. Blender-exported. Nothing to do.
+      * **(0, 0, -180)** — a ``+Z up / +Y front / -X coord`` file (the Felis
+        fixture; the -X coord sign is what produces the 180). Leaves the up axis
+        fixed, so it is a FRONT-axis convention difference: cleared. Carrying it
+        through double-counts and Unity shows the avatar backwards. A Blender
+        re-import cannot see that (the importer symmetrically undoes it); parsing
+        the file can, which is why ``tests/test_fbx_orientation.py`` asserts on
+        the written node rotation.
+      * **(90, 0, 0)** — a Y-up file with an identity root node, i.e.
+        Maya/Max-exported; roughly a third of the library. This MOVES the up axis,
+        so it *is* the source's up-axis conversion, not residue: preserved.
+        Clearing it double-counts the up-axis conversion and the rig exports
+        tipped 90° onto its face (measured on Chocolat: re-import height
+        1.1992 -> 0.4574 m, Y/Z bounds swapped).
+
+    No file in the survey carried a residue that both moves the up axis and
+    rotates about it; such a residue is preserved whole, and the emitted line
+    names its value so the reader can see it.
+
+    A deliberately rotated armature is the rare exception: pass
+    ``keep_object_rotation=True``. That exception is now specifically a deliberate
+    rotation *about the up axis* — an up-axis-moving one is preserved anyway.
+
+    **Scope: ARMATURE objects only.** Mesh-only prop FBXs have no armature and are
+    never touched here — which is exactly why they are correct today, the same
+    fact this rule encodes. Note also that nothing in the ``avatarprep_`` stamp
+    namespace records which frame the data is in; that is why a merge that bakes a
+    wrong frame into the ``.blend`` (see ``merge_armatures``) is unrecoverable
+    downstream rather than merely wrong. ``**extra`` lets a caller override
+    ``axis_up``/``axis_forward``; the up-axis reasoning above is hardwired to the
+    default -90 X conversion and does not follow an override.
+
+    That 180° has a second switch on the consumer side, covered below.
+
+    The consumer-side switch: Unity's per-asset
     ``bakeAxisConversion`` applies the same rotation, and no test here can see it
     (they parse the written file; this one lives in the Unity importer). This
     export is correct at Unity's default, OFF — turning it on for our output
@@ -54,14 +91,25 @@ def export_unity_fbx(filepath: str,
     settings by construction: copying a vendor's importer settings onto an owned
     re-export is exactly how to break it.
 
-    **Scale:** ``FBX_SCALE_ALL`` is this repo's canonical export layout — a
-    ``UnitScaleFactor=100`` (meter-unit) file with no compensating node scales,
-    identical to what meter-unit vendors ship. Vendors also ship cm-unit
-    (``UnitScaleFactor=1``) files — the import snapshot's ``unit_scale_factor``
-    names the source's class — but owned exports do NOT mimic the source: Unity
-    normalizes file units at import, and world-space parity there is the owning
-    skill's gate. (``FBX_SCALE_NONE`` instead writes a cm-unit file with 100x
-    root node scales; measured, and not what any probed vendor ships.)
+    **Scale:** ``FBX_SCALE_ALL`` writes a ``UnitScaleFactor=100`` file. From a
+    meter-unit source that is this repo's canonical layout — no compensating node
+    scales, identical to what meter-unit vendors ship. **From a cm-unit
+    (``UnitScaleFactor=1``) source it is not:** the importer parks a 0.01 object
+    scale, which this function does not touch, so every Model node in the written
+    file carries ``Lcl Scaling 0.01`` over centimetre-magnitude geometry
+    (measured on Chocolat: 289 nodes). The import snapshot's
+    ``unit_scale_factor`` names the source's class. Scale tracks the source
+    file's unit, NOT the orientation class above — the two are independent, and
+    in the survey the (90,0,0) class is 35 cm-unit against 18 meter-unit files.
+
+    Owned exports do not otherwise mimic the source: Unity normalizes file units
+    at import, and world-space parity there is the owning skill's gate. Note the
+    two paths diverge on unit layout even where they agree on world layout — the
+    merge path's ``transform_apply`` bakes scale as well as rotation, so the same
+    cm-unit source exports meter-clean through ``merge_armatures`` and
+    0.01-scaled through this function. (``FBX_SCALE_NONE`` instead writes a
+    cm-unit file with 100x root node scales; measured, and not what any probed
+    vendor ships.)
 
     ``armature_obj`` scopes the export to one rig: it selects that armature plus
     its bound meshes and exports selection-only. Because a scoped export is by
@@ -124,30 +172,68 @@ def export_unity_fbx(filepath: str,
     )
     kwargs.update(extra)
 
-    # Clear importer-residue object rotation on every exported armature (see
-    # docstring), restore after. Children ride along via parenting; a
-    # modifier-bound NON-descendant mesh (a bound shape get_bound_meshes
-    # supports) is carried by the same delta inside clear_object_rotation —
-    # otherwise the file would ship its geometry 180° off the skeleton.
+    # Neutralise the importer's axis-convention residue on every exported
+    # armature (see docstring), restore after. The gate lives in
+    # clear_axis_convention_rotation: a residue that leaves the up axis fixed is
+    # cleared, one that MOVES it is preserved. Children ride along via parenting;
+    # a modifier-bound NON-descendant mesh (a bound shape get_bound_meshes
+    # supports) is carried by the same delta inside the helper — otherwise the
+    # file would ship its geometry 180° off the skeleton.
     if keep_object_rotation:
-        cleared = []
+        candidates = []
     elif armature_obj is not None:
-        cleared = [armature_obj]
+        candidates = [armature_obj]
     else:
-        cleared = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
+        candidates = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
+    # Refuse a parented armature rather than guess which frame the gate should
+    # judge. Under a rotated parent, the object's world rotation and the delta a
+    # local clear produces are different rotations that can disagree about
+    # whether the up axis moves, and no reading of one is defensible for the
+    # other. Nothing here produces a parented armature (wm.fbx_import creates
+    # them at root), so this closes a question rather than blocking real work —
+    # and it matches the preflight merge_armatures already applies.
+    parented = [o.name for o in candidates if o.parent is not None]
+    if parented:
+        raise ValueError(
+            "armature(s) %s have a parent object; the axis-convention gate cannot "
+            "judge a rotation split between parent and object. Clear or apply the "
+            "parent relation, or pass keep_object_rotation=True to export the "
+            "rotations as-is" % ", ".join(repr(n) for n in parented))
+
     undo = []
     moved = set()
     try:
-        for o in cleared:
+        for o in candidates:
+            # matrix_world is stale after a direct rotation write, and this read
+            # is an oracle now (the tests assert on the emitted line), so a caller
+            # that set rotation_euler and exported without an update would print
+            # one rotation while the gate decided on another.
+            bpy.context.view_layer.update()
             old_rot = tuple(round(math.degrees(a), 3)
                             for a in o.matrix_world.to_euler())
-            delta, u = scene_utils.clear_object_rotation(o, moved)
+            # Report on ``status``, never on ``delta``: a preserved residue
+            # returns an IDENTITY delta, so a delta-keyed message goes silent on
+            # exactly the class this gate exists for.
+            status, _delta, u = scene_utils.clear_axis_convention_rotation(o, moved)
             undo += u
-            if any(abs(delta[i][j] - (1.0 if i == j else 0.0)) > 1e-9
-                   for i in range(4) for j in range(4)):
+            if status == 'cleared':
                 print("AVATARPREP: export cleared object rotation on %r "
-                      "(was %s deg; import-convention residue — pass "
-                      "keep_object_rotation=True if it was deliberate)"
+                      "(was %s deg; axis-convention residue about the up axis — "
+                      "pass keep_object_rotation=True if it was deliberate; see "
+                      "export_unity_fbx's orientation docstring)"
+                      % (o.name, old_rot))
+            elif status == 'preserved':
+                # Says the rotation is preserved WHOLE, not that it is purely an
+                # up-axis conversion: a rotation that also spins about the up axis
+                # keeps that spin too, and would export front-reversed. Claiming
+                # purity here would be false for exactly that residue, and this
+                # line is the only signal the reader gets.
+                print("AVATARPREP: export preserved object rotation on %r "
+                      "(%s deg) whole — it moves the up axis, so clearing it "
+                      "would export the rig tipped onto its face. Any rotation "
+                      "about the up axis it also carries is preserved with it, "
+                      "so check facing if that value is not a pure axis swap "
+                      "(see export_unity_fbx's orientation docstring)"
                       % (o.name, old_rot))
         bpy.ops.export_scene.fbx('EXEC_DEFAULT', **kwargs)
     finally:
