@@ -165,6 +165,93 @@ def main():
     finally:
         us.scale_length = 1.0
 
+    # --- Parked object scale (D2A) ---------------------------------------------
+    # Shared readers for cases 6-8.
+    def _all_node_scales(path):
+        root, _ = parse_fbx.parse(path)
+        objects = next(e for e in root.elems if e.id == b"Objects")
+        out = []
+        for e in objects.elems:
+            if e.id != b"Model":
+                continue
+            name = e.props[1].decode("utf-8", "replace").split("\x00")[0]
+            s = (1.0, 1.0, 1.0)
+            for p70 in (c for c in e.elems if c.id == b"Properties70"):
+                for p in p70.elems:
+                    if p.props[0] == b"Lcl Scaling":
+                        s = tuple(float(v) for v in p.props[4:7])
+            out.append((name, s))
+        return out
+
+    def _offenders(path):
+        return [(n, s) for n, s in _all_node_scales(path)
+                if any(abs(c - 1.0) > 1e-4 for c in s)]
+
+    def _world_span(obj):
+        lo = [1e9] * 3
+        hi = [-1e9] * 3
+        for c in obj.bound_box:
+            w = obj.matrix_world @ Vector(c)
+            for i in range(3):
+                lo[i] = min(lo[i], w[i])
+                hi[i] = max(hi[i], w[i])
+        return [hi[i] - lo[i] for i in range(3)]
+
+    # 6. A parked object scale is baked into the data, so the written file carries
+    # identity node scales whatever the source's unit class was. A cm-unit source
+    # reaches the exporter as 0.01 over cm-magnitude geometry; before this, the
+    # file shipped that 0.01 on every root-level node (measured on Chocolat: 21 of
+    # 289) and Unity had nothing left to normalize it with, because our own file
+    # honestly declares meters. World layout is what must survive the bake.
+    arm = _make_rig()
+    body = bpy.data.objects["Body"]
+    for v in body.data.vertices:
+        v.co *= 100.0
+    for o in (arm, body):
+        o.scale = (0.01, 0.01, 0.01)
+    bpy.context.view_layer.update()
+    want_span = _world_span(body)
+    out = os.path.join(tempfile.mkdtemp(), "parked_scale.fbx")
+    fbx_export.export_unity_fbx(out, armature_obj=arm)
+    check(not _offenders(out),
+          "a parked 0.01 must be baked into the data, not written as node scale; "
+          "offenders: %r" % _offenders(out))
+    got_span = _world_span(body)
+    check(all(abs(a - b) <= 1e-5 for a, b in zip(want_span, got_span)),
+          "normalizing must be world-preserving: span %r -> %r" % (want_span, got_span))
+
+    # 7. Parents are applied before children. Reciprocal parent/child scales are
+    # the case that cannot converge child-first — applying the child first strands
+    # the parent's scale on it (measured on Sio_AFK: armature 0.498056 against
+    # mesh 2.007806, which is why the ordering is a guarantee and not an accident).
+    arm = _make_rig()
+    arm.scale = (0.5, 0.5, 0.5)
+    bpy.data.objects["Body"].scale = (2.0, 2.0, 2.0)
+    bpy.context.view_layer.update()
+    out = os.path.join(tempfile.mkdtemp(), "reciprocal.fbx")
+    fbx_export.export_unity_fbx(out, armature_obj=arm)
+    check(not _offenders(out),
+          "reciprocal parent/child scales must both normalize (parent first); "
+          "offenders: %r" % _offenders(out))
+
+    # 8. The scope reaches non-mesh descendants. An EMPTY between the armature and
+    # its meshes is not in get_bound_meshes, and applying a parent only relocates
+    # its scale onto the child's local matrix — so a bound-set-only walk moves the
+    # number onto the EMPTY rather than removing it (measured on Monoteiru's
+    # ``geo_grp`` tree: non-unit node count 1/7 before and 1/7 after).
+    arm = _make_rig()
+    empty = bpy.data.objects.new("geo_grp", None)
+    bpy.context.collection.objects.link(empty)
+    empty.parent = arm
+    bpy.data.objects["Body"].parent = empty
+    arm.scale = (0.01, 0.01, 0.01)
+    bpy.context.view_layer.update()
+    out = os.path.join(tempfile.mkdtemp(), "empty_between.fbx")
+    fbx_export.export_unity_fbx(out, armature_obj=arm)
+    check(not _offenders(out),
+          "an EMPTY between armature and mesh must not strand the scale; "
+          "offenders: %r" % _offenders(out))
+
     if FAILURES:
         print("FBXEXPORT_TEST FAIL:", "; ".join(FAILURES))
         sys.exit(1)

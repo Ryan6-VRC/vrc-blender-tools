@@ -256,6 +256,109 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     return 'cleared', delta, undo
 
 
+def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
+    """``objects`` plus every descendant, ordered parents before children.
+
+    The ordering is load-bearing for anything that calls ``transform_apply``.
+    Applying a parent does not push its transform into a child's *data* —
+    Blender compensates the child's local matrix instead — so the value merely
+    moves down one level, and a child applied first strands it there. Measured
+    on ``Sio_AFK``, whose armature (0.498056) and mesh (2.007806) carry
+    reciprocal scales: parent-first leaves the child at 0.99999994, which its own
+    apply then takes to 1.0; child-first cannot converge.
+
+    Descendants are included for the same reason: a set naming only an armature
+    and its bound meshes relocates the value onto any intermediate EMPTY rather
+    than removing it (measured on Monoteiru, whose meshes hang off a ``geo_grp``
+    empty tree).
+    """
+    if scene is None:
+        scene = bpy.context.scene
+    universe = set(scene.objects)
+    ordered: List[bpy.types.Object] = []
+    seen = set()
+
+    def walk(o):
+        if o.name in seen or o not in universe:
+            return
+        seen.add(o.name)
+        ordered.append(o)
+        for c in o.children:
+            walk(c)
+
+    # Seed from each object's topmost in-scene ancestor, so a named child never
+    # precedes its named parent regardless of the caller's ordering.
+    for o in objects:
+        anc = o
+        while anc.parent is not None and anc.parent in universe:
+            anc = anc.parent
+        walk(anc)
+    return ordered
+
+
+def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
+    """Bake every non-unit object scale in ``objects`` (and their descendants)
+    into object data, so the exported file carries identity node scales.
+
+    Returns the list of ``(name, scale)`` actually applied, newest last; empty
+    when there was nothing to do.
+
+    **Unlike the rotation gate this is permanent and unconditional.** A parked
+    scale cannot be cleared unapplied the way a rotation can — the exporter
+    writes node scale from ``matrix_world``, so writing identity nodes requires
+    the scale to actually live in the data. There is no undo list: the inverse
+    apply is float-lossy across every vertex and shape key, which is exactly the
+    silent degradation this repo exists to avoid. Callers that need the scene
+    back re-import it.
+
+    **Unconditional, because the value cannot tell you what it means.** Surveying
+    131 vendor files, a parked ``0.01`` appears both as the importer's cm-unit
+    conversion (Chocolat) and as vendor-authored scale on a *meter*-unit file
+    (``Chiffon_ver1.0.0_kaihen``, ``Karin_ver1.1.1_kaihen``), while a cm-unit file
+    can read a deviation of exactly zero (``Plum_kaihen`` ships an authored 100.0
+    that cancels the conversion). Any gate keyed on the number would refuse ~43%
+    of the library and mis-explain a third of those. Applying is safe for both
+    readings because it is world-preserving by construction, so no gate is
+    needed: the scale moves, the avatar does not.
+
+    **Non-uniform scale is applied too, including on skinned meshes.** Measured
+    on the one library file that ships it (``Uruki_Quad_v1.2``, meshes
+    ``C_hairpin`` and ``C_pouch``): under a pose displacing them 0.25-0.30 m, the
+    deformed result moves 2.4e-07 / 3.6e-07 m across the apply, against 1.5e-07
+    on an untouched control mesh on the same rig — i.e. the float floor, not a
+    deformation change. Scale is innermost in ``loc @ rot @ scale``, so applying
+    it alone is exact even under a rotated object.
+
+    Scope and ordering are :func:`hierarchy_ordered`'s — parents before
+    children, descendants included, both for reasons measured there.
+    """
+    applied = []
+    for o in hierarchy_ordered(objects, scene):
+        scale = tuple(o.scale)
+        if all(abs(c - 1.0) <= 1e-6 for c in scale):
+            continue
+        ctx = {'active_object': o, 'object': o, 'selected_objects': [o],
+               'selected_editable_objects': [o]}
+        try:
+            op_override(bpy.ops.object.transform_apply, ctx,
+                        location=False, rotation=False, scale=True)
+        except RuntimeError as e:
+            # Multi-user data is the known refuser ("Cannot apply to a multi user
+            # object"). Name it rather than ship a half-normalised file: the
+            # remedy (make the data single-user) is the caller's, and a silent
+            # skip would leave exactly the mixed layout this function removes.
+            raise ValueError(
+                "could not apply scale %r on %r, so the export would ship a mixed "
+                "unit layout (some nodes normalised, this one not): %s. Make the "
+                "object's data single-user, or exclude it from the export"
+                % (tuple(round(c, 6) for c in scale), o.name, e))
+        applied.append((o.name, tuple(round(c, 6) for c in scale)))
+
+    if applied:
+        bpy.context.view_layer.update()
+    return applied
+
+
 def restore_transforms(undo) -> None:
     """Replay a :func:`clear_axis_convention_rotation` undo list (newest first)."""
     for obj, kind, val in reversed(undo):
