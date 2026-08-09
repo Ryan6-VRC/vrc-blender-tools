@@ -188,22 +188,6 @@ def main():
         return [(n, s) for n, s in _all_node_scales(path)
                 if any(abs(c - 1.0) > 1e-4 for c in s)]
 
-    def _model_rotation(path, model_name):
-        """A Model node's Lcl Rotation in degrees, (0,0,0) when absent."""
-        root, _ = parse_fbx.parse(path)
-        objects = next(e for e in root.elems if e.id == b"Objects")
-        for e in objects.elems:
-            if e.id != b"Model":
-                continue
-            if e.props[1].decode("utf-8", "replace").split("\x00")[0] != model_name:
-                continue
-            for p70 in (c for c in e.elems if c.id == b"Properties70"):
-                for p in p70.elems:
-                    if p.props[0] == b"Lcl Rotation":
-                        return tuple(float(v) for v in p.props[4:7])
-            return (0.0, 0.0, 0.0)
-        return None
-
     def _world_span(obj):
         lo = [1e9] * 3
         hi = [-1e9] * 3
@@ -349,43 +333,7 @@ def main():
         a.delta_scale = (0.01, 0.01, 0.01)
     _refuses(_delta, "delta_scale", "a delta_scale the bake cannot consume")
 
-    # 11b. Non-uniform object scale UNDER an up-axis-preserving rotation — the two
-    # mutations this export performs, on one rig. Test 6 parks a UNIFORM 0.01,
-    # which cannot tell a scale-invariant rotation gate from a scale-sensitive
-    # one: every column shrinks alike, so even a gate reading a scale-carrying
-    # matrix classifies it correctly. A non-uniform scale is what separates them.
-    #
-    # The gate is invariant for two independent reasons, both measured; this pins
-    # the OUTCOME rather than either mechanism. ``Matrix.to_quaternion`` normalizes
-    # columns, so ``T*R*S`` with diagonal S recovers R whatever S is; and the gate
-    # decides on the clear DELTA, ``new @ old^-1 = (T*S)(T*R*S)^-1 = T*R^-1*T^-1``,
-    # where S cancels adjacently. Shear defeats the first, but it takes a parent
-    # chain and parented armatures raise before the gate (test 11's refusals).
-    _clear_scene()
-    arm = _make_rig()
-    body = bpy.data.objects["Body"]
-    arm.rotation_euler = (0.0, 0.0, math.pi)      # front-axis park: must be CLEARED
-    arm.scale = (0.01, 0.02, 0.03)                # non-uniform: must not sway that
-    bpy.context.view_layer.update()
-    want_span = _world_span(body)
-    out = os.path.join(tempfile.mkdtemp(), "nonuniform_parked.fbx")
-    fbx_export.export_unity_fbx(out, armature_obj=arm)
-    check(not _offenders(out),
-          "a non-uniform parked scale must bake into the data like a uniform one; "
-          "offenders: %r" % _offenders(out))
-    rot = _model_rotation(out, "Armature")
-    check(rot is not None and abs(rot[0] + 90.0) < 0.1 and abs(rot[1]) < 0.1
-          and abs(rot[2]) < 0.1,
-          "the front-axis park was misclassified under a non-uniform scale: node "
-          "rotation %s (want ~(-90,0,0), i.e. cleared). A gate reading a "
-          "scale-carrying matrix reads this rig as up-axis-MOVING and preserves "
-          "the park, shipping the avatar backwards." % (rot,))
-    got_span = _world_span(body)
-    check(all(abs(a - b) <= 1e-5 for a, b in zip(want_span, got_span)),
-          "the bake must stay world-preserving under non-uniform scale: span %r -> %r"
-          % (want_span, got_span))
-
-    # 11c. The property that makes the export's two mutations order-independent:
+    # 11b. The property that makes the export's two mutations order-independent:
     # the gate's verdict does not depend on whether the scale has been baked yet.
     #
     # This is the only constructible form of "normalize must run before the

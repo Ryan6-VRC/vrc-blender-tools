@@ -252,7 +252,7 @@ def export_unity_fbx(filepath: str,
     # rig classifies 'cleared' normalize-first and 'preserved' clear-first, and
     # the second ships the avatar backwards. So no test can pin the order (nothing
     # observable changes while the gate is invariant), but the invariance that
-    # makes it safe is pinned — tests/test_fbx_export.py 11c fails before the
+    # makes it safe is pinned — tests/test_fbx_export.py 11b fails before the
     # order can silently start to matter.
     applied = scene_utils.normalize_object_scale(scale_scope) if bake_object_scale else []
     if applied:
