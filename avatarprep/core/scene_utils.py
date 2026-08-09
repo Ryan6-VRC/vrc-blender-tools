@@ -247,7 +247,15 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
         return 'preserved', mathutils.Matrix.Identity(4), []
 
     for m in get_bound_meshes(obj):
-        if m.name in already_moved or _is_descendant(m, obj):
+        if m.name in already_moved:
+            continue
+        if _is_descendant(m, obj):
+            # It rode along with its parent, so it HAS moved — record that. A
+            # mesh bound to two rigs (parented to this one, modifier-bound to
+            # another) would otherwise be moved a second time by the other rig's
+            # clear or carry and land at delta**2 — 180 deg off the skeleton it
+            # is bound to, measured.
+            already_moved.add(m.name)
             continue
         undo.append((m, 'matrix_basis', m.matrix_basis.copy()))
         m.matrix_world = delta @ m.matrix_world
@@ -552,6 +560,46 @@ def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
     if applied:
         bpy.context.view_layer.update()
     return applied
+
+def carried_by_parenting(arm) -> set:
+    """Names of meshes bound to ``arm`` that ride along when ``arm`` itself moves.
+
+    Seed this into an ``already_moved`` set before clearing a DIFFERENT armature
+    that some of those meshes are also modifier-bound to: without it that clear
+    moves the mesh explicitly and the later carry of ``arm`` moves it again."""
+    return {m.name for m in get_bound_meshes(arm) if _is_descendant(m, arm)}
+
+
+def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> None:
+    """Push an already-decided world-space ``delta`` onto ``obj`` and the
+    non-descendant meshes bound to it.
+
+    The counterpart to :func:`clear_axis_convention_rotation` for a rig that must
+    move WITH another rig rather than about its own origin: that function rotates
+    about ``obj``'s own origin, which displaces two same-rotation rigs relative to
+    each other by ``(I - R^-1)(o_a - o_b)`` when their origins differ. Replaying
+    one rig's delta onto the other keeps them rigid, and still lands ``obj`` at an
+    identity rotation whenever the two rotations were equal.
+
+    Makes NO axis-class decision — the caller has already made it via
+    ``clear_axis_convention_rotation`` and is replaying the resulting delta, so
+    the two rigs cannot disagree about what their shared rotation meant.
+
+    No undo: the only caller (the merge apply path) clears permanently and drops
+    the undo. A caller needing restore gets the undo shape added then."""
+    if already_moved is None:
+        already_moved = set()
+    bpy.context.view_layer.update()  # matrix_world is stale after direct writes
+    obj.matrix_world = delta @ obj.matrix_world
+    for m in get_bound_meshes(obj):
+        if m.name in already_moved:
+            continue
+        if _is_descendant(m, obj):
+            already_moved.add(m.name)  # rode along; see the clear's note
+            continue
+        m.matrix_world = delta @ m.matrix_world
+        already_moved.add(m.name)
+    bpy.context.view_layer.update()
 
 
 def restore_transforms(undo) -> None:
