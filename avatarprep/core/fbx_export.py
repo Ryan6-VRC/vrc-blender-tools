@@ -21,6 +21,7 @@ def export_unity_fbx(filepath: str,
                      embed_textures: bool = True,
                      use_selection: bool = False,
                      keep_object_rotation: bool = False,
+                     bake_object_scale: bool = True,
                      **extra) -> str:
     """Export ``filepath`` as an FBX using the CATS / Unity recipe.
 
@@ -95,13 +96,24 @@ def export_unity_fbx(filepath: str,
     function **bakes every parked object scale into the data first** (via
     ``scene_utils.normalize_object_scale``), so the written file always carries
     identity node scales — the canonical layout, identical to what meter-unit
-    vendors ship. That apply is **permanent and unreported by the scene**: the
-    scale moves out of the object transform and into vertices, shape keys and
-    rest bones, the emitted ``AVATARPREP:`` line is the only record, and the
-    scene is NOT restored afterwards (unlike the rotation gate, which clears
-    unapplied). It is world-preserving, so nothing about the avatar's size or
-    shape changes — only where the number lives. ``normalize_object_scale`` owns
-    the reasoning for why this is unconditional rather than gated, and why
+    vendors ship. Pass ``bake_object_scale=False`` to export the transforms
+    as-is; ``keep_object_rotation`` governs only the rotation gate and does not
+    suppress this.
+
+    That apply is **permanent and unreported by the scene**: the scale moves out
+    of the object transform and into vertices, shape keys and rest bones, the
+    emitted ``AVATARPREP:`` line is the only record, and the scene is NOT
+    restored afterwards (unlike the rotation gate, which clears unapplied).
+
+    It preserves world layout **for the cases it accepts**, which is not all of
+    them — ``check_scale_normalizable`` runs first and refuses the rest, because
+    two were measured to move geometry by metres rather than relocate a number: a
+    posed armature (the bake rescales rest bones but not pose translation
+    channels — 9.9 m on a 0.01 rig) and shear from a non-uniform scale over a
+    rotated descendant (0.041 m, silently dropped in the re-decomposition). Every
+    refusal is raised **before** the first mutation, so a refused export leaves
+    the scene untouched. ``normalize_object_scale`` owns the rest of the
+    reasoning: why the accepted cases are not gated on the parked value, and why
     parents are applied before children.
 
     What it fixes: from a cm-unit (``UnitScaleFactor=1``) source the importer
@@ -189,27 +201,57 @@ def export_unity_fbx(filepath: str,
         path_mode = 'STRIP'
         embed_textures = False
 
-    # Bake parked object scale into the data before the rotation gate reads
-    # matrix_world (see the **Scale** section above). Ordered first because a
-    # non-uniform scale contaminates ``matrix_world.to_quaternion()``, so the
-    # axis-convention gate below judges a cleaner rotation once this has run.
-    # Permanent, and reported per object — nothing else records that it happened.
+    # --- Every refusal runs BEFORE the irreversible scale bake below. -----------
+    # The bake has no undo, so a refusal raised after it leaves the caller with a
+    # permanently rewritten scene AND no file — strictly worse than either
+    # outcome. Anything that can refuse this export belongs above this line.
+    if keep_object_rotation:
+        candidates = []
+    elif armature_obj is not None:
+        candidates = [armature_obj]
+    else:
+        candidates = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
+    # Refuse a parented armature rather than guess which frame the gate should
+    # judge. Under a rotated parent, the object's world rotation and the delta a
+    # local clear produces are different rotations that can disagree about
+    # whether the up axis moves, and no reading of one is defensible for the
+    # other. Nothing here produces a parented armature (wm.fbx_import creates
+    # them at root), so this closes a question rather than blocking real work —
+    # and it matches the preflight merge_armatures already applies.
+    parented = [o.name for o in candidates if o.parent is not None]
+    if parented:
+        raise ValueError(
+            "armature(s) %s have a parent object; the axis-convention gate cannot "
+            "judge a rotation split between parent and object. Clear or apply the "
+            "parent relation, or pass keep_object_rotation=True to export the "
+            "rotations as-is" % ", ".join(repr(n) for n in parented))
+
     if armature_obj is not None:
         scale_scope = [armature_obj] + scene_utils.get_bound_meshes(armature_obj)
     else:
         scale_scope = list(bpy.context.scene.objects)
-    # One line, not one per object: a cm-unit avatar parks the same scale on every
-    # root (21 objects on Chocolat), and 21 identical lines bury the rotation line
-    # printed right after them. Distinct VALUES are what a reader needs — a second
-    # value in this list means the scene was not a single unit conversion.
-    applied = scene_utils.normalize_object_scale(scale_scope)
+    if bake_object_scale:
+        scene_utils.check_scale_normalizable(scale_scope)
+
+    # --- Mutation starts here. -------------------------------------------------
+    # Bake parked object scale into the data before the rotation gate reads
+    # matrix_world (see the **Scale** section above): a non-uniform scale
+    # contaminates ``matrix_world.to_quaternion()``, so the axis-convention gate
+    # judges a cleaner rotation once this has run.
+    applied = scene_utils.normalize_object_scale(scale_scope) if bake_object_scale else []
     if applied:
+        # One line, not one per object: a cm-unit avatar parks the same scale on
+        # every root (21 objects on Chocolat), and 21 identical lines would bury
+        # the rotation line printed right after. The values are each object's own
+        # scale at the moment it was applied — a child reads the compounded value
+        # its parent's apply pushed onto it, so more than one value here is normal
+        # and is NOT evidence of more than one conversion.
         values = sorted({s for _, s in applied})
         print("AVATARPREP: export applied parked object scale into object data on "
               "%d object(s) — values %s, objects %s. The written file carries "
-              "identity node scales. World layout is unchanged, but this is "
-              "PERMANENT and the scene is NOT restored afterwards (unlike the "
-              "rotation gate below) — see export_unity_fbx's Scale docstring"
+              "identity node scales. This is PERMANENT and the scene is NOT "
+              "restored afterwards (unlike the rotation gate below) — see "
+              "export_unity_fbx's Scale docstring"
               % (len(applied), ", ".join(repr(v) for v in values),
                  ", ".join(repr(n) for n, _ in applied)))
 
@@ -233,27 +275,6 @@ def export_unity_fbx(filepath: str,
     # a modifier-bound NON-descendant mesh (a bound shape get_bound_meshes
     # supports) is carried by the same delta inside the helper — otherwise the
     # file would ship its geometry 180° off the skeleton.
-    if keep_object_rotation:
-        candidates = []
-    elif armature_obj is not None:
-        candidates = [armature_obj]
-    else:
-        candidates = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
-    # Refuse a parented armature rather than guess which frame the gate should
-    # judge. Under a rotated parent, the object's world rotation and the delta a
-    # local clear produces are different rotations that can disagree about
-    # whether the up axis moves, and no reading of one is defensible for the
-    # other. Nothing here produces a parented armature (wm.fbx_import creates
-    # them at root), so this closes a question rather than blocking real work —
-    # and it matches the preflight merge_armatures already applies.
-    parented = [o.name for o in candidates if o.parent is not None]
-    if parented:
-        raise ValueError(
-            "armature(s) %s have a parent object; the axis-convention gate cannot "
-            "judge a rotation split between parent and object. Clear or apply the "
-            "parent relation, or pass keep_object_rotation=True to export the "
-            "rotations as-is" % ", ".join(repr(n) for n in parented))
-
     undo = []
     moved = set()
     try:

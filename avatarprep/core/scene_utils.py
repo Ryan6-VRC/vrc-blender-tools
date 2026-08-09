@@ -271,87 +271,282 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
     and its bound meshes relocates the value onto any intermediate EMPTY rather
     than removing it (measured on Monoteiru, whose meshes hang off a ``geo_grp``
     empty tree).
+
+    Scope is the caller's set closed **downward only**. Seeding from each
+    object's topmost ancestor instead would silently enlarge the caller's scope:
+    an export scoped to one armature would reach an unrelated prop sharing a
+    scene root and bake its authored scale permanently. Ordering is recovered by
+    depth-sorting the closure rather than by where the walk starts.
     """
     if scene is None:
         scene = bpy.context.scene
     universe = set(scene.objects)
-    ordered: List[bpy.types.Object] = []
+    closure: List[bpy.types.Object] = []
     seen = set()
 
     def walk(o):
         if o.name in seen or o not in universe:
             return
         seen.add(o.name)
-        ordered.append(o)
+        closure.append(o)
         for c in o.children:
             walk(c)
 
-    # Seed from each object's topmost in-scene ancestor, so a named child never
-    # precedes its named parent regardless of the caller's ordering.
     for o in objects:
-        anc = o
-        while anc.parent is not None and anc.parent in universe:
-            anc = anc.parent
-        walk(anc)
-    return ordered
+        walk(o)
+
+    # Depth WITHIN the closure: an ancestor outside it is not going to be applied,
+    # so it does not order anything. Sort is stable, so same-depth objects keep
+    # the caller's order.
+    depth: Dict[str, int] = {}
+
+    def _depth(o):
+        if o.name not in depth:
+            depth[o.name] = (0 if o.parent is None or o.parent.name not in seen
+                             else _depth(o.parent) + 1)
+        return depth[o.name]
+
+    closure.sort(key=_depth)
+    return closure
+
+
+_SCALE_EPS = 1e-6      # a scale within this of 1.0 is already normalised
+_DEGENERATE_EPS = 1e-9  # below this a component destroys geometry, not scales it
+
+# Object types ``transform_apply`` has no data to write into. Blender only
+# *warns* ("Objects have no data to transform") and leaves the scale in place, so
+# these have to be refused rather than attempted: the file would ship the node
+# scale this function promises to remove.
+_UNAPPLIABLE_TYPES = {'LIGHT', 'CAMERA', 'SPEAKER', 'LIGHT_PROBE'}
+
+# Constraints that can rewrite an object's scale at evaluation time. A static
+# bake cannot represent them, so their result would reappear after the apply.
+_SCALE_CONSTRAINTS = {'COPY_SCALE', 'COPY_TRANSFORMS', 'LIMIT_SCALE', 'TRANSFORM',
+                      'CHILD_OF', 'ACTION'}
+
+
+def _scale_is_animated(obj) -> bool:
+    ad = obj.animation_data
+    for src in (ad.action if ad else None,) + tuple(
+            s.action for s in (ad.nla_tracks if ad else []) for s in getattr(s, 'strips', [])):
+        if src is None:
+            continue
+        for fc in src.fcurves:
+            if fc.data_path in ('scale', 'delta_scale'):
+                return True
+    return bool(ad and ad.drivers and any(
+        d.data_path in ('scale', 'delta_scale') for d in ad.drivers))
+
+
+# World displacement the bake may introduce before it counts as a real pose
+# rather than import residue. A freshly imported vendor rig carries a little:
+# measured on Chocolat, 28 of 268 bones hold a non-zero pose translation, worst
+# 5.98e-05 armature units, predicting 59 micrometres of movement. This is the
+# same order as merge_armatures' ``noise_tol``, and leaves ~17x margin over that
+# residue while still catching anything that would visibly move geometry.
+_POSE_TRANSLATION_TOL = 1e-3  # metres
+
+
+def _max_pose_translation(arm) -> float:
+    """Largest pose-bone translation magnitude, from the current pose AND from
+    any action's location keyframes (both survive the bake unscaled)."""
+    worst = max((pb.location.length for pb in arm.pose.bones), default=0.0)
+    ad = arm.animation_data
+    if ad and ad.action:
+        for fc in ad.action.fcurves:
+            if fc.data_path.startswith('pose.bones[') and fc.data_path.endswith('].location'):
+                for kp in fc.keyframe_points:
+                    worst = max(worst, abs(kp.co[1]))
+    return worst
+
+
+def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -> None:
+    """Raise ``ValueError`` if :func:`normalize_object_scale` could not bake this
+    scope safely. Reads only — call it before any mutation.
+
+    Split out from the apply because the apply has **no undo**: a refusal
+    discovered halfway through leaves a scene with some objects baked and some
+    not, which is worse than either end state and cannot be walked back. Every
+    condition below is a measured way the bake stops being world-preserving or
+    stops reaching identity node scales; each names the object and the remedy.
+
+    Checked against the whole closure, not just the currently-non-unit objects:
+    applying a parent pushes its scale onto a child that reads 1.0 today, so a
+    child can become an offender during the run.
+    """
+    for o in hierarchy_ordered(objects, scene):
+        scale = tuple(o.scale)
+        name = o.name
+
+        if any(abs(c) < _DEGENERATE_EPS for c in scale):
+            raise ValueError(
+                "%r has a zero scale component %r; baking it would collapse the "
+                "geometry onto a plane or line and cannot be undone (measured: 3 "
+                "distinct vertices become 2). Fix the object's scale, or exclude "
+                "it from the export" % (name, tuple(round(c, 6) for c in scale)))
+
+        if any(c < 0 for c in scale):
+            raise ValueError(
+                "%r has a negative (mirrored) scale %r; baking it inverts face "
+                "winding, and this function does not fix up normals. Apply the "
+                "mirror deliberately (with normals recalculated) before exporting, "
+                "or exclude the object" % (name, tuple(round(c, 6) for c in scale)))
+
+        if o.type in _UNAPPLIABLE_TYPES and not _is_unit_scale(scale):
+            raise ValueError(
+                "%r is a %s carrying scale %r, which has no object data to bake it "
+                "into — Blender would warn and leave it, so the file would still "
+                "ship that node scale. Reset its scale, or exclude it from the "
+                "export" % (name, o.type, tuple(round(c, 6) for c in scale)))
+
+        if not _is_unit_scale(tuple(o.delta_scale)):
+            raise ValueError(
+                "%r carries a delta_scale %r, which ``transform_apply`` does not "
+                "consume — it would survive the bake and ship as node scale. Fold "
+                "the delta into the object's own scale and re-export"
+                % (name, tuple(round(c, 6) for c in o.delta_scale)))
+
+        if _scale_is_animated(o):
+            raise ValueError(
+                "%r has animated or driven scale; a static bake cannot represent "
+                "it and the animation would re-apply the scale after this runs. "
+                "Remove the scale channel, or export with the bake disabled" % name)
+
+        bad = [c.type for c in o.constraints if c.type in _SCALE_CONSTRAINTS]
+        if bad and not _is_unit_scale(tuple(o.matrix_world.to_scale())):
+            raise ValueError(
+                "%r has scale-affecting constraint(s) %s and a non-unit evaluated "
+                "scale; the constraint would restore the scale after the bake. "
+                "Apply or remove the constraint before exporting" % (name, bad))
+
+        if o.data is not None and getattr(o.data, 'users', 1) > 1:
+            raise ValueError(
+                "%r shares its object data with %d other user(s), so "
+                "``transform_apply`` refuses it and the export would ship a mixed "
+                "unit layout. Make the data single-user, or exclude the object"
+                % (name, o.data.users - 1))
+
+        # The bake rescales an armature's REST bones but does not touch pose-bone
+        # location channels, so a translation keeps its old number under a new
+        # scale: world displacement goes from L*s to L, an error of L*(1-s).
+        # Measured on a 0.01-scaled rig posed 10 units: the bone head and the
+        # deformed mesh both moved 9.9 m. Gated on the predicted error rather than
+        # on "is there any translation", because a clean vendor import carries
+        # micrometre residue on dozens of bones and would otherwise refuse.
+        # Rest-pose exports (the normal case) are unaffected — which is why the
+        # skinned-mesh measurement could not see this; ``apply_proportion_edge``
+        # exits in POSE, so the path is reachable.
+        if o.type == 'ARMATURE' and not _is_unit_scale(scale):
+            err = _max_pose_translation(o) * abs(1.0 - min(abs(c) for c in scale))
+            if err > _POSE_TRANSLATION_TOL:
+                raise ValueError(
+                    "%r carries scale %r AND a pose/animated bone translation large "
+                    "enough that baking the scale would move the posed result by "
+                    "~%.4f m (the bake rescales rest bones but not pose translation "
+                    "channels). Clear the pose, or apply it into the rest pose, "
+                    "before exporting" % (name, tuple(round(c, 6) for c in scale), err))
+
+        # A non-uniform scale on an ancestor composes with a rotated descendant
+        # into a SHEARED world matrix. ``transform_apply`` re-decomposes into
+        # loc/rot/scale, which cannot represent shear, so it is silently dropped
+        # and the geometry moves (measured: 0.041 m on a 2x-in-X rig with a 45
+        # deg-rotated child). The object's OWN rotation is safe — scale is
+        # innermost in ``loc @ rot @ scale`` — so this is a descendant question.
+        if not _is_uniform_scale(scale):
+            skewed = [c.name for c in _descendants(o)
+                      if c.rotation_euler.to_quaternion().angle > 1e-6]
+            if skewed:
+                raise ValueError(
+                    "%r has non-uniform scale %r with rotated descendant(s) %s; the "
+                    "composed world matrix is sheared, and baking drops the shear "
+                    "silently (measured: 0.041 m of geometry movement). Make the "
+                    "scale uniform, or clear the descendants' rotations, before "
+                    "exporting" % (name, tuple(round(c, 6) for c in scale),
+                                   ", ".join(repr(n) for n in skewed[:4])))
+
+
+def _is_unit_scale(scale) -> bool:
+    return all(abs(c - 1.0) <= _SCALE_EPS for c in scale)
+
+
+def _is_uniform_scale(scale) -> bool:
+    return max(scale) - min(scale) <= _SCALE_EPS * max(1.0, max(abs(c) for c in scale))
+
+
+def _descendants(obj):
+    out = []
+    stack = list(obj.children)
+    while stack:
+        o = stack.pop()
+        out.append(o)
+        stack.extend(o.children)
+    return out
 
 
 def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
     """Bake every non-unit object scale in ``objects`` (and their descendants)
     into object data, so the exported file carries identity node scales.
 
-    Returns the list of ``(name, scale)`` actually applied, newest last; empty
-    when there was nothing to do.
+    Returns the list of ``(name, scale)`` applied, in the order applied; empty
+    when there was nothing to do. Raises ``ValueError`` — before touching
+    anything — for every case :func:`check_scale_normalizable` names.
 
-    **Unlike the rotation gate this is permanent and unconditional.** A parked
-    scale cannot be cleared unapplied the way a rotation can — the exporter
-    writes node scale from ``matrix_world``, so writing identity nodes requires
-    the scale to actually live in the data. There is no undo list: the inverse
-    apply is float-lossy across every vertex and shape key, which is exactly the
-    silent degradation this repo exists to avoid. Callers that need the scene
-    back re-import it.
+    **Permanent, with no undo.** A parked scale cannot be cleared unapplied the
+    way a rotation can: the exporter writes node scale from ``matrix_world``, so
+    writing identity nodes requires the scale to actually live in the data. The
+    inverse apply would be float-lossy across every vertex and shape key, which
+    is exactly the silent degradation this repo exists to avoid, so none is
+    offered. Callers that need the scene back re-import it.
 
-    **Unconditional, because the value cannot tell you what it means.** Surveying
-    131 vendor files, a parked ``0.01`` appears both as the importer's cm-unit
-    conversion (Chocolat) and as vendor-authored scale on a *meter*-unit file
-    (``Chiffon_ver1.0.0_kaihen``, ``Karin_ver1.1.1_kaihen``), while a cm-unit file
-    can read a deviation of exactly zero (``Plum_kaihen`` ships an authored 100.0
-    that cancels the conversion). Any gate keyed on the number would refuse ~43%
-    of the library and mis-explain a third of those. Applying is safe for both
-    readings because it is world-preserving by construction, so no gate is
-    needed: the scale moves, the avatar does not.
+    **Not gated on the parked value, because the value cannot tell you what it
+    means.** Surveying 131 vendor files, a parked ``0.01`` appears both as the
+    importer's cm-unit conversion (Chocolat) and as vendor-authored scale on a
+    *meter*-unit file (``Chiffon_ver1.0.0_kaihen``, ``Karin_ver1.1.1_kaihen``),
+    while a cm-unit file can read a deviation of exactly zero (``Plum_kaihen``
+    ships an authored 100.0 that cancels the conversion). Any gate keyed on the
+    number would refuse ~43% of the library and mis-explain a third of those. The
+    gates that DO exist are about representability, not provenance — they live in
+    ``check_scale_normalizable``.
 
-    **Non-uniform scale is applied too, including on skinned meshes.** Measured
-    on the one library file that ships it (``Uruki_Quad_v1.2``, meshes
-    ``C_hairpin`` and ``C_pouch``): under a pose displacing them 0.25-0.30 m, the
-    deformed result moves 2.4e-07 / 3.6e-07 m across the apply, against 1.5e-07
-    on an untouched control mesh on the same rig — i.e. the float floor, not a
-    deformation change. Scale is innermost in ``loc @ rot @ scale``, so applying
-    it alone is exact even under a rotated object.
+    **Where the bake is exact, and where it is not.** For a mesh's own object
+    scale it is exact even when non-uniform and even when skinned: armature
+    deformation composes as ``M-1 D M v``, so baking ``S`` into the data leaves
+    the product invariant. Measured on the one library file shipping non-uniform
+    scale (``Uruki_Quad_v1.2``, ``C_hairpin`` / ``C_pouch``): under a pose
+    displacing them 0.25-0.30 m the deformed result moves 2.4e-07 / 3.6e-07 m
+    across the apply, against 1.5e-07 on an untouched control on the same rig.
+    It is **not** exact for a posed armature's translation channels, nor under
+    shear from a non-uniform ancestor — both refused above rather than absorbed,
+    because both were measured to move geometry by metres.
 
-    Scope and ordering are :func:`hierarchy_ordered`'s — parents before
-    children, descendants included, both for reasons measured there.
+    Scope and ordering are :func:`hierarchy_ordered`'s.
     """
+    # Validate the whole scope first: the apply has no undo, so a raise partway
+    # through would strand the scene half-baked.
+    check_scale_normalizable(objects, scene)
+
     applied = []
     for o in hierarchy_ordered(objects, scene):
+        # Read live, not from a pre-computed plan: applying a parent pushes its
+        # scale onto children, so an object reading 1.0 at validation time can
+        # need the bake by the time its turn comes (every mesh on Chocolat does).
         scale = tuple(o.scale)
-        if all(abs(c - 1.0) <= 1e-6 for c in scale):
+        if _is_unit_scale(scale):
             continue
         ctx = {'active_object': o, 'object': o, 'selected_objects': [o],
                'selected_editable_objects': [o]}
-        try:
-            op_override(bpy.ops.object.transform_apply, ctx,
-                        location=False, rotation=False, scale=True)
-        except RuntimeError as e:
-            # Multi-user data is the known refuser ("Cannot apply to a multi user
-            # object"). Name it rather than ship a half-normalised file: the
-            # remedy (make the data single-user) is the caller's, and a silent
-            # skip would leave exactly the mixed layout this function removes.
+        op_override(bpy.ops.object.transform_apply, ctx,
+                    location=False, rotation=False, scale=True)
+        # Verify rather than assume: ``transform_apply`` reports some refusals as
+        # a warning and leaves the scale in place, which would ship the very node
+        # scale this function exists to remove.
+        if not _is_unit_scale(tuple(o.scale)):
             raise ValueError(
-                "could not apply scale %r on %r, so the export would ship a mixed "
-                "unit layout (some nodes normalised, this one not): %s. Make the "
-                "object's data single-user, or exclude it from the export"
-                % (tuple(round(c, 6) for c in scale), o.name, e))
+                "applying scale %r on %r left it at %r, so the export would ship "
+                "that node scale. This is a gap in check_scale_normalizable — "
+                "report the object type and setup"
+                % (tuple(round(c, 6) for c in scale), o.name,
+                   tuple(round(c, 6) for c in o.scale)))
         applied.append((o.name, tuple(round(c, 6) for c in scale)))
 
     if applied:

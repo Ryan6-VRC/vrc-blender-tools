@@ -252,6 +252,98 @@ def main():
           "an EMPTY between armature and mesh must not strand the scale; "
           "offenders: %r" % _offenders(out))
 
+    # 9. Every refusal precedes the irreversible bake. A refused export must leave
+    # the scene EXACTLY as it found it — a mutated-then-refused scene is strictly
+    # worse than either outcome, because the bake has no undo and no file is
+    # written to show for it. Parented armature is the refusal that sat after the
+    # bake; assert on the scene, not just on the raise.
+    from avatarprep.core import scene_utils
+    arm = _make_rig()
+    parent = bpy.data.objects.new("RootEmpty", None)
+    bpy.context.collection.objects.link(parent)
+    arm.parent = parent
+    arm.scale = (0.01, 0.01, 0.01)
+    bpy.context.view_layer.update()
+    vert_before = bpy.data.objects["Body"].data.vertices[2].co.copy()
+    raised = None
+    try:
+        fbx_export.export_unity_fbx(
+            os.path.join(tempfile.mkdtemp(), "refused.fbx"), armature_obj=arm)
+    except ValueError as e:
+        raised = e
+    check(raised is not None, "a parented armature must still refuse")
+    check(all(abs(c - 0.01) < 1e-6 for c in arm.scale),
+          "a refused export must not have baked the armature scale; got %r"
+          % (tuple(arm.scale),))
+    check((bpy.data.objects["Body"].data.vertices[2].co - vert_before).length < 1e-9,
+          "a refused export must not have rewritten mesh data")
+
+    # 10. Scope does not escape the caller's set. Seeding the walk from each
+    # object's topmost ancestor reached siblings that were never selected and are
+    # never exported, and baked their authored scale permanently.
+    _clear_scene()
+    arm = _make_rig()
+    root = bpy.data.objects.new("SceneRoot", None)
+    bpy.context.collection.objects.link(root)
+    arm.parent = root
+    prop = bpy.data.objects.new("UnrelatedProp", bpy.data.meshes.new("PropData"))
+    bpy.context.collection.objects.link(prop)
+    prop.parent = root
+    prop.scale = (3.0, 3.0, 3.0)
+    bpy.context.view_layer.update()
+    scene_utils.normalize_object_scale([arm] + scene_utils.get_bound_meshes(arm))
+    check(all(abs(c - 3.0) < 1e-6 for c in prop.scale),
+          "normalize must not reach an unrelated sibling; prop scale is now %r"
+          % (tuple(prop.scale),))
+
+    # 11. Refusals for the cases where the bake is NOT world-preserving, each
+    # measured. A posed armature: the bake rescales rest bones but not pose
+    # translation channels (9.9 m on a 0.01 rig). Shear: non-uniform scale over a
+    # rotated descendant re-decomposes without the shear term (0.041 m).
+    def _refuses(build, want, label):
+        _clear_scene()
+        a = _make_rig()
+        build(a)
+        bpy.context.view_layer.update()
+        err = None
+        try:
+            scene_utils.check_scale_normalizable(
+                [a] + scene_utils.get_bound_meshes(a))
+        except ValueError as e:
+            err = str(e)
+        check(err is not None and want in err,
+              "%s must refuse with %r; got %r" % (label, want, err))
+
+    def _posed(a):
+        a.scale = (0.01, 0.01, 0.01)
+        a.pose.bones["Root"].location = (0, 0, 10.0)
+    _refuses(_posed, "pose translation", "a posed, scaled armature")
+
+    def _sheared(a):
+        a.scale = (2.0, 1.0, 1.0)
+        bpy.data.objects["Body"].rotation_euler = (0, 0, 0.785398)
+    _refuses(_sheared, "sheared", "non-uniform scale over a rotated descendant")
+
+    def _zero(a):
+        bpy.data.objects["Body"].scale = (0.0, 1.0, 1.0)
+    _refuses(_zero, "zero scale component", "a zero scale component")
+
+    def _delta(a):
+        a.delta_scale = (0.01, 0.01, 0.01)
+    _refuses(_delta, "delta_scale", "a delta_scale the bake cannot consume")
+
+    # 12. bake_object_scale=False is the opt-out, and keep_object_rotation is not.
+    _clear_scene()
+    arm = _make_rig()
+    arm.scale = (0.01, 0.01, 0.01)
+    bpy.context.view_layer.update()
+    fbx_export.export_unity_fbx(
+        os.path.join(tempfile.mkdtemp(), "optout.fbx"), armature_obj=arm,
+        bake_object_scale=False)
+    check(all(abs(c - 0.01) < 1e-6 for c in arm.scale),
+          "bake_object_scale=False must leave the scale alone; got %r"
+          % (tuple(arm.scale),))
+
     if FAILURES:
         print("FBXEXPORT_TEST FAIL:", "; ".join(FAILURES))
         sys.exit(1)
