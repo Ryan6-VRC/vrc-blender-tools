@@ -238,8 +238,11 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     # object: matrix_world carries the parent's rotation while only the LOCAL
     # rotation was zeroed, so gating on world would judge one rotation and act on
     # another. The merge path preflights parented armatures; the export path does
-    # not. ``to_quaternion()`` and not ``to_3x3()``: the latter carries scale, so
-    # on a cm-unit source (0.01 object scale) it returns a length-0.01 vector and
+    # not. Deciding on the delta also makes this scale-proof for free: S cancels
+    # in ``(T*S)(T*R*S)^-1``, so ``delta`` is a pure rotation and ``.to_3x3()``
+    # here would read the same. The scale caveat belongs to ``matrix_world`` — if
+    # you ever gate on that instead, it MUST be ``.to_quaternion()``, because its
+    # un-normalized 3x3 returns a length-0.01 up vector on a cm-unit source and
     # every such file would read as up-axis-moving whatever its rotation.
     if rotation_moves_up_axis(delta.to_quaternion()):
         restore_transforms(undo)

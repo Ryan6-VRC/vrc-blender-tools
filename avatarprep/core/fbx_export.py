@@ -236,24 +236,34 @@ def export_unity_fbx(filepath: str,
     # --- Mutation starts here. -------------------------------------------------
     # Bake parked object scale into the data (see the **Scale** section above).
     #
-    # Running this BEFORE the rotation gate below is currently free rather than
-    # load-bearing, and the difference matters if you touch either. The gate is
-    # scale-INVARIANT today, so moving this call after it changes no field of the
-    # written file — measured: node rotation, node scales and vertex data
-    # identical, only the FBX's embedded timestamp differs, which already differs
-    # between two identical runs. ``to_quaternion`` normalizes columns, so
-    # ``T*R*S`` with diagonal S recovers R whatever S is; and the gate decides on
-    # the clear DELTA, ``(T*S)(T*R*S)^-1 = T*R^-1*T^-1``, where S cancels
-    # adjacently. Shear would break the first of those, but it takes a parent
-    # chain and parented armatures raise above.
+    # BEFORE the rotation gate below, and load-bearing — though not for the reason
+    # once given here. The gate's VERDICT is scale-invariant either way:
+    # ``to_quaternion`` normalizes columns, and the gate decides on the clear
+    # DELTA, ``(T*S)(T*R*S)^-1 = T*R^-1*T^-1``, where S cancels adjacently. So a
+    # reorder cannot misclassify a rig, and on a rig whose meshes are all
+    # descendants it changes nothing at all.
     #
-    # Lose that invariance and the order becomes load-bearing at once: measured on
-    # a gate handed the scale-carrying matrix, a non-uniformly scaled front-axis
-    # rig classifies 'cleared' normalize-first and 'preserved' clear-first, and
-    # the second ships the avatar backwards. So no test can pin the order (nothing
-    # observable changes while the gate is invariant), but the invariance that
-    # makes it safe is pinned — tests/test_fbx_export.py 11b fails before the
-    # order can silently start to matter.
+    # The order matters because the gate does not only READ. For a modifier-bound
+    # mesh that is NOT the armature's descendant it also writes
+    # ``m.matrix_world`` and snapshots that mesh's ``matrix_basis`` for the undo
+    # replayed in the ``finally`` below. Both are order-sensitive, measured
+    # end-to-end through this function:
+    #
+    #   * The snapshot captures the mesh's own scale. Clear-first takes it PRE-bake,
+    #     normalize then bakes that scale into the data, and the restore replays
+    #     the old basis over baked data — a (2,3,4) bound mesh comes back 2x3x4
+    #     too large, silently, with a byte-equivalent file.
+    #   * The write gives the mesh a local rotation. Under a non-uniformly scaled
+    #     PARENT that is ``check_scale_normalizable``'s shear case, which
+    #     ``normalize_object_scale`` re-validates: clear-first raises 'sheared'
+    #     with the scene already mutated and no file, breaking the refusals-before-
+    #     mutation invariant stated above.
+    #
+    # Baking first removes both — the parent is uniform before the gate rotates
+    # the child, and the snapshot is taken at scale 1. The armature preflight above
+    # does not cover this: it reads ``candidates``, and these are bound meshes.
+    # Pinned by tests/test_fbx_export.py 11c; 11b pins the verdict invariance
+    # separately, which the ``bake_object_scale=False`` path needs regardless.
     applied = scene_utils.normalize_object_scale(scale_scope) if bake_object_scale else []
     if applied:
         # One line, not one per object: a cm-unit avatar parks the same scale on

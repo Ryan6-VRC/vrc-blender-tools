@@ -333,19 +333,17 @@ def main():
         a.delta_scale = (0.01, 0.01, 0.01)
     _refuses(_delta, "delta_scale", "a delta_scale the bake cannot consume")
 
-    # 11b. The property that makes the export's two mutations order-independent:
-    # the gate's verdict does not depend on whether the scale has been baked yet.
+    # 11b. The gate's VERDICT is scale-invariant — it classifies a rig the same
+    # whether or not the parked scale has been baked yet.
     #
-    # This is the only constructible form of "normalize must run before the
-    # clear". Measured, moving that call after the clear changes no field of the
-    # written file — node rotation, node scales and vertex data identical, only
-    # the FBX's embedded timestamp differs, which already differs between two
-    # identical runs — so no assertion can catch the reorder itself. But hand the
-    # gate a scale-carrying matrix and this same fixture classifies 'cleared'
-    # normalize-first against 'preserved' clear-first, the second shipping the
-    # avatar backwards. So this asserts the invariance rather than the order, and
-    # it fails at exactly the moment the order starts to matter.
-    from avatarprep.core import scene_utils
+    # This does NOT police the normalize-then-clear ordering; 11c does, and the
+    # two are independent. It earns its place on the ``bake_object_scale=False``
+    # path, where nothing bakes and the gate always receives a scale-carrying
+    # scene. Caught mutation: switching the gate to read ``matrix_world``'s
+    # un-normalized 3x3 (``old_world.to_3x3()``), whose up vector is the Z scale —
+    # 0.03 unbaked against 1.0 baked, either side of ``_UP_AXIS_EPS``.
+    # ``delta.to_3x3()`` is NOT caught and cannot be: the delta carries no scale,
+    # since S cancels in ``(T*S)(T*R*S)^-1 = T*R^-1*T^-1``.
     verdicts = []
     for normalize_first in (True, False):
         _clear_scene()
@@ -361,6 +359,83 @@ def main():
           "the axis-convention gate must classify a non-uniformly scaled rig the "
           "same whether or not the scale was baked first; got normalize-first=%r "
           "clear-first=%r" % tuple(verdicts))
+
+    # 11c. normalize_object_scale MUST run before the rotation gate, and this is
+    # what pins it. The gate is not a pure predicate: for a modifier-bound mesh
+    # that is NOT the armature's descendant it also writes ``m.matrix_world`` and
+    # snapshots that mesh's ``matrix_basis`` for the undo replayed in the export's
+    # ``finally``. Both side effects are order-sensitive, and neither is reachable
+    # from a fixture whose meshes are parented to the rig (``_make_rig`` parents
+    # ``Body``, so the gate takes its descendant early-out and never gets here) —
+    # which is exactly why an earlier version of this test saw no difference.
+    #
+    # (a) Scene restoration. Clear-first snapshots the mesh's PRE-bake basis,
+    # normalize then bakes the scale into its data, and the restore replays the
+    # old basis over baked data — measured, a (2,3,4) bound mesh comes back
+    # 2x3x4 too large, silently, with a byte-equivalent file. Baking first takes
+    # the snapshot at scale 1.
+    _clear_scene()
+    arm = _make_rig()
+    arm.rotation_euler = (0.0, 0.0, math.pi)      # front-axis park: gate will clear it
+    arm.scale = (0.01, 0.02, 0.03)
+    loose = bpy.data.objects.new("Loose", bpy.data.meshes.new("LooseData"))
+    loose.data.from_pydata([(0.0, 0.05, 0.2)], [], [])
+    loose.data.update()
+    bpy.context.collection.objects.link(loose)
+    loose.vertex_groups.new(name="Root").add([0], 1.0, 'REPLACE')
+    loose.modifiers.new("Armature", 'ARMATURE').object = arm   # bound, NOT parented
+    loose.scale = (2.0, 3.0, 4.0)
+    bpy.context.view_layer.update()
+    want_world = (loose.matrix_world @ loose.data.vertices[0].co).copy()
+    out = os.path.join(tempfile.mkdtemp(), "loose_bound.fbx")
+    fbx_export.export_unity_fbx(out)
+    check(not _offenders(out),
+          "a non-uniform scale on a loose bound mesh must bake to identity node "
+          "scales like any other; offenders: %r" % _offenders(out))
+    bpy.context.view_layer.update()
+    check(all(abs(c - 1.0) < 1e-5 for c in loose.scale),
+          "the export left the loose bound mesh's object scale at %r — the undo "
+          "replayed a pre-bake basis over baked data, so the mesh is now "
+          "double-scaled. normalize_object_scale must run BEFORE the rotation gate."
+          % (tuple(round(c, 4) for c in loose.scale),))
+    got_world = loose.matrix_world @ loose.data.vertices[0].co
+    check((got_world - want_world).length < 1e-5,
+          "the export moved the loose bound mesh: %s -> %s (world space)"
+          % (tuple(round(v, 4) for v in want_world),
+             tuple(round(v, 4) for v in got_world)))
+
+    # (b) Refusals must stay ahead of the first mutation. The gate's write gives
+    # the bound mesh a local rotation; under a non-uniformly scaled PARENT that is
+    # check_scale_normalizable's shear case, which normalize re-validates. Baking
+    # first evaluates that guard before the rotation exists and after the parent
+    # is already uniform, so the scene is correctly accepted — measured, the
+    # reordered run raises 'sheared' instead, with the clear having already
+    # mutated the scene and no file written.
+    _clear_scene()
+    arm = _make_rig()
+    arm.rotation_euler = (0.0, 0.0, math.pi)
+    arm.scale = (0.01, 0.02, 0.03)
+    holder = bpy.data.objects.new("MeshRoot", None)
+    bpy.context.collection.objects.link(holder)
+    holder.scale = (2.0, 1.0, 1.0)
+    loose = bpy.data.objects.new("Loose2", bpy.data.meshes.new("Loose2Data"))
+    loose.data.from_pydata([(0.0, 0.05, 0.2)], [], [])
+    loose.data.update()
+    bpy.context.collection.objects.link(loose)
+    loose.vertex_groups.new(name="Root").add([0], 1.0, 'REPLACE')
+    loose.modifiers.new("Armature", 'ARMATURE').object = arm
+    loose.parent = holder                          # parented ELSEWHERE, not to the rig
+    bpy.context.view_layer.update()
+    raised = None
+    try:
+        fbx_export.export_unity_fbx(os.path.join(tempfile.mkdtemp(), "shear_order.fbx"))
+    except ValueError as e:
+        raised = e
+    check(raised is None,
+          "a bound mesh under a non-uniformly scaled parent must export cleanly "
+          "when the scale is baked first; raised %r. Baking after the gate sees "
+          "the rotation the gate just wrote and refuses as sheared — after the "
+          "scene has already been mutated." % raised)
 
     # 12. bake_object_scale=False is the opt-out, and keep_object_rotation is not.
     _clear_scene()
