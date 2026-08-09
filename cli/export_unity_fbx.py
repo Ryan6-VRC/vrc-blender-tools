@@ -7,9 +7,13 @@ Run with::
         [--armature <name>] [--no-embed] [--keep-object-rotation]
 
 Loads ``--in``, enables AvatarPrep from the bundled source package, and writes
-``--out`` using the CATS export recipe. ``--keep-object-rotation`` keeps a
-deliberate armature object rotation in the export (by default it is cleared as
-import-convention residue — ``export_unity_fbx``'s docstring owns the why).
+``--out`` using the CATS export recipe. By default an armature object rotation is
+cleared as axis-convention residue ONLY when it leaves the up axis fixed; one
+that moves the up axis is the source's own up-axis conversion and is preserved
+(clearing it exports the rig tipped onto its face). Each case prints which it
+did. ``--keep-object-rotation`` opts out of both and exports the rotation as-is —
+for a rotation that is deliberate rather than a convention.
+``export_unity_fbx``'s docstring owns the why.
 """
 
 import os
@@ -42,8 +46,9 @@ def _parse_args():
                    help="Do not embed textures (whole-scene export only)")
     p.add_argument("--keep-object-rotation", dest="keep_object_rotation",
                    action="store_true",
-                   help="Keep a deliberate armature object rotation instead of "
-                        "clearing it as import-convention residue")
+                   help="Export the armature object rotation as-is, skipping the "
+                        "axis-convention gate (which otherwise clears an up-axis-"
+                        "preserving rotation and keeps an up-axis-moving one)")
     return p.parse_args(argv)
 
 

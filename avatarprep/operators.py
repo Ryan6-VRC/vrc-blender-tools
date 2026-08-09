@@ -319,7 +319,8 @@ class AVATARPREP_OT_compare_armatures(bpy.types.Operator):
         return obj is not None and obj.type == 'ARMATURE'
 
     def execute(self, context):
-        from .core.merge_armatures import compare_armatures, report_offenders
+        from .core.merge_armatures import (compare_armatures, remedy_lines,
+                                           report_offenders)
         base = context.active_object
         if base is None or base.type != 'ARMATURE':
             self.report({'ERROR'}, "Active object must be an armature (the base)")
@@ -339,6 +340,8 @@ class AVATARPREP_OT_compare_armatures(bpy.types.Operator):
                     % (verdict, base.name, other.name, len(offenders)))
         for line in offenders[:10]:
             self.report({'WARNING'}, line)
+        for line in remedy_lines(report):
+            self.report({'INFO'}, line)
         for line in report["warnings"][:10]:
             self.report({'WARNING'}, line)
         return {'FINISHED'}

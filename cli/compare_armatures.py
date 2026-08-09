@@ -131,7 +131,8 @@ def main():
     import bpy
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
     enable_avatarprep()
-    from avatarprep.core.merge_armatures import compare_armatures, report_offenders
+    from avatarprep.core.merge_armatures import (compare_armatures, remedy_lines,
+                                                 report_offenders)
 
     base = resolve_arm(args.base, "base")
     if args.merge_in:
@@ -157,6 +158,8 @@ def main():
           % (verdict, args.base, args.merge, counts))
     for line in report_offenders(report):
         print("AVATARPREP: OFFENDER", line)
+    for line in remedy_lines(report):
+        print("AVATARPREP: REMEDY", line)
     for line in report["warnings"]:
         print("AVATARPREP: WARNING", line)
 

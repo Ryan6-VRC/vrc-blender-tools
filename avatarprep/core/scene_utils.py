@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import bpy
 import idprop
+import mathutils
 
 
 # --- AvatarPrep stamp namespace ------------------------------------------------
@@ -168,17 +169,41 @@ def _is_descendant(obj, ancestor) -> bool:
     return False
 
 
-def clear_object_rotation(obj, already_moved: Optional[set] = None):
-    """Set ``obj``'s object-level rotation to identity UNAPPLIED — data untouched,
-    and nothing moves relative to the rig: child objects ride along via
-    parenting, and modifier-bound NON-descendant meshes (a bound shape
-    ``get_bound_meshes`` supports) are carried by the same world-space delta.
+# Cosine of the angle within which a rotation counts as leaving the up axis
+# fixed. Not load-bearing: the measured separation between the two residue
+# classes is 90 deg and the float noise on a real parked rotation is ~1e-6, so
+# anything in (1e-6, 0.5 deg) decides the same way on every observed file.
+_UP_AXIS_EPS = 0.99996  # cos(0.5 deg)
 
-    Returns ``(delta, undo)``: ``delta`` is the world rotation correction that
-    was applied (identity == the rotation was already clear), ``undo`` is a list
-    replayable by :func:`restore_transforms` (callers that clear permanently —
-    the merge apply path — simply drop it). ``already_moved`` (a name set)
-    prevents a mesh bound to two cleared armatures being carried twice."""
+
+def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
+    """Clear ``obj``'s object-level rotation UNAPPLIED — but ONLY when that
+    rotation leaves the up axis fixed. Data untouched either way; nothing moves
+    relative to the rig, because child objects ride along via parenting and
+    modifier-bound NON-descendant meshes (a bound shape ``get_bound_meshes``
+    supports) are carried by the same world-space delta.
+
+    **Why conditional.** ``wm.fbx_import`` parks a source FBX's axis conversion
+    here, and ``export_scene.fbx`` re-derives its own (-90 X) presuming the data
+    it is handed is Blender-Z-up. Clearing is therefore sound only for a residue
+    that leaves the up axis fixed — a FRONT-axis convention difference (a Z-up
+    source parks (0,0,-180)). A residue that MOVES the up axis (a Y-up source
+    with an identity root node parks (90,0,0)) *is* the up-axis conversion:
+    clearing it double-counts and the avatar exports tipped 90 deg onto its face.
+    ``fbx_export``'s orientation docstring is the canon for the grid.
+
+    Returns ``(status, delta, undo)``:
+      * ``status`` — ``'cleared'`` | ``'preserved'`` | ``'noop'``. Callers MUST
+        surface it: a preserved residue returns an identity ``delta``, exactly
+        like a rig that never had one, so a caller keyed on ``delta`` alone
+        reports nothing on the very case this gate exists for.
+      * ``delta`` — the world rotation correction applied (identity unless
+        ``status == 'cleared'``).
+      * ``undo`` — replayable by :func:`restore_transforms`; callers that clear
+        permanently (the merge apply path) simply drop it.
+
+    ``already_moved`` (a name set) prevents a mesh bound to two cleared
+    armatures being carried twice."""
     if already_moved is None:
         already_moved = set()
     undo = [(obj, 'rotation', (obj.rotation_euler[:],
@@ -193,19 +218,37 @@ def clear_object_rotation(obj, already_moved: Optional[set] = None):
     delta = obj.matrix_world @ old_world.inverted()
     identity = all(abs(delta[i][j] - (1.0 if i == j else 0.0)) < 1e-9
                    for i in range(4) for j in range(4))
-    if not identity:
-        for m in get_bound_meshes(obj):
-            if m.name in already_moved or _is_descendant(m, obj):
-                continue
-            undo.append((m, 'matrix_basis', m.matrix_basis.copy()))
-            m.matrix_world = delta @ m.matrix_world
-            already_moved.add(m.name)
+    if identity:
+        return 'noop', delta, undo
+
+    # Decide on the DELTA, not on ``matrix_world``'s rotation. For an unparented
+    # object the two tests are equivalent (the delta rotation is the inverse, and
+    # R fixes +Z iff R^-1 does), but they diverge when the armature has a parent
+    # object: matrix_world carries the parent's rotation while only the LOCAL
+    # rotation was zeroed, so gating on world would judge one rotation and act on
+    # another. The merge path preflights parented armatures; the export path does
+    # not. ``to_quaternion()`` and not ``to_3x3()``: the latter carries scale, so
+    # on a cm-unit source (0.01 object scale) it returns a length-0.01 vector and
+    # every such file would read as up-axis-moving whatever its rotation.
+    up = mathutils.Vector((0.0, 0.0, 1.0))
+    moves_up_axis = (delta.to_quaternion() @ up).dot(up) < _UP_AXIS_EPS
+    if moves_up_axis:
+        restore_transforms(undo)
         bpy.context.view_layer.update()
-    return delta, undo
+        return 'preserved', mathutils.Matrix.Identity(4), []
+
+    for m in get_bound_meshes(obj):
+        if m.name in already_moved or _is_descendant(m, obj):
+            continue
+        undo.append((m, 'matrix_basis', m.matrix_basis.copy()))
+        m.matrix_world = delta @ m.matrix_world
+        already_moved.add(m.name)
+    bpy.context.view_layer.update()
+    return 'cleared', delta, undo
 
 
 def restore_transforms(undo) -> None:
-    """Replay a :func:`clear_object_rotation` undo list (newest first)."""
+    """Replay a :func:`clear_axis_convention_rotation` undo list (newest first)."""
     for obj, kind, val in reversed(undo):
         if kind == 'rotation':
             eul, quat, aa = val

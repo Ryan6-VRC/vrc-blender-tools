@@ -137,8 +137,14 @@ def main():
     # Core populates offenders on every FAIL (pre-mutation and postcheck alike).
     for line in (result.get("offenders") or []):
         print("AVATARPREP: OFFENDER", line)
-    # A co-occurring missing-stamp warning must show on FAIL too (report is None
-    # for the early same-armature/preflight/rename_map FAILs — guarded).
+    # The remedy belongs at THIS door most of all: --rename is the flag the
+    # operator is reaching for when the compat gate refuses them here. Report is
+    # None for the early same-armature/preflight/rename_map FAILs — guarded.
+    if result.get("report"):
+        from avatarprep.core.merge_armatures import remedy_lines
+        for line in remedy_lines(result["report"]):
+            print("AVATARPREP: REMEDY", line)
+    # A co-occurring missing-stamp warning must show on FAIL too (same guard).
     for line in (result.get("report") or {}).get("warnings", []):
         print("AVATARPREP: WARNING", line)
     if args.report:

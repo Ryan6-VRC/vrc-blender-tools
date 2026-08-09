@@ -110,8 +110,13 @@ def compare_armatures(base_arm: bpy.types.Object,
         if kind == "equal":
             continue
         if kind == "missing":
-            warnings.append("%s stamp missing on one side (base=%r merge=%r); proceeding"
-                            % (label, base_raw, merge_raw))
+            # Both-absent is the DEFAULT outcome of the --merge-in <fbx> door (the
+            # CLI strips the import's seeded stamps), so "missing on one side"
+            # would send the reader hunting for a stamped side that isn't there.
+            sides = ("base and merge" if base_raw is None and merge_raw is None
+                     else "one side")
+            warnings.append("%s stamp missing on %s (base=%r merge=%r); proceeding"
+                            % (label, sides, base_raw, merge_raw))
         else:  # different / interrupted / corrupt → hard offender
             stamp_mismatches.append({"dimension": label, "kind": kind,
                                      "base": base_raw, "merge": merge_raw})
@@ -257,6 +262,40 @@ def report_offenders(report) -> List[str]:
     return structural_offenders(report) + stamp_offenders(report)
 
 
+def remedy_lines(report) -> List[str]:
+    """Named remedies for offender sets whose fix is not legible from the
+    offenders alone. Empty when there is nothing specific to say.
+
+    Today's one case: every only-in-merge bone is a suspected rename of a
+    co-located base bone, with no parent or position mismatch. The offenders name
+    the pairs but nothing names the resolution, and the FAIL reads like skeleton
+    incompatibility when the merge side and the base coincide bone-for-bone —
+    two vendor rigs authored with different separator conventions (``Foot_L`` vs
+    ``Foot.L``) hit this on every bone at once.
+
+    Deliberately NOT a report field: the condition is ``renames == only_in_merge
+    and parent_mismatch == 0 and position_mismatch == 0``, four integers already
+    on the summary line, so a stored boolean would only restate them and bind
+    every consumer to keeping it true. A line-maker instead, like
+    ``structural_offenders`` — every door gets it, the schema gains nothing."""
+    out: List[str] = []
+    renames = report["suspected_renames"]
+    if (renames and not report["parent_mismatches"]
+            and not report["position_mismatches"]
+            and len(renames) == len(report["only_in_merge"])):
+        worst = max(r["dist"] for r in renames)
+        # Scoped to the MERGE side on purpose: only_in_base may be large (a base
+        # body against an outfit's partial rig), so "the skeletons match" would
+        # be false. What holds is that the merge side adds no new bone position.
+        out.append("all %d only-in-merge bones are renames of co-located base "
+                   "bones (worst %.2e) — the merge side introduces no bone the "
+                   "base lacks positionally, so this is a naming-convention "
+                   "difference, not an incompatible skeleton. Resolve with "
+                   "merge_armatures rename_map (CLI: --rename OLD=NEW, one per "
+                   "pair above)." % (len(renames), worst))
+    return out
+
+
 def postcheck_offenders(postcheck) -> List[str]:
     """Named offender lines from a Phase-5 postcheck dict. Empty on a clean
     postcheck. Shared by every face so a postcheck FAIL names what's wrong (the
@@ -370,14 +409,19 @@ def merge_armatures(base_arm: bpy.types.Object,
 
     # --- Phase 4: mutate ---
     if apply_transforms:
-        # An import-parked object rotation must NOT be baked into bone/mesh data
-        # by the apply — a merged rig would then export 180° off the vendor frame
-        # with an identity object rotation the exporter's residue-clear cannot
-        # see. Clear both rotations UNAPPLIED first (undo discarded — the apply
-        # below consumes the state), so the apply bakes the vendor frame. Safe
-        # only when the clears move both rigs identically: equal world rotations
-        # AND (identity rotation or equal origins) — each rig rotates about its
-        # own origin. Otherwise keep the old world-frame bake and say so.
+        # What the apply bakes into bone/mesh data is permanent, and the export's
+        # residue gate cannot see it afterwards (the merged rig carries an
+        # identity object rotation either way) — so a wrong frame baked here is
+        # unrecoverable downstream, not merely wrong.
+        #
+        # Which frame is right is clear_axis_convention_rotation's rule, not this
+        # block's: a residue that leaves the up axis fixed is importer residue and
+        # must NOT be baked (clear it first, undo discarded — the apply below
+        # consumes the state); one that MOVES the up axis is the source's up-axis
+        # conversion and MUST be baked, or the merged rig lies down in the .blend.
+        # The helper decides per rig; this gate only asks whether clearing would
+        # move the two rigs identically — equal world rotations AND (identity
+        # rotation or equal origins), since each rig rotates about its own origin.
         bpy.context.view_layer.update()  # matrix_world is stale after direct rotation writes
         bw, mw = base_arm.matrix_world, merge_arm.matrix_world
         rot_delta = bw.to_quaternion().rotation_difference(mw.to_quaternion()).angle
@@ -386,12 +430,26 @@ def merge_armatures(base_arm: bpy.types.Object,
         if rot_delta < 1e-6 and (identity_rot or origins_close):
             moved: set = set()
             for arm in (base_arm, merge_arm):
-                scene_utils.clear_object_rotation(arm, moved)
+                # Surface the helper's verdict: a preserved residue returns an
+                # identity delta, so nothing downstream can infer it happened.
+                status, _delta, _undo = scene_utils.clear_axis_convention_rotation(
+                    arm, moved)
+                if status == 'preserved':
+                    report["warnings"].append(
+                        "%r carries an up-axis-moving object rotation (the source's "
+                        "up-axis conversion); baking it into the merged rig's data, "
+                        "which is correct — clearing it first would bake the rig "
+                        "lying down" % arm.name)
         else:
+            # Rigs in DIFFERENT residue classes land here (measured: a Y-up base
+            # + Z-up outfit differ by 90°). The world-frame bake is CORRECT for
+            # that pairing — the merged rig comes out upright and round-trips —
+            # so this says what was baked, not that the result is wrong.
             report["warnings"].append(
-                "object rotations/origins differ between base and merge — baking "
-                "the world frame; the merged rig's exported orientation will not "
-                "match either source's vendor frame")
+                "object rotations/origins differ between base and merge (%.1f° "
+                "apart) — baking the current world frame rather than either "
+                "source's own; verify the merged rig's orientation before export"
+                % math.degrees(rot_delta))
         for arm in (base_arm, merge_arm):
             _apply_object_transform(arm)
             for m in scene_utils.get_bound_meshes(arm):
