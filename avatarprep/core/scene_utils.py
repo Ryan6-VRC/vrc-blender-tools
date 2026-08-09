@@ -250,11 +250,13 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
         if m.name in already_moved:
             continue
         if _is_descendant(m, obj):
-            # It rode along with its parent, so it HAS moved — record that. A
+            # It rode along with its parent, so it HAS moved — record that, or a
             # mesh bound to two rigs (parented to this one, modifier-bound to
-            # another) would otherwise be moved a second time by the other rig's
-            # clear or carry and land at delta**2 — 180 deg off the skeleton it
-            # is bound to, measured.
+            # another) gets moved a second time by the other rig and lands at
+            # delta**2, 180 deg off the skeleton it is bound to (measured).
+            # This covers the case where the PARENT rig is cleared first; the
+            # reverse order needs the caller to seed ``already_moved`` with
+            # :func:`carried_by_parenting` for the rigs it has not reached yet.
             already_moved.add(m.name)
             continue
         undo.append((m, 'matrix_basis', m.matrix_basis.copy()))

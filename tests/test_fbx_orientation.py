@@ -412,14 +412,14 @@ def _offset_rig(arm, origin):
         eb.head = eb.head - shift
         eb.tail = eb.tail - shift
     bpy.ops.object.mode_set(mode='OBJECT')
+    # Only PARENTED meshes need compensating: they ride the armature, so the
+    # move has to be cancelled in their data. An unparented modifier-bound mesh
+    # does not ride it at all — touching it here would displace it from the
+    # skeleton, which is the opposite of what this function promises.
     for m in [o for o in bpy.data.objects
-              if o.type == 'MESH' and (o.parent == arm or any(
-                  md.type == 'ARMATURE' and md.object == arm for md in o.modifiers))]:
-        if m.parent == arm:
-            for v in m.data.vertices:
-                v.co = v.co - shift
-        else:
-            m.location = Vector(m.location) + Vector(origin)
+              if o.type == 'MESH' and o.parent == arm]:
+        for v in m.data.vertices:
+            v.co = v.co - shift
     arm.location = Vector(arm.location) + Vector(origin)
     bpy.context.view_layer.update()
 
@@ -458,7 +458,10 @@ def test_merge_differing_origins_keeps_vendor_frame():
     check((base.matrix_world.translation - merge.matrix_world.translation).length > 1e-3,
           "fixture no longer has differing origins — this test exercises nothing")
     for bone, head in pre_base.items():
-        check((head - pre_merge[bone]).length < 1e-3,
+        # 1e-5, tighter than the 1e-4 the post-merge assertion demands: a fixture
+        # drifting into the band between them would fail there instead, blaming
+        # the code under test for a fixture defect.
+        check((head - pre_merge[bone]).length < 1e-5,
               "fixture bones are not world-aligned (%s: %s vs %s) — the compat "
               "gate would refuse this for a fixture bug, not the defect"
               % (bone, tuple(round(v, 4) for v in head),
@@ -470,9 +473,16 @@ def test_merge_differing_origins_keeps_vendor_frame():
     check(res["verdict"] == "PASS",
           "differing-origin merge FAILed unforced: %r" % res.get("offenders"))
 
-    # The discriminating assertion: one rigid map moved everything.
+    # The discriminating assertion: one rigid map moved everything. Shared bone
+    # names are unified into the base's copy by the merge, so iterating the merge
+    # rig's shared names would re-assert the BASE's bone and police nothing —
+    # only merge-ONLY bones carry the merge rig's frame, and the check demands at
+    # least one so a fixture that lost them cannot pass vacuously.
     post = _world_heads(base)
-    for pre in (pre_base, pre_merge):
+    merge_only = {b: h for b, h in pre_merge.items() if b not in pre_base}
+    check(merge_only, "fixture has no merge-only bone — nothing polices the "
+                      "merge rig's frame, only the base's")
+    for pre in (pre_base, merge_only):
         for bone, head in pre.items():
             want = delta @ head
             got = post.get(bone, post.get(bone + ".merge"))
@@ -492,6 +502,13 @@ def test_merge_differing_origins_keeps_vendor_frame():
     check("carried by" in warns and repr(merge_name) in warns,
           "the cleared-with-carry warning does not say the merge rig was carried "
           "(warnings: %r)" % warns)
+    # The DISTANCE, not just the sentence: a 180 deg turn about the base's origin
+    # moves this rig's origin the full 1.0 (2 x 0.5). Measuring the base's origin
+    # instead would print 0.0000 here — it is the delta's fixed point — so the
+    # one disclosure of a permanent world-space move would say nothing moved.
+    check("moves 'Armature.Out''s origin 1.0000" in warns,
+          "the warning does not disclose the true world-space displacement "
+          "(want 1.0000; warnings: %r)" % warns)
 
 
 def _cross_bound_mesh(name, parent_arm, modifier_arm, at):
