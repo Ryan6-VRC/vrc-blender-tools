@@ -258,11 +258,18 @@ def main():
     # worse than either outcome, because the bake has no undo and no file is
     # written to show for it. Parented armature is the refusal that sat after the
     # bake; assert on the scene, not just on the raise.
+    #
+    # The armature carries its OWN rotation as well as a parent, because that is
+    # what the refusal is now keyed on: a parent alone leaves nothing ambiguous to
+    # judge (the clear delta is identity, the gate is a 'noop'), and 9b below pins
+    # that such an export proceeds. Without the rotation this fixture stopped
+    # refusing and this case silently stopped testing the invariant it names.
     from avatarprep.core import scene_utils
     arm = _make_rig()
     parent = bpy.data.objects.new("RootEmpty", None)
     bpy.context.collection.objects.link(parent)
     arm.parent = parent
+    arm.rotation_euler = (0.0, 0.0, math.pi)
     arm.scale = (0.01, 0.01, 0.01)
     bpy.context.view_layer.update()
     vert_before = bpy.data.objects["Body"].data.vertices[2].co.copy()
@@ -272,12 +279,43 @@ def main():
             os.path.join(tempfile.mkdtemp(), "refused.fbx"), armature_obj=arm)
     except ValueError as e:
         raised = e
-    check(raised is not None, "a parented armature must still refuse")
+    check(raised is not None, "a parented+rotated armature must still refuse")
     check(all(abs(c - 0.01) < 1e-6 for c in arm.scale),
           "a refused export must not have baked the armature scale; got %r"
           % (tuple(arm.scale),))
     check((bpy.data.objects["Body"].data.vertices[2].co - vert_before).length < 1e-9,
           "a refused export must not have rewritten mesh data")
+
+    # 9b. The narrowing, and the reason the whole cm-unit root-Null class was
+    # blocked. An armature with a parent but NO rotation of its own gives the gate
+    # an identity clear delta — there is no rotation split to judge, the gate
+    # returns 'noop' and writes nothing — so refusing was blocking an export over
+    # a decision that was never being made. 17 of the 42 cm-unit vendor files in
+    # the survey import to exactly this shape (0 of 89 meter-unit).
+    _clear_scene()
+    arm = _make_rig()
+    parent = bpy.data.objects.new("RootEmpty", None)
+    bpy.context.collection.objects.link(parent)
+    arm.parent = parent                      # parent at IDENTITY scale and rotation
+    bpy.context.view_layer.update()
+    out = os.path.join(tempfile.mkdtemp(), "parented_noop.fbx")
+    raised = None
+    try:
+        fbx_export.export_unity_fbx(out, armature_obj=arm)
+    except ValueError as e:
+        raised = e
+    check(raised is None,
+          "a parented armature with identity rotation must export, not refuse: %r"
+          % raised)
+    # Guarded on the file existing: a regression here REFUSES, so an unguarded
+    # _offenders(out) dies on a missing path instead of reporting. Blender exits 0
+    # on an unhandled script exception, so that crash would read as a PASS.
+    if os.path.exists(out):
+        check(not _offenders(out),
+              "the parented-but-unrotated export must still ship identity node "
+              "scales; offenders: %r" % _offenders(out))
+    else:
+        check(False, "the parented-but-unrotated export wrote no file")
 
     # 10. Scope does not escape the caller's set. Seeding the walk from each
     # object's topmost ancestor reached siblings that were never selected and are
@@ -448,6 +486,198 @@ def main():
     check(all(abs(c - 0.01) < 1e-6 for c in arm.scale),
           "bake_object_scale=False must leave the scale alone; got %r"
           % (tuple(arm.scale),))
+
+    # --- 13. Out-of-scope ancestors (D2C) --------------------------------------
+    # hierarchy_ordered closes the caller's set DOWNWARD only (deliberately —
+    # case 10 pins why), so a scoped export never reaches an ancestor sitting
+    # above its scope. That ancestor's scale is then neither baked nor written,
+    # and collapses into the in-scope descendant's own node.
+    def _loose_under_holder(holder_scale, child_rot=(0.0, 0.0, 0.0),
+                            grandparent_scale=None, delta_scale=None):
+        """Armature at root; its modifier-bound mesh parented to a Holder EMPTY
+        that is OUTSIDE the armature's scope. Returns (arm, holder)."""
+        _clear_scene()
+        a = _make_rig()
+        body = bpy.data.objects["Body"]
+        holder = bpy.data.objects.new("Holder", None)
+        bpy.context.collection.objects.link(holder)
+        holder.scale = holder_scale
+        if delta_scale is not None:
+            holder.delta_scale = delta_scale
+        if grandparent_scale is not None:
+            gp = bpy.data.objects.new("GrandHolder", None)
+            bpy.context.collection.objects.link(gp)
+            gp.scale = grandparent_scale
+            holder.parent = gp
+        body.parent = holder            # bound to `a` by modifier, parented elsewhere
+        body.rotation_euler = child_rot
+        bpy.context.view_layer.update()
+        return a, holder
+
+    def _scoped_raises(arm, tag):
+        err = None
+        try:
+            fbx_export.export_unity_fbx(
+                os.path.join(tempfile.mkdtemp(), tag + ".fbx"), armature_obj=arm)
+        except ValueError as e:
+            err = e
+        return err
+
+    # 13a. The leak itself: measured writing `Lcl Scaling (2,2,2)` on the mesh
+    # node. Refused, not absorbed — widening the scope upward would bake a shared
+    # ancestor's scale onto siblings the caller never named (case 10).
+    arm, holder = _loose_under_holder((2.0, 2.0, 2.0))
+    vert_before = bpy.data.objects["Body"].data.vertices[0].co.copy()
+    err = _scoped_raises(arm, "oos_uniform")
+    check(err is not None and "outside this export's scope" in str(err),
+          "a scoped export must refuse an out-of-scope scaled ancestor; got %r" % err)
+    check(err is not None and "Holder" in str(err),
+          "the refusal must name the ancestor; got %r" % err)
+    # Same invariant case 9 asserts: refusals precede the irreversible bake.
+    check(all(abs(c - 2.0) < 1e-6 for c in holder.scale),
+          "a refused export must not have baked the ancestor scale; got %r"
+          % (tuple(holder.scale),))
+    check((bpy.data.objects["Body"].data.vertices[0].co - vert_before).length < 1e-9,
+          "a refused export must not have rewritten mesh data")
+
+    # 13b. Scope-specific, not blanket: the SAME scene exports clean whole-scene,
+    # where the ancestor is in scope and simply gets baked like any other object.
+    arm, holder = _loose_under_holder((2.0, 2.0, 2.0))
+    out = os.path.join(tempfile.mkdtemp(), "oos_wholescene.fbx")
+    err = None
+    try:
+        fbx_export.export_unity_fbx(out)
+    except ValueError as e:
+        err = e
+    check(err is None, "the whole-scene export of the same scene must not "
+                       "refuse — the ancestor is in scope there; got %r" % err)
+    check(not _offenders(out),
+          "whole-scene export must still ship identity node scales; offenders: %r"
+          % _offenders(out))
+
+    # 13c. The sharper half. A NON-uniform out-of-scope ancestor over a rotated
+    # child is check_scale_normalizable's shear case, but invisible to it because
+    # the ancestor is out of scope — measured exporting silently at
+    # (1.58114, 1.58114, 1.0), the shear dropped in the re-decomposition. That is
+    # geometry movement, not a layout blemish.
+    arm, _h = _loose_under_holder((2.0, 1.0, 1.0), child_rot=(0.0, 0.0, 0.785398))
+    err = _scoped_raises(arm, "oos_shear")
+    check(err is not None and "outside this export's scope" in str(err),
+          "a non-uniform out-of-scope ancestor must refuse, not export sheared; "
+          "got %r" % err)
+
+    # 13d. Over-refusal guard. An out-of-scope ancestor at IDENTITY scale changes
+    # no node scale, so it must stay silent — otherwise every mesh parented to a
+    # plain grouping EMPTY stops exporting.
+    arm, _h = _loose_under_holder((1.0, 1.0, 1.0))
+    err = _scoped_raises(arm, "oos_identity")
+    check(err is None,
+          "an out-of-scope ancestor at identity scale must NOT refuse; got %r" % err)
+
+    # 13d-bis. Over-refusal guard, the one that bit in review. Blender's "Parent,
+    # Keep Transform" stores a cancelling matrix_parent_inverse, so a child under a
+    # 2.0 ancestor can sit at world scale 1.0. Nothing leaks — the scoped export
+    # root-ifies that child at its WORLD transform, which is unit — so refusing it
+    # would block a native shape (this repo's own fixtures build scenes this way).
+    # The check must read the transform the child INHERITS, not the parent's own.
+    _clear_scene()
+    arm = _make_rig()
+    body = bpy.data.objects["Body"]
+    keeper = bpy.data.objects.new("KeepHolder", None)
+    bpy.context.collection.objects.link(keeper)
+    keeper.scale = (2.0, 2.0, 2.0)
+    bpy.context.view_layer.update()
+    body.parent = keeper
+    body.matrix_parent_inverse = keeper.matrix_world.inverted()   # keep transform
+    bpy.context.view_layer.update()
+    check(all(abs(c - 1.0) < 1e-6 for c in body.matrix_world.to_scale()),
+          "fixture: the child must sit at world scale 1.0, got %r"
+          % (tuple(round(c, 4) for c in body.matrix_world.to_scale()),))
+    err = _scoped_raises(arm, "oos_keep_transform")
+    check(err is None,
+          "an out-of-scope ancestor whose scale is cancelled by "
+          "matrix_parent_inverse must NOT refuse — the child inherits unit scale; "
+          "got %r" % err)
+
+    # 13e. The read must be the ancestor's COMPOSED EVALUATED scale, not its own
+    # `scale` field. Here the immediate out-of-scope parent reads (1,1,1) and only
+    # its own parent carries the 2.0 — a `p.scale` implementation goes silent.
+    arm, _h = _loose_under_holder((1.0, 1.0, 1.0), grandparent_scale=(2.0, 2.0, 2.0))
+    err = _scoped_raises(arm, "oos_grandparent")
+    check(err is not None and "outside this export's scope" in str(err),
+          "a scaled out-of-scope GRANDparent must refuse — the check reads the "
+          "composed evaluated scale, not p.scale; got %r" % err)
+
+    # 13f. Same claim, second limb: `delta_scale` is not in `scale` either, and
+    # transform_apply cannot consume it (case 11's `_delta` covers the in-scope
+    # half of that).
+    arm, _h = _loose_under_holder((1.0, 1.0, 1.0), delta_scale=(3.0, 3.0, 3.0))
+    err = _scoped_raises(arm, "oos_delta_scale")
+    check(err is not None and "outside this export's scope" in str(err),
+          "an out-of-scope ancestor carrying only a delta_scale must refuse; "
+          "got %r" % err)
+
+    # 13h. The ancestor check reads matrix_world, which is DEPSGRAPH-EVALUATED and
+    # therefore stale until something forces an update — unlike every other
+    # condition here, which reads direct RNA. This fixture deliberately does NOT
+    # call view_layer.update() after setting the scale, which is the shape any
+    # caller has that builds a scene and exports in one go (the CLI door, an
+    # execute_blender_code block). Measured without the update inside
+    # check_scale_normalizable: matrix_world.to_scale() returns (1,1,1) and the
+    # refusal silently passes.
+    # Asserted against check_scale_normalizable DIRECTLY, not through
+    # export_unity_fbx: the scoped export path calls bpy.ops.object.select_all
+    # first, and any operator call flushes the depsgraph, so routing through it
+    # would hide the staleness the case exists to pin. normalize_object_scale is
+    # a public door (case 10 uses it that way), so a caller genuinely can arrive
+    # here with nothing having flushed.
+    _clear_scene()
+    arm = _make_rig()
+    body = bpy.data.objects["Body"]
+    holder_stale = bpy.data.objects.new("StaleHolder", None)
+    bpy.context.collection.objects.link(holder_stale)
+    holder_stale.scale = (2.0, 2.0, 2.0)
+    body.parent = holder_stale
+    # NO view_layer.update() here — that is the point of this case.
+    err = None
+    try:
+        scene_utils.check_scale_normalizable(
+            [arm] + scene_utils.get_bound_meshes(arm))
+    except ValueError as e:
+        err = e
+    check(err is not None and "outside this export's scope" in str(err),
+          "the ancestor refusal must evaluate the depsgraph itself — without an "
+          "update matrix_world.to_scale() reads (1,1,1) on a freshly-set scale "
+          "and the refusal silently passes; got %r" % err)
+
+    # 13g. The escape hatch that made this reachable on real files. With
+    # keep_object_rotation=True the armature preflight is skipped entirely
+    # (candidates=[]), so the cm-unit root-Null shape drove straight through and
+    # wrote its parked conversion as node scale — measured on two vendor imports
+    # at 30 of 590 and 24 of 397 Model nodes at 0.01. This is that shape: the
+    # armature AND its meshes hang off one scaled EMPTY.
+    _clear_scene()
+    arm = _make_rig()
+    root_empty = bpy.data.objects.new("Root", None)
+    bpy.context.collection.objects.link(root_empty)
+    root_empty.scale = (0.01, 0.01, 0.01)
+    arm.parent = root_empty
+    bpy.context.view_layer.update()
+    err = None
+    try:
+        fbx_export.export_unity_fbx(
+            os.path.join(tempfile.mkdtemp(), "esc.fbx"), armature_obj=arm,
+            keep_object_rotation=True)
+    except ValueError as e:
+        err = e
+    check(err is not None and "outside this export's scope" in str(err),
+          "keep_object_rotation=True must not smuggle an out-of-scope scaled "
+          "ancestor past the bake; got %r" % err)
+
+    # Which checkout actually ran. An editable install records one absolute path,
+    # so a second worktree can import the FIRST one's modules and report green on
+    # changes it never loaded. Print the path, do not infer it from the cwd.
+    print("FBXEXPORT_TEST module:", fbx_export.__file__)
 
     if FAILURES:
         print("FBXEXPORT_TEST FAIL:", "; ".join(FAILURES))

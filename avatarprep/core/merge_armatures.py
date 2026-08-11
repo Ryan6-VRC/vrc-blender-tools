@@ -473,7 +473,7 @@ def merge_armatures(base_arm: bpy.types.Object,
         # Deliberately looser than the 1e-6 rad it replaces: 1e-9 on 1-|dot| is
         # ~0.005°, which over a 1 m rig is ~70 µm — an order under the compat
         # gate's own 1 mm noise_tol, so nothing it admits can matter downstream.
-        if 1.0 - abs(bq.dot(mq)) < 1e-9:
+        if scene_utils.rotations_equal(bq, mq):
             # Equal world rotations, so the helper returns the same verdict for
             # both rigs. Decide once on the base, then REPLAY its delta onto the
             # merge rig rather than clearing that rig too: a clear rotates a rig
@@ -485,7 +485,14 @@ def merge_armatures(base_arm: bpy.types.Object,
             # Seeded with the merge rig's parented meshes: they ride along with
             # the carry below, so the base's clear must not also move the ones it
             # is modifier-bound to (that lands them at delta**2).
-            moved: set = scene_utils.carried_by_parenting(merge_arm)
+            # BOTH rigs' descendants, not just the merge rig's. The base's clear
+            # cannot be relied on to record its own deep descendants — it only
+            # walks get_bound_meshes(base_arm), whose parent limb reaches two
+            # levels — so a mesh three levels under the BASE and modifier-bound to
+            # the merge rig rode the base's clear and was then moved again by the
+            # carry below. delta**2, baked permanently by the apply.
+            moved: set = (scene_utils.carried_by_parenting(base_arm)
+                          | scene_utils.carried_by_parenting(merge_arm))
             # Surface the helper's verdict: a preserved residue returns an
             # identity delta, so nothing downstream can infer it happened.
             status, delta, _undo = scene_utils.clear_axis_convention_rotation(

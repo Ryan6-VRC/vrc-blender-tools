@@ -211,6 +211,22 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
             if rb in bone_names:
                 hb = armature.data.bones[lb].head_local
                 hr = armature.data.bones[rb].head_local
+                # 1e-4 is ABSOLUTE and head_local is armature-local, whose
+                # magnitude is set by the source file's unit class: a cm-unit
+                # import (42 of 131 vendor files) runs ~100x larger, making this
+                # ~100x stricter there for the same physical asymmetry. Left
+                # alone deliberately, and NOT because the margin is comfortable —
+                # scaling a real meter-unit rig's chain deviations into cm-unit
+                # puts several within 4x of this threshold.
+                #
+                # It holds because of WHICH bones reach here: only those an
+                # edge's ``scales`` ops name (``present``, above), which are
+                # humanoid body bones. The dense skirt/hair/ribbon chains where
+                # near-threshold deviations actually live are never inspected.
+                # Measured on real rigs of both classes — cm-unit Chocolat and
+                # meter-unit Shinano each flag exactly one pair, both genuine
+                # vendor asymmetries that a world-space tolerance would flag too.
+                # Widen an edge to drive chain bones and this needs revisiting.
                 if abs(hb.x + hr.x) > 1e-4 or abs(hb.y - hr.y) > 1e-4 or abs(hb.z - hr.z) > 1e-4:
                     warnings.append("scales[%d] pair %r/%r not rest-symmetric; mirror-for-free "
                                     "may be wrong" % (i, lb, rb))
