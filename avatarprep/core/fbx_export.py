@@ -256,9 +256,12 @@ def export_unity_fbx(filepath: str,
     # of them. Their parked scale is still refused — by the out-of-scope-ancestor
     # condition in check_scale_normalizable, which names the EMPTY and is the
     # accurate diagnosis for this shape.
+    # ``has_own_rotation`` reads matrix_basis, not rotation_euler: those are
+    # separate RNA fields, and a QUATERNION- or AXIS_ANGLE-mode armature carrying
+    # 180 deg reads rotation_euler (0,0,0), which would sail straight through the
+    # very gate this raises.
     parented = [o.name for o in candidates
-                if o.parent is not None
-                and o.rotation_euler.to_quaternion().angle > 1e-6]
+                if o.parent is not None and scene_utils.has_own_rotation(o)]
     if parented:
         raise ValueError(
             "armature(s) %s have BOTH a parent object and their own object "
@@ -266,6 +269,66 @@ def export_unity_fbx(filepath: str,
             "between parent and object. Clear or apply the parent relation, or "
             "pass keep_object_rotation=True to export the rotations as-is"
             % ", ".join(repr(n) for n in parented))
+
+    # A parented candidate is admitted ONLY when it is the only candidate.
+    #
+    # The narrowing above buys the cm-unit root-Null class (one armature under one
+    # EMPTY) an export it was wrongly denied. It also broke an invariant the
+    # one-delta path below silently rests on: that a candidate's WORLD rotation IS
+    # its own rotation. Two measured ways that bites, both silent:
+    #
+    #   * The equal-rotation gate below compares WORLD rotations while the clear
+    #     decides on the LOCAL delta. A parented rig reading (0,0,180) in world but
+    #     identity locally returns 'noop', so if it happens to sort first as ``ref``
+    #     the carry loop never runs and every OTHER rig ships its front-axis
+    #     residue uncleared — with no AVATARPREP line at all, because 'noop' prints
+    #     nothing. Object naming decides whether the scene exports correctly.
+    #   * A candidate parented UNDER another candidate rides that rig's clear and
+    #     then takes ``delta`` again. For the 180 class delta**2 is identity, so it
+    #     ships UNMOVED while everything else moved — 1.0 m and 180 deg off, under
+    #     a log line asserting the rigs stayed rigid.
+    #
+    # Refused rather than handled: grouping candidates by rotation and running a
+    # delta per group would close it too, but this repo's bias is to refuse what it
+    # cannot judge, and nothing measured needs a multi-rig scene with a parented
+    # armature — the class that motivated the narrowing has exactly one.
+    if len(candidates) > 1:
+        nested = [o.name for o in candidates if o.parent is not None]
+        if nested:
+            raise ValueError(
+                "armature(s) %s have a parent object, and this export has %d "
+                "armatures in scope. One delta has to neutralise them all, and a "
+                "parented rig's world rotation is not its own — the axis class "
+                "would be decided on a rotation the clear does not apply, and a "
+                "rig parented under another would take the delta twice. Export "
+                "one rig at a time (armature_obj=...), clear or apply the parent "
+                "relation, or pass keep_object_rotation=True"
+                % (", ".join(repr(n) for n in nested), len(candidates)))
+
+    # Constraints make matrix_world depsgraph-derived, so the writes below — the
+    # clear's carry and apply_world_delta's replay — do not stick, and both
+    # silently do nothing of what they say. merge_armatures preflights exactly
+    # this on its own apply path; the export never wrote matrix_world before this
+    # change, so the exposure is new here. check_scale_normalizable does not cover
+    # it: that one refuses only _SCALE_CONSTRAINTS, and only at a non-unit
+    # evaluated scale, so COPY_ROTATION / COPY_TRANSFORMS / CHILD_OF pass.
+    if candidates:
+        constrained = [(o.name, o.constraints) for o in candidates if o.constraints]
+        for c in candidates:
+            constrained += [(m.name, m.constraints)
+                            for m in scene_utils.get_bound_meshes(c)
+                            if m.constraints and not scene_utils._is_descendant(m, c)]
+        if constrained:
+            seen_c = set()
+            named = [(n, cons) for n, cons in constrained
+                     if not (n in seen_c or seen_c.add(n))]
+            raise ValueError(
+                "object(s) %s carry constraint(s) that make matrix_world "
+                "depsgraph-derived, so the axis-convention clear and its carry "
+                "would not stick and would silently do nothing. Apply or remove "
+                "them, or pass keep_object_rotation=True to skip the gate entirely"
+                % ", ".join("%r (%s)" % (n, ", ".join(repr(c.name) for c in cons))
+                            for n, cons in named))
 
     # A mesh that rides one candidate and deforms with another has NO correct
     # placement when those two would move differently — one delta must serve it,
@@ -284,15 +347,30 @@ def export_unity_fbx(filepath: str,
     if len(candidates) > 1:
         bpy.context.view_layer.update()
         rot = {o.name: o.matrix_world.to_quaternion() for o in candidates}
+        # Hoisted: get_bound_meshes walks the whole scene, and calling it per
+        # (mesh x candidate) is quadratic on the 590-object vendor scenes this
+        # code is measured against.
+        bound = {c.name: {m.name for m in scene_utils.get_bound_meshes(c)}
+                 for c in candidates}
         for m in [o for o in bpy.context.scene.objects if o.type == 'MESH']:
             movers = [c for c in candidates
                       if scene_utils._is_descendant(m, c)
-                      or m in scene_utils.get_bound_meshes(c)]
+                      or m.name in bound[c.name]]
             if len(movers) < 2:
                 continue
             odd = [c.name for c in movers[1:]
                    if not scene_utils.rotations_equal(rot[movers[0].name], rot[c.name])]
-            if odd:
+            # Differing rotations are not sufficient — what matters is whether any
+            # of them produces MOTION. A rig at identity is a 'noop' and one whose
+            # rotation moves the up axis is 'preserved'; neither moves anything, so
+            # a mesh shared between those two is placed correctly by doing nothing,
+            # and refusing it would block a scene that exports fine. (Candidates
+            # here are all unparented — the multi-candidate parented refusal above
+            # guarantees it — so their world rotation IS their own.)
+            moves = [c.name for c in movers
+                     if scene_utils.has_own_rotation(c)
+                     and not scene_utils.rotation_moves_up_axis(rot[c.name])]
+            if odd and moves:
                 raise ValueError(
                     "mesh %r is attached to armature(s) %s, which do not share an "
                     "object rotation. It rides one and deforms with another, so no "
@@ -351,9 +429,10 @@ def export_unity_fbx(filepath: str,
         values = sorted({s for _, s in applied})
         print("AVATARPREP: export applied parked object scale into object data on "
               "%d object(s) — values %s, objects %s. The written file carries "
-              "identity node scales. This is PERMANENT and the scene is NOT "
-              "restored afterwards (unlike the rotation gate below) — see "
-              "export_unity_fbx's Scale docstring"
+              "identity OBJECT scale on its Model nodes (a vendor's non-unit REST "
+              "BONE scale lands on LimbNodes and is not reachable by this bake). "
+              "This is PERMANENT and the scene is NOT restored afterwards (unlike "
+              "the rotation gate below) — see export_unity_fbx's Scale docstring"
               % (len(applied), ", ".join(repr(v) for v in values),
                  ", ".join(repr(n) for n, _ in applied)))
 
@@ -417,6 +496,12 @@ def export_unity_fbx(filepath: str,
                       "export one rig at a time (armature_obj=...), if their "
                       "relative layout matters"
                       % (", ".join(repr(n) for n in odd), ref.name))
+                # Seeding a ride-along set into a PER-RIG clearing loop is exactly
+                # what carried_by_parenting's docstring warns against, because the
+                # rides deliver different deltas here. It is sound only because the
+                # shared-mesh refusal above already rejected every mesh attached to
+                # two candidates of differing rotation — so nothing left in this
+                # set is claimed by two rigs that move apart.
                 for o in candidates:
                     moved |= scene_utils.carried_by_parenting(o)
                 for o in candidates:
@@ -484,5 +569,8 @@ def _report_rotation(status, name, old_rot, also=None):
               "would export the rig tipped onto its face. Any rotation "
               "about the up axis it also carries is preserved with it, "
               "so check facing if that value is not a pure axis swap "
-              "(see export_unity_fbx's orientation docstring)"
-              % (name, old_rot))
+              "(see export_unity_fbx's orientation docstring).%s"
+              % (name, old_rot,
+                 "" if not also else
+                 " %s share this verdict and are likewise untouched."
+                 % ", ".join(repr(n) for n in also)))

@@ -205,6 +205,24 @@ def rotations_equal(qa, qb) -> bool:
     return 1.0 - abs(qa.dot(qb)) < _ROT_EQUAL_EPS
 
 
+def has_own_rotation(obj) -> bool:
+    """True when ``obj`` carries a non-identity rotation **of its own** — whatever
+    ``rotation_mode`` it is in.
+
+    Read off ``matrix_basis``, never off ``rotation_euler``. Those are separate RNA
+    fields: an object in ``QUATERNION`` or ``AXIS_ANGLE`` mode carrying 180 deg
+    reads ``rotation_euler == (0,0,0)`` (measured), so a euler-keyed gate calls it
+    unrotated and silently opens.
+
+    Compared through :func:`rotations_equal` rather than ``.angle``, for the same
+    double-cover reason that function exists for: measured,
+    ``Euler((0,0,2*pi)).to_quaternion()`` reports ``w=-1.0`` and
+    ``angle=6.2832``, so an ``.angle`` test reads an identity rotation as 360 deg
+    and false-refuses."""
+    return not rotations_equal(obj.matrix_basis.to_quaternion(),
+                               mathutils.Quaternion())
+
+
 def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     """Clear ``obj``'s object-level rotation UNAPPLIED — but ONLY when that
     rotation leaves the up axis fixed. Data untouched either way; nothing moves
@@ -445,7 +463,16 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
         p = o.parent
         if p is None or p.name in in_scope:
             continue
-        composed = tuple(p.matrix_world.to_scale())
+        # The transform the child actually INHERITS, not the parent's own world
+        # matrix. Blender's "Parent, Keep Transform" stores a cancelling
+        # ``matrix_parent_inverse``, so a child under a 2.0 parent can sit at world
+        # scale 1.0 — measured, and reading ``p.matrix_world.to_scale()`` refuses
+        # it although nothing leaks: on a scoped export the out-of-scope parent is
+        # not written, the child is root-ified at its WORLD transform, and that is
+        # already unit. This repo's own fixtures build scenes this way, so the
+        # false refusal is a native shape, not a hypothetical.
+        inherited = o.matrix_world @ o.matrix_basis.inverted_safe()
+        composed = tuple(inherited.to_scale())
         if not _is_unit_scale(composed):
             raise ValueError(
                 "%r is outside this export's scope but is an ancestor of %r, and "
@@ -669,7 +696,7 @@ def carried_by_parenting(arm, scene: Optional[bpy.types.Scene] = None) -> set:
             if o.type == 'MESH' and _is_descendant(o, arm)}
 
 
-def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> None:
+def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> list:
     """Push an already-decided world-space ``delta`` onto ``obj`` and the
     non-descendant meshes bound to it.
 

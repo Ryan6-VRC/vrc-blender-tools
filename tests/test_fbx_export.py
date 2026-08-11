@@ -574,6 +574,31 @@ def main():
     check(err is None,
           "an out-of-scope ancestor at identity scale must NOT refuse; got %r" % err)
 
+    # 13d-bis. Over-refusal guard, the one that bit in review. Blender's "Parent,
+    # Keep Transform" stores a cancelling matrix_parent_inverse, so a child under a
+    # 2.0 ancestor can sit at world scale 1.0. Nothing leaks — the scoped export
+    # root-ifies that child at its WORLD transform, which is unit — so refusing it
+    # would block a native shape (this repo's own fixtures build scenes this way).
+    # The check must read the transform the child INHERITS, not the parent's own.
+    _clear_scene()
+    arm = _make_rig()
+    body = bpy.data.objects["Body"]
+    keeper = bpy.data.objects.new("KeepHolder", None)
+    bpy.context.collection.objects.link(keeper)
+    keeper.scale = (2.0, 2.0, 2.0)
+    bpy.context.view_layer.update()
+    body.parent = keeper
+    body.matrix_parent_inverse = keeper.matrix_world.inverted()   # keep transform
+    bpy.context.view_layer.update()
+    check(all(abs(c - 1.0) < 1e-6 for c in body.matrix_world.to_scale()),
+          "fixture: the child must sit at world scale 1.0, got %r"
+          % (tuple(round(c, 4) for c in body.matrix_world.to_scale()),))
+    err = _scoped_raises(arm, "oos_keep_transform")
+    check(err is None,
+          "an out-of-scope ancestor whose scale is cancelled by "
+          "matrix_parent_inverse must NOT refuse — the child inherits unit scale; "
+          "got %r" % err)
+
     # 13e. The read must be the ancestor's COMPOSED EVALUATED scale, not its own
     # `scale` field. Here the immediate out-of-scope parent reads (1,1,1) and only
     # its own parent carries the 2.0 — a `p.scale` implementation goes silent.
