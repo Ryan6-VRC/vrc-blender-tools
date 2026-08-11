@@ -511,6 +511,304 @@ def test_merge_differing_origins_keeps_vendor_frame():
           "(want 1.0000; warnings: %r)" % warns)
 
 
+def test_merge_deep_cross_bound_mesh_moves_once():
+    """The merge path's half of the ride-along seed hole.
+
+    ``merge_armatures`` seeds ``already_moved`` from ``carried_by_parenting`` too,
+    so the same TWO-level reach in get_bound_meshes stranded a mesh buried deeper
+    than that under the merge rig while modifier-bound to the base rig: the base's
+    clear moved it explicitly AND it rode the apply_world_delta carry, landing at
+    delta**2. A mesh bound to NEITHER rig cannot police this — nothing ever moves
+    it explicitly, so such a test passes with the hole wide open."""
+    from avatarprep.core import scene_utils
+    from avatarprep.core.merge_armatures import merge_armatures
+    _clear_scene()
+    base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
+                       mesh_name="BodyM", mesh_y=0.1)
+    merge = _parked_rig("Armature.Out",
+                        [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
+                        mesh_name="TailM", mesh_y=-0.2)
+    _offset_rig(merge, (0.5, 0.0, 0.0))
+    deep = _deep_cross_bound_mesh("DeepMerge", merge, base, depth=2)
+    check(deep not in scene_utils.get_bound_meshes(merge),
+          "fixture: the mesh must be past get_bound_meshes' 2-level parent reach "
+          "on the merge rig, or it never exercised the hole")
+    check(deep in scene_utils.get_bound_meshes(base),
+          "fixture: the mesh must be modifier-bound to the BASE rig — one bound to "
+          "neither is never moved explicitly and would pass regardless")
+    pre = _world_verts(deep)
+
+    delta = _clear_delta(base)
+    res = merge_armatures(base, merge)
+    check(res["verdict"] == "PASS",
+          "deep cross-bound merge FAILed: %r" % res.get("offenders"))
+    for got, was in zip(_world_verts(deep), pre):
+        want = delta @ was
+        check((got - want).length < 1e-4,
+              "deep cross-bound mesh vertex landed at %s, want %s — it rode the "
+              "merge rig's carry AND was moved explicitly by the base's clear"
+              % (tuple(round(v, 4) for v in got), tuple(round(v, 4) for v in want)))
+
+
+def _model_node_translation(path, model_name):
+    """A Model node's Lcl Translation, (0,0,0) if the property is absent."""
+    from io_scene_fbx import parse_fbx
+    root, _ = parse_fbx.parse(path)
+    objects = next(e for e in root.elems if e.id == b"Objects")
+    for e in objects.elems:
+        if e.id != b"Model":
+            continue
+        name = e.props[1].decode("utf-8", "replace").split("\x00")[0]
+        if name != model_name:
+            continue
+        for p70 in (c for c in e.elems if c.id == b"Properties70"):
+            for p in p70.elems:
+                if p.props[0] == b"Lcl Translation":
+                    return tuple(float(v) for v in p.props[4:7])
+        return (0.0, 0.0, 0.0)
+    raise AssertionError("no Model node %r in %s" % (model_name, path))
+
+
+def _node_worlds(path):
+    """{Model node name: world matrix} composed from the written file.
+
+    Plain ``parent @ local`` composition is exact for what this exporter writes,
+    which is worth stating because FBX in general allows much more: checked
+    against io_scene_fbx 5.2.0, ``PreRotation``/``PostRotation``/``RotationPivot``
+    /``ScalingPivot``/``GeometricTranslation`` appear only as template defaults
+    and are never emitted, ``RotationOrder`` is hardwired XYZ (matching
+    ``Euler(..., 'XYZ')``), and ``InheritType`` is written as 1 (RSrs), which is
+    ordinary matrix composition. Names that repeat (``Hips`` on two rigs) are
+    dropped rather than guessed at — every caller here asks about unique ones.
+
+    The exporter's own -90 X conversion lands on root nodes, so compare a
+    RELATIVE transform between two nodes and it cancels."""
+    from io_scene_fbx import parse_fbx
+    from mathutils import Euler, Matrix, Vector
+    root, _ = parse_fbx.parse(path)
+    objects = next(e for e in root.elems if e.id == b"Objects")
+
+    local, name_of = {}, {}
+    for e in objects.elems:
+        if e.id != b"Model":
+            continue
+        nid = e.props[0]
+        name_of[nid] = e.props[1].decode("utf-8", "replace").split("\x00")[0]
+        t, r, s = Vector((0, 0, 0)), Euler((0, 0, 0), 'XYZ'), Vector((1, 1, 1))
+        for p70 in (c for c in e.elems if c.id == b"Properties70"):
+            for p in p70.elems:
+                if p.props[0] == b"Lcl Translation":
+                    t = Vector(tuple(float(v) for v in p.props[4:7]))
+                elif p.props[0] == b"Lcl Rotation":
+                    r = Euler(tuple(math.radians(float(v)) for v in p.props[4:7]), 'XYZ')
+                elif p.props[0] == b"Lcl Scaling":
+                    s = Vector(tuple(float(v) for v in p.props[4:7]))
+        local[nid] = (Matrix.Translation(t) @ r.to_matrix().to_4x4()
+                      @ Matrix.Diagonal(s.to_4d()))
+
+    parent = {}
+    conns = next(e for e in root.elems if e.id == b"Connections")
+    for c in conns.elems:
+        if c.props[0] == b"OO" and c.props[1] in local and c.props[2] in local:
+            parent[c.props[1]] = c.props[2]
+
+    world = {}
+
+    def solve(nid):
+        if nid not in world:
+            p = parent.get(nid)
+            world[nid] = (local[nid] if p is None else solve(p) @ local[nid])
+        return world[nid]
+
+    out, seen_twice = {}, set()
+    for nid in local:
+        nm = name_of[nid]
+        if nm in out:
+            seen_twice.add(nm)
+        out[nm] = solve(nid)
+    for nm in seen_twice:
+        del out[nm]
+    return out
+
+
+def _deep_cross_bound_mesh(name, chain_root, modifier_arm, depth=2):
+    """A mesh buried ``depth`` EMPTY levels under ``chain_root`` and modifier-bound
+    to ``modifier_arm``. Past get_bound_meshes' TWO-level parent reach, which is
+    what made this shape invisible to the ride-along seed."""
+    from mathutils import Vector
+    parent = chain_root
+    for i in range(depth):
+        e = bpy.data.objects.new("%s_E%d" % (name, i), None)
+        bpy.context.collection.objects.link(e)
+        e.parent = parent
+        e.matrix_parent_inverse = parent.matrix_world.inverted()
+        parent = e
+    md = bpy.data.meshes.new(name + "Data")
+    md.from_pydata([(-0.05, 0.0, 0.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.1)],
+                   [], [(0, 1, 2)])
+    md.update()
+    mo = bpy.data.objects.new(name, md)
+    bpy.context.collection.objects.link(mo)
+    mo.modifiers.new("Armature", 'ARMATURE').object = modifier_arm
+    mo.parent = parent
+    mo.matrix_parent_inverse = parent.matrix_world.inverted()
+    bpy.context.view_layer.update()
+    return mo
+
+
+def test_export_two_rigs_move_by_one_delta():
+    """Two rigs sharing a rotation but not an origin must be neutralised by ONE
+    delta, or the written file has them somewhere else relative to each other.
+
+    A clear rotates a rig about its OWN origin, so per-rig clearing displaces
+    them by (I - R^-1)(o_a - o_b) — measured here at 1.0 m. merge_armatures hit
+    this and its remedy is apply_world_delta; the export path now replays one
+    delta the same way, which is also what makes merge-then-export agree with
+    export-alone on a multi-rig scene.
+
+    The oracle is the SECOND rig's node translation: under one delta it is
+    carried to delta @ its origin, under a per-rig clear it never moves at all.
+    The exporter's own -90 X conversion leaves x untouched, so x alone separates
+    them (-0.5 correct against +0.5)."""
+    import tempfile
+    from avatarprep.core import fbx_export
+    _clear_scene()
+    a = _parked_rig("ArmA", [("Hips", (0, 0, 1.0), None)], mesh_name="BodyA")
+    b = _parked_rig("ArmB", [("Hips", (0, 0, 1.0), None)], mesh_name="BodyB")
+    _offset_rig(b, (0.5, 0.0, 0.0))
+    bpy.context.view_layer.update()
+    check(abs(b.matrix_world.translation.x - 0.5) < 1e-6,
+          "fixture: ArmB origin must sit at x=0.5, got %r"
+          % (b.matrix_world.translation.x,))
+    check(_close(a.matrix_world.to_quaternion().dot(b.matrix_world.to_quaternion()),
+                 1.0, 1e-6) or
+          _close(abs(a.matrix_world.to_quaternion().dot(b.matrix_world.to_quaternion())),
+                 1.0, 1e-6),
+          "fixture: the two rigs must share a rotation, or this tests the "
+          "differing-rotation branch instead")
+
+    out = os.path.join(tempfile.mkdtemp(), "two_rigs.fbx")
+    fbx_export.export_unity_fbx(out)
+    got = _model_node_translation(out, "ArmB")
+    check(_close(got[0], -0.5, 1e-3),
+          "ArmB's node translation x is %.4f, want -0.5000. At +0.5 the rigs were "
+          "cleared about their own origins, so the file has them 1.0 m apart from "
+          "where the scene had them (full translation %r)"
+          % (got[0], tuple(round(v, 4) for v in got)))
+    # The scene must come back exactly — the export restores, unlike the merge.
+    bpy.context.view_layer.update()
+    check(abs(b.matrix_world.translation.x - 0.5) < 1e-5,
+          "the export did not restore ArmB's transform; x is now %r"
+          % (b.matrix_world.translation.x,))
+
+
+def test_export_deep_cross_bound_mesh_moves_once():
+    """A mesh buried three levels under one rig and modifier-bound to another must
+    be moved exactly once.
+
+    get_bound_meshes' parent limb reaches only TWO levels, so the ride-along seed
+    (carried_by_parenting) used to miss this mesh entirely: it rode its ancestor
+    rig AND was moved explicitly by the rig it deforms with, landing at delta**2.
+    Measured through export_unity_fbx at 0.1 of drift off its own skeleton.
+
+    Both rigs sit at the same origin and rotation here, so one delta serves both
+    and nothing is refused — the shared-mesh refusal covers the differing case."""
+    import tempfile
+    from avatarprep.core import fbx_export
+    _clear_scene()
+    a = _parked_rig("ArmA", [("Hips", (0, 0, 1.0), None)], mesh_name="BodyA")
+    b = _parked_rig("ArmB", [("Hips", (0, 0, 1.0), None)], mesh_name="BodyB")
+    # Two meshes in the SAME deep chain under ArmA, differing only in which rig
+    # they deform with. The control is bound to the rig it hangs under, so it can
+    # only ever ride; the subject is bound to the other rig, so a missed seed lets
+    # that rig move it a second time.
+    #
+    # They are compared against EACH OTHER, not against a rig, because the
+    # exporter's -90 X conversion is applied per node and does NOT cancel between
+    # two nodes of different type and chain shape (measured: composing the mesh
+    # against an armature node leaves a spurious -90 X and reads 2.0 of drift on a
+    # scene whose in-scene drift at write time is exactly 0). Two meshes sharing a
+    # chain get identical treatment, so their relative transform does cancel it.
+    m = _deep_cross_bound_mesh("Deep", a, b, depth=2)     # deforms with ArmB
+    ctrl = _deep_cross_bound_mesh("Ctrl", a, a, depth=2)  # deforms with ArmA
+    from avatarprep.core import scene_utils
+    check(m not in scene_utils.get_bound_meshes(a),
+          "fixture: the subject mesh must be past get_bound_meshes' 2-level "
+          "parent reach on ArmA, or it never exercised the hole")
+    check(m in scene_utils.get_bound_meshes(b),
+          "fixture: the subject mesh must be modifier-bound to ArmB")
+    check(m.name in scene_utils.carried_by_parenting(a),
+          "the ride-along seed must see a deep descendant — this is the fix")
+
+    bpy.context.view_layer.update()
+    want = ctrl.matrix_world.inverted() @ m.matrix_world
+
+    out = os.path.join(tempfile.mkdtemp(), "deep_cross.fbx")
+    fbx_export.export_unity_fbx(out)
+    worlds = _node_worlds(out)
+    for needed in ("Deep", "Ctrl"):
+        check(needed in worlds, "no unique %r node in the written file" % needed)
+    got = worlds["Ctrl"].inverted() @ worlds["Deep"]
+    worst = max(abs(got[i][j] - want[i][j]) for i in range(4) for j in range(4))
+    check(worst < 1e-4,
+          "the cross-bound mesh moved %.4f relative to a control mesh sharing its "
+          "chain (worst matrix term). It rode its ancestor rig AND was moved "
+          "explicitly by ArmB — delta**2, 180 deg off the skeleton it deforms "
+          "with.\n  want %r\n  got  %r"
+          % (worst, [tuple(round(v, 4) for v in row) for row in want],
+             [tuple(round(v, 4) for v in row) for row in got]))
+
+
+def test_export_shared_mesh_across_differing_rotations_refuses():
+    """A mesh that rides one rig and deforms with another has NO correct placement
+    when those rigs would move differently — no single delta satisfies both.
+    Refused, on merge_armatures' own reasoning for its differing-rotations branch.
+    Measured at 2.0 of drift before this refused."""
+    import tempfile
+    from avatarprep.core import fbx_export
+    _clear_scene()
+    a = _parked_rig("ArmA", [("Hips", (0, 0, 1.0), None)], park_z=math.pi)
+    b = _parked_rig("ArmB", [("Hips", (0, 0, 1.0), None)], park_z=0.0)
+    b.rotation_euler = (math.pi / 2, 0.0, 0.0)     # up-axis-MOVING class: preserved
+    bpy.context.view_layer.update()
+    _cross_bound_mesh("Shared", b, a, (0.0, 0.0, 1.0))   # rides B, deforms with A
+    raised = None
+    try:
+        fbx_export.export_unity_fbx(os.path.join(tempfile.mkdtemp(), "shared.fbx"))
+    except ValueError as e:
+        raised = e
+    check(raised is not None and "Shared" in str(raised),
+          "a mesh shared across rigs of differing rotation must refuse and name "
+          "the mesh; got %r" % raised)
+    check(raised is not None and "ArmA" in str(raised) and "ArmB" in str(raised),
+          "the refusal must name both rigs; got %r" % raised)
+
+
+def test_export_shared_mesh_antipodal_rotations_allowed():
+    """Over-refusal guard, and the mutation guard for the equality test.
+
+    +180 and -180 about Z are the SAME rotation, but quaternions double-cover and
+    mat3_to_quat flips its sign branch exactly there. Keyed on
+    rotation_difference().angle these read 2*pi apart and the shared-mesh refusal
+    fires on a scene that is perfectly exportable; keyed on abs(dot) it does not."""
+    import tempfile
+    from avatarprep.core import fbx_export
+    _clear_scene()
+    a = _parked_rig("ArmA", [("Hips", (0, 0, 1.0), None)], park_z=math.pi)
+    b = _parked_rig("ArmB", [("Hips", (0, 0, 1.0), None)], park_z=-math.pi)
+    bpy.context.view_layer.update()
+    _cross_bound_mesh("Shared", b, a, (0.0, 0.0, 1.0))
+    raised = None
+    try:
+        fbx_export.export_unity_fbx(os.path.join(tempfile.mkdtemp(), "anti.fbx"))
+    except ValueError as e:
+        raised = e
+    check(raised is None,
+          "+180 and -180 are the same rotation; the shared-mesh refusal must not "
+          "fire (an .angle-keyed equality test reads them 360 deg apart): %r"
+          % raised)
+
+
 def _cross_bound_mesh(name, parent_arm, modifier_arm, at):
     """A mesh PARENTED to one rig and modifier-bound to the other — bound to both
     as far as get_bound_meshes is concerned, but moved by only one of them."""
@@ -731,12 +1029,23 @@ def main():
     # would route the front-axis class away from the clear.
     test_merge_differing_origins_keeps_vendor_frame()
     test_merge_cross_bound_mesh_moves_once()
+    test_merge_deep_cross_bound_mesh_moves_once()
     test_merge_differing_origins_identity_rotation_noop()
     test_merge_antipodal_quaternion_is_equal_rotation()
 
     # 8. Differing ROTATIONS — the only way into the else branch now. Nothing can
     # clear both, so the warning is the whole contract.
     test_merge_differing_rotations_warns()
+
+    # 9. The EXPORT path's own version of 7 and 8. It cleared each rig about its
+    # own origin, so a multi-rig scene came out rearranged; it now replays one
+    # delta through the same apply_world_delta the merge uses. The cross-bound
+    # cases are export-side siblings of test_merge_cross_bound_mesh_moves_once,
+    # not copies of it — the seed hole they expose is a DEPTH one.
+    test_export_two_rigs_move_by_one_delta()
+    test_export_deep_cross_bound_mesh_moves_once()
+    test_export_shared_mesh_across_differing_rotations_refuses()
+    test_export_shared_mesh_antipodal_rotations_allowed()
 
     if FAILURES:
         print("FBXORIENT_TEST FAIL:", "; ".join(FAILURES))

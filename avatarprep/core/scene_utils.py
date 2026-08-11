@@ -187,6 +187,24 @@ def rotation_moves_up_axis(quat) -> bool:
     return (quat @ up).dot(up) < _UP_AXIS_EPS
 
 
+# Two world rotations this close count as equal, so ONE clear delta can serve
+# both rigs. Keyed on abs(dot), never on ``rotation_difference().angle``:
+# quaternions double-cover and ``mat3_to_quat`` flips its sign branch exactly at
+# 180 deg — the (0,0,-180) front-axis class this gate exists for — so two rigs
+# whose 3x3s differ by 1.7e-07 read 360 deg apart through ``.angle`` and miss it.
+# 1e-9 on 1-|dot| is ~0.005 deg, ~70 um over a 1 m rig: an order under the merge
+# compat gate's 1 mm noise_tol, so nothing it admits can matter downstream.
+_ROT_EQUAL_EPS = 1e-9
+
+
+def rotations_equal(qa, qb) -> bool:
+    """True when two world rotations are equal up to double-cover and float noise.
+
+    Shared so the export and merge paths answer "can one delta serve both rigs?"
+    identically; ``merge_armatures`` states the reasoning at its own call site."""
+    return 1.0 - abs(qa.dot(qb)) < _ROT_EQUAL_EPS
+
+
 def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     """Clear ``obj``'s object-level rotation UNAPPLIED — but ONLY when that
     rotation leaves the up axis fixed. Data untouched either way; nothing moves
@@ -386,8 +404,62 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     Checked against the whole closure, not just the currently-non-unit objects:
     applying a parent pushes its scale onto a child that reads 1.0 today, so a
     child can become an offender during the run.
+
+    **Evaluates the depsgraph first.** Every other condition here reads direct
+    RNA (``o.scale``, ``o.delta_scale``, ``o.constraints``), which is never
+    stale; the out-of-scope-ancestor condition below reads ``matrix_world``,
+    which is. Measured on 5.2.0: setting ``h.scale = (2,2,2)`` then reading
+    ``h.matrix_world.to_scale()`` without an update returns ``(1,1,1)``, so that
+    refusal would silently pass for any caller setting a scale and exporting in
+    one go. ``view_layer.update()`` evaluates, it does not mutate, so the
+    reads-only contract above still holds.
     """
-    for o in hierarchy_ordered(objects, scene):
+    bpy.context.view_layer.update()
+
+    closure = hierarchy_ordered(objects, scene)
+    in_scope = {o.name for o in closure}
+
+    # An ancestor OUTSIDE the caller's scope is neither baked nor (on a scoped
+    # export) written, so its scale collapses into the in-scope descendant's own
+    # node and the file ships the very node scale this function exists to remove.
+    # Measured: a scoped export whose mesh hung off an out-of-scope EMPTY at 2.0
+    # wrote ``Lcl Scaling (2,2,2)``; the same shape on a cm-unit vendor import
+    # (armature + 20 meshes under a 0.01 root EMPTY) wrote 30 of 590 Model nodes
+    # at 0.01. Worse, the ancestor is invisible to the shear condition below, so
+    # a NON-uniform one exported silently at (1.58114, 1.58114, 1.0) — the shear
+    # dropped in the re-decomposition, which is geometry movement, not layout.
+    #
+    # Refused rather than absorbed, because the fix cannot be to widen the scope:
+    # ``hierarchy_ordered`` closes the caller's set DOWNWARD only, and applying a
+    # shared ancestor relocates its scale onto every sibling's local matrix — a
+    # permanent mutation of objects the caller never named. That function's
+    # docstring owns why downward-only is load-bearing.
+    #
+    # Reads the ancestor's EVALUATED, COMPOSED scale rather than ``p.scale``, so
+    # one read covers stacked out-of-scope ancestors, a ``delta_scale`` (reads
+    # through at 3.0, measured) and scale-affecting constraints. Inspecting only
+    # the nearest out-of-scope ancestor per boundary edge is complete: the
+    # closure is downward-only, so a chain leaving it does so at exactly one
+    # edge, and ``matrix_world`` carries everything above that edge.
+    for o in closure:
+        p = o.parent
+        if p is None or p.name in in_scope:
+            continue
+        composed = tuple(p.matrix_world.to_scale())
+        if not _is_unit_scale(composed):
+            raise ValueError(
+                "%r is outside this export's scope but is an ancestor of %r, and "
+                "carries a composed evaluated scale %r. Nothing here bakes or "
+                "exports it, so it collapses into %r's own node and the file "
+                "would ship that node scale (measured: 30 of 590 Model nodes at "
+                "0.01 on a cm-unit vendor import). Clear or apply the parent "
+                "relation on %r, or export a scope that contains %r. NOTE this "
+                "is the composed EVALUATED scale, not necessarily %r's authored "
+                "one — a mirrored ancestor reads uniformly negative here."
+                % (p.name, o.name, tuple(round(c, 6) for c in composed), o.name,
+                   o.name, p.name, p.name))
+
+    for o in closure:
         scale = tuple(o.scale)
         name = o.name
 
@@ -566,13 +638,35 @@ def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
         bpy.context.view_layer.update()
     return applied
 
-def carried_by_parenting(arm) -> set:
-    """Names of meshes bound to ``arm`` that ride along when ``arm`` itself moves.
+def carried_by_parenting(arm, scene: Optional[bpy.types.Scene] = None) -> set:
+    """Names of meshes that ride along when ``arm`` itself moves — **every mesh
+    descendant at any depth**, bound to ``arm`` or not.
 
-    Seed this into an ``already_moved`` set before clearing a DIFFERENT armature
-    that some of those meshes are also modifier-bound to: without it that clear
-    moves the mesh explicitly and the later carry of ``arm`` moves it again."""
-    return {m.name for m in get_bound_meshes(arm) if _is_descendant(m, arm)}
+    Seed this into an ``already_moved`` set before moving a DIFFERENT armature
+    that some of those meshes are also modifier-bound to: without it that move
+    displaces the mesh explicitly and ``arm``'s own carry moves it again.
+
+    Riding is decided by descent alone, so binding is irrelevant here, and the
+    old ``get_bound_meshes(arm) & descendants`` intersection was a measured hole:
+    ``get_bound_meshes``' parent limb reaches only TWO levels (matching CATS),
+    while ride-along is whatever ``_is_descendant`` walks. A mesh three levels
+    under ``arm`` — a ``geo_grp``-style EMPTY tree — was therefore missing from
+    the seed, and a second rig it was modifier-bound to moved it explicitly ON
+    TOP of the ride, landing it at ``delta**2``, 180 deg off the skeleton it
+    deforms with (measured through ``export_unity_fbx`` at 0.1).
+
+    **Only sound when one delta moves every candidate.** A name here suppresses
+    an explicit move, which is right only if the ride actually delivers the same
+    delta. ``clear_axis_convention_rotation`` returns without moving anything on
+    ``'preserved'`` and ``'noop'``, and it rotates each rig about its OWN origin,
+    so per-rig clearing gives same-rotation rigs at differing origins DIFFERENT
+    deltas. Both callers therefore decide the axis class once and replay a single
+    delta (``export_unity_fbx``, ``merge_armatures``); seeding this into a
+    per-rig clearing loop would strand meshes instead of rescuing them."""
+    if scene is None:
+        scene = bpy.context.scene
+    return {o.name for o in scene.objects
+            if o.type == 'MESH' and _is_descendant(o, arm)}
 
 
 def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> None:
@@ -590,11 +684,14 @@ def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> None:
     ``clear_axis_convention_rotation`` and is replaying the resulting delta, so
     the two rigs cannot disagree about what their shared rotation meant.
 
-    No undo: the only caller (the merge apply path) clears permanently and drops
-    the undo. A caller needing restore gets the undo shape added then."""
+    Returns an ``undo`` list replayable by :func:`restore_transforms`, the same
+    shape ``clear_axis_convention_rotation`` returns. The merge apply path moves
+    permanently and drops it; ``export_unity_fbx`` restores after writing, so it
+    keeps it."""
     if already_moved is None:
         already_moved = set()
     bpy.context.view_layer.update()  # matrix_world is stale after direct writes
+    undo = [(obj, 'matrix_basis', obj.matrix_basis.copy())]
     obj.matrix_world = delta @ obj.matrix_world
     for m in get_bound_meshes(obj):
         if m.name in already_moved:
@@ -602,9 +699,11 @@ def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> None:
         if _is_descendant(m, obj):
             already_moved.add(m.name)  # rode along; see the clear's note
             continue
+        undo.append((m, 'matrix_basis', m.matrix_basis.copy()))
         m.matrix_world = delta @ m.matrix_world
         already_moved.add(m.name)
     bpy.context.view_layer.update()
+    return undo
 
 
 def restore_transforms(undo) -> None:

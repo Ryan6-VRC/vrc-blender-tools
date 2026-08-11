@@ -94,11 +94,19 @@ def export_unity_fbx(filepath: str,
 
     **Scale:** ``FBX_SCALE_ALL`` writes a ``UnitScaleFactor=100`` file, and this
     function **bakes every parked object scale into the data first** (via
-    ``scene_utils.normalize_object_scale``), so the written file always carries
-    identity node scales — the canonical layout, identical to what meter-unit
-    vendors ship. Pass ``bake_object_scale=False`` to export the transforms
-    as-is; ``keep_object_rotation`` governs only the rotation gate and does not
-    suppress this.
+    ``scene_utils.normalize_object_scale``), so the written file carries identity
+    **object** scale on its Model nodes — the canonical layout, identical to what
+    meter-unit vendors ship — **or the export refuses**. Pass
+    ``bake_object_scale=False`` to export the transforms as-is;
+    ``keep_object_rotation`` governs only the rotation gate and does not suppress
+    this.
+
+    The guarantee is about **object** scale, and only object scale. A vendor can
+    also ship non-unit scale in the armature's REST BONE data, which surfaces as
+    ``Lcl Scaling`` on ``LimbNode``s and which no object-scale bake can reach by
+    construction (measured on Telmy: ``Breast_2_L`` 0.99785 and its ``_end``
+    1.002155 survive an otherwise fully-normalised export). Read a non-identity
+    ``LimbNode`` scale as vendor rest data, not as a failure of this function.
 
     That apply is **permanent and unreported by the scene**: the scale moves out
     of the object transform and into vertices, shape keys and rest bones, the
@@ -106,13 +114,25 @@ def export_unity_fbx(filepath: str,
     restored afterwards (unlike the rotation gate, which clears unapplied).
 
     It preserves world layout **for the cases it accepts**, which is not all of
-    them — ``check_scale_normalizable`` runs first and refuses the rest, because
-    two were measured to move geometry by metres rather than relocate a number: a
-    posed armature (the bake rescales rest bones but not pose translation
-    channels — 9.9 m on a 0.01 rig) and shear from a non-uniform scale over a
-    rotated descendant (0.041 m, silently dropped in the re-decomposition). Every
-    refusal is raised **before** the first mutation, so a refused export leaves
-    the scene untouched. ``normalize_object_scale`` owns the rest of the
+    them — ``check_scale_normalizable`` runs first and refuses the rest. Two of
+    those refusals exist because the bake was measured to move geometry by metres
+    rather than relocate a number: a posed armature (the bake rescales rest bones
+    but not pose translation channels — 9.9 m on a 0.01 rig) and shear from a
+    non-uniform scale over a rotated descendant (0.041 m, silently dropped in the
+    re-decomposition).
+
+    A third refuses for a different reason — the layout promise above simply
+    cannot be kept. An ancestor OUTSIDE this export's scope is neither baked nor
+    (when scoped) written, so its scale collapses into the in-scope descendant's
+    own node: measured at ``Lcl Scaling (2,2,2)`` on a synthetic scope boundary,
+    and 30 of 590 Model nodes at 0.01 on a cm-unit vendor import whose meshes
+    hang off a root EMPTY. Where that ancestor is also non-uniform it is the
+    shear case as well, invisible to the condition above and measured exporting
+    silently at (1.58114, 1.58114, 1.0) — so this one refusal covers both a
+    layout break and a geometry break.
+
+    Every refusal is raised **before** the first mutation, so a refused export
+    leaves the scene untouched. ``normalize_object_scale`` owns the rest of the
     reasoning: why the accepted cases are not gated on the parked value, and why
     parents are applied before children.
 
@@ -215,16 +235,72 @@ def export_unity_fbx(filepath: str,
     # judge. Under a rotated parent, the object's world rotation and the delta a
     # local clear produces are different rotations that can disagree about
     # whether the up axis moves, and no reading of one is defensible for the
-    # other. Nothing here produces a parented armature (wm.fbx_import creates
-    # them at root), so this closes a question rather than blocking real work —
-    # and it matches the preflight merge_armatures already applies.
-    parented = [o.name for o in candidates if o.parent is not None]
+    # other — matching the preflight merge_armatures applies.
+    #
+    # Narrowed to a parented armature that ALSO carries its own rotation, because
+    # only then is there a split to judge. The gate decides on the clear DELTA
+    # (see clear_axis_convention_rotation), and for an identity local rotation
+    # that delta is identity: the gate returns 'noop', reads nothing ambiguous,
+    # and writes nothing. Refusing there blocked an export over a decision that
+    # was never being made.
+    #
+    # This is the whole cm-unit root-Null class, and it is not rare: wm.fbx_import
+    # renders a source whose only root node is a Null as an EMPTY parent carrying
+    # the axis conversion AND the unit conversion, leaving the armature itself at
+    # identity. Measured across the 131-file vendor survey, 17 of the 42 cm-unit
+    # files import to exactly that shape (against 0 of 89 meter-unit), all sharing
+    # one signature — UpAxis=1,+1 / FrontAxis=2 / UnitScaleFactor=1 — and no root
+    # Null anywhere in the corpus carries scaling without rotation. Both sampled
+    # files (Lunary 591 nodes, Telmy 402) import with the parent at (90,0,0) and
+    # 0.01 while the armature reads (0,0,0), so the gate is a 'noop' on every one
+    # of them. Their parked scale is still refused — by the out-of-scope-ancestor
+    # condition in check_scale_normalizable, which names the EMPTY and is the
+    # accurate diagnosis for this shape.
+    parented = [o.name for o in candidates
+                if o.parent is not None
+                and o.rotation_euler.to_quaternion().angle > 1e-6]
     if parented:
         raise ValueError(
-            "armature(s) %s have a parent object; the axis-convention gate cannot "
-            "judge a rotation split between parent and object. Clear or apply the "
-            "parent relation, or pass keep_object_rotation=True to export the "
-            "rotations as-is" % ", ".join(repr(n) for n in parented))
+            "armature(s) %s have BOTH a parent object and their own object "
+            "rotation; the axis-convention gate cannot judge a rotation split "
+            "between parent and object. Clear or apply the parent relation, or "
+            "pass keep_object_rotation=True to export the rotations as-is"
+            % ", ".join(repr(n) for n in parented))
+
+    # A mesh that rides one candidate and deforms with another has NO correct
+    # placement when those two would move differently — one delta must serve it,
+    # and neither choice is right. Refused rather than silently picked, on the
+    # same reasoning merge_armatures' differing-rotations branch states: no
+    # single delta can clear both.
+    #
+    # Only reachable with rigs at DIFFERING rotations. The equal-rotation path
+    # below moves every candidate by one delta, so a shared mesh gets a single
+    # consistent motion however it is attached, and nothing here fires. Not
+    # reachable from vendor import alone either — no file in the 131-file survey
+    # pairs two rigs of differing residue class — but it is reachable from
+    # in-.blend authoring: an outfit rig from a different-axis vendor appended
+    # beside a base rig before export. Measured at 2.0 of drift off the skeleton
+    # the mesh actually deforms with.
+    if len(candidates) > 1:
+        bpy.context.view_layer.update()
+        rot = {o.name: o.matrix_world.to_quaternion() for o in candidates}
+        for m in [o for o in bpy.context.scene.objects if o.type == 'MESH']:
+            movers = [c for c in candidates
+                      if scene_utils._is_descendant(m, c)
+                      or m in scene_utils.get_bound_meshes(c)]
+            if len(movers) < 2:
+                continue
+            odd = [c.name for c in movers[1:]
+                   if not scene_utils.rotations_equal(rot[movers[0].name], rot[c.name])]
+            if odd:
+                raise ValueError(
+                    "mesh %r is attached to armature(s) %s, which do not share an "
+                    "object rotation. It rides one and deforms with another, so no "
+                    "single delta places it correctly and the export would ship it "
+                    "off the skeleton it deforms with (measured: 2.0). Give those "
+                    "armatures equal object rotations, un-share the mesh, or scope "
+                    "the export to one rig (armature_obj=...)"
+                    % (m.name, ", ".join(repr(c.name) for c in movers)))
 
     if armature_obj is not None:
         scale_scope = [armature_obj] + scene_utils.get_bound_meshes(armature_obj)
@@ -301,50 +377,112 @@ def export_unity_fbx(filepath: str,
     # a modifier-bound NON-descendant mesh (a bound shape get_bound_meshes
     # supports) is carried by the same delta inside the helper — otherwise the
     # file would ship its geometry 180° off the skeleton.
+    # ONE delta moves every candidate, decided once — never a per-rig clear.
+    # A clear rotates a rig about its OWN origin (delta = T(o) R^-1 T(-o)), so
+    # rigs sharing a rotation but sitting at different origins get DIFFERENT
+    # deltas, and clearing each independently pulls them apart by
+    # (I - R^-1)(o_a - o_b). Measured through this function: two rigs at equal
+    # (0,0,-180) with origins 0.5 m apart wrote a file with them 1.0 m from where
+    # the scene had them. merge_armatures hit the same wall and its remedy is
+    # scene_utils.apply_world_delta — replay one rig's delta onto the others
+    # instead of clearing them about their own origins. #16 chose the pivot so
+    # "merge-then-export keeps agreeing with export-alone"; with a per-rig loop
+    # here they did not agree on a multi-rig scene. Now they do.
+    #
+    # It also makes the ``moved`` seed sound. Suppressing a mesh's explicit move
+    # is right only when the ride delivers the SAME delta — under per-rig clears
+    # it did not, and a 'preserved' or 'noop' rig delivers no motion at all, so a
+    # seeded descendant of one would simply be stranded.
     undo = []
-    # Seeded, not empty: a mesh parented to one candidate and modifier-bound to
-    # another rides along with its parent, so whichever rig the loop reaches
-    # first must not also move it explicitly, or it lands at delta**2 — 180 deg
-    # off both skeletons. The clear records the descendants it skips, which
-    # covers parent-first; scene order decides which comes first, so seed the
-    # whole set up front rather than depending on it.
     moved = set()
-    for o in candidates:
-        moved |= scene_utils.carried_by_parenting(o)
     try:
-        for o in candidates:
-            # matrix_world is stale after a direct rotation write, and this read
-            # is an oracle now (the tests assert on the emitted line), so a caller
-            # that set rotation_euler and exported without an update would print
-            # one rotation while the gate decided on another.
-            bpy.context.view_layer.update()
-            old_rot = tuple(round(math.degrees(a), 3)
-                            for a in o.matrix_world.to_euler())
-            # Report on ``status``, never on ``delta``: a preserved residue
-            # returns an IDENTITY delta, so a delta-keyed message goes silent on
-            # exactly the class this gate exists for.
-            status, _delta, u = scene_utils.clear_axis_convention_rotation(o, moved)
-            undo += u
-            if status == 'cleared':
-                print("AVATARPREP: export cleared object rotation on %r "
-                      "(was %s deg; axis-convention residue about the up axis — "
-                      "pass keep_object_rotation=True if it was deliberate; see "
-                      "export_unity_fbx's orientation docstring)"
-                      % (o.name, old_rot))
-            elif status == 'preserved':
-                # Says the rotation is preserved WHOLE, not that it is purely an
-                # up-axis conversion: a rotation that also spins about the up axis
-                # keeps that spin too, and would export front-reversed. Claiming
-                # purity here would be false for exactly that residue, and this
-                # line is the only signal the reader gets.
-                print("AVATARPREP: export preserved object rotation on %r "
-                      "(%s deg) whole — it moves the up axis, so clearing it "
-                      "would export the rig tipped onto its face. Any rotation "
-                      "about the up axis it also carries is preserved with it, "
-                      "so check facing if that value is not a pure axis swap "
-                      "(see export_unity_fbx's orientation docstring)"
-                      % (o.name, old_rot))
+        if candidates:
+            bpy.context.view_layer.update()  # matrix_world is stale after direct writes
+            quats = [o.matrix_world.to_quaternion() for o in candidates]
+            ref = candidates[0]
+            odd = [candidates[i].name for i in range(1, len(candidates))
+                   if not scene_utils.rotations_equal(quats[0], quats[i])]
+            if odd:
+                # No single delta can serve rigs whose rotations genuinely differ.
+                # Warned, not refused: independent props legitimately share a
+                # scene at unrelated rotations and export fine today, and this is
+                # the one branch where the file cannot preserve relative layout.
+                # A mesh SHARED across two such rigs has no correct placement at
+                # all, so that narrower case is refused below.
+                print("AVATARPREP: export WARNING — armatures %s do not share "
+                      "%r's object rotation, so no single delta can neutralise "
+                      "them all. Each is cleared about its own origin, which "
+                      "moves them relative to one another in the written file by "
+                      "(I - R^-1)(o_a - o_b). Give them equal rotations, or "
+                      "export one rig at a time (armature_obj=...), if their "
+                      "relative layout matters"
+                      % (", ".join(repr(n) for n in odd), ref.name))
+                for o in candidates:
+                    moved |= scene_utils.carried_by_parenting(o)
+                for o in candidates:
+                    bpy.context.view_layer.update()
+                    old_rot = tuple(round(math.degrees(a), 3)
+                                    for a in o.matrix_world.to_euler())
+                    status, _delta, u = scene_utils.clear_axis_convention_rotation(o, moved)
+                    undo += u
+                    _report_rotation(status, o.name, old_rot)
+            else:
+                # Equal rotations: the helper returns the same verdict for every
+                # candidate, so decide on ``ref`` and replay its delta.
+                #
+                # Seed from EVERY candidate, ref included. A mesh descendant rides
+                # whichever candidate it hangs under, so no other candidate may
+                # move it explicitly — and ref's own clear cannot be relied on to
+                # record its descendants, because it only walks
+                # ``get_bound_meshes(ref)`` and a mesh deeper than two levels (or
+                # bound to a different rig entirely) is not in that set. Measured:
+                # seeding only ``candidates[1:]`` left a depth-3 descendant of ref
+                # to be re-moved by the carry, landing it at delta**2, 1.0 off the
+                # skeleton it deforms with.
+                for o in candidates:
+                    moved |= scene_utils.carried_by_parenting(o)
+                old_rot = tuple(round(math.degrees(a), 3)
+                                for a in ref.matrix_world.to_euler())
+                # Report on ``status``, never on ``delta``: a preserved residue
+                # returns an IDENTITY delta, so a delta-keyed message goes silent
+                # on exactly the class this gate exists for.
+                status, delta, u = scene_utils.clear_axis_convention_rotation(ref, moved)
+                undo += u
+                _report_rotation(status, ref.name, old_rot,
+                                 also=[o.name for o in candidates[1:]])
+                if status == 'cleared':
+                    for o in candidates[1:]:
+                        undo += scene_utils.apply_world_delta(o, delta, moved)
         bpy.ops.export_scene.fbx('EXEC_DEFAULT', **kwargs)
     finally:
         scene_utils.restore_transforms(undo)
     return filepath
+
+
+def _report_rotation(status, name, old_rot, also=None):
+    """Emit the one ``AVATARPREP:`` line the rotation gate's verdict earns.
+
+    Split out so the equal-rotation path and the differing-rotation fallback
+    cannot drift apart in wording — the tests assert on these lines."""
+    carried = ("" if not also else
+               " %s carried by the same delta, so the rigs stay rigid."
+               % ", ".join(repr(n) for n in also))
+    if status == 'cleared':
+        print("AVATARPREP: export cleared object rotation on %r "
+              "(was %s deg; axis-convention residue about the up axis — "
+              "pass keep_object_rotation=True if it was deliberate; see "
+              "export_unity_fbx's orientation docstring).%s"
+              % (name, old_rot, carried))
+    elif status == 'preserved':
+        # Says the rotation is preserved WHOLE, not that it is purely an up-axis
+        # conversion: a rotation that also spins about the up axis keeps that
+        # spin too, and would export front-reversed. Claiming purity here would
+        # be false for exactly that residue, and this line is the only signal the
+        # reader gets.
+        print("AVATARPREP: export preserved object rotation on %r "
+              "(%s deg) whole — it moves the up axis, so clearing it "
+              "would export the rig tipped onto its face. Any rotation "
+              "about the up axis it also carries is preserved with it, "
+              "so check facing if that value is not a pure axis swap "
+              "(see export_unity_fbx's orientation docstring)"
+              % (name, old_rot))
