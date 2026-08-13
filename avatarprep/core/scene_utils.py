@@ -360,8 +360,8 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
     return closure
 
 
-# A scale within this of 1.0 is already normalised (serves _is_unit_scale and,
-# relatively, _is_uniform_scale). 1e-4 sits between two measured bands of the
+# A scale within this of 1.0 is already normalised — the deviation-from-1.0
+# predicate (_is_unit_scale) only. 1e-4 sits between two measured bands of the
 # vendor-base corpus (131 FBX surveyed; Y:\VROutfits outfits NOT surveyed, so
 # these bands are avatar-base facts): exporter float noise tops out at 2.9e-6
 # spread (22 meshes on one Sio file; 6 distinct files over the old 1e-6, which
@@ -370,6 +370,16 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
 # 1.5e-2 spread (Uruki's non-uniform accessories) and 0.9 uniform — two orders
 # of margin on each side.
 _SCALE_EPS = 1e-4
+
+# The SPREAD predicate (_is_uniform_scale) keeps the old, tighter threshold.
+# Its max(1.0, max|c|) floor makes the tolerance ABSOLUTE at sub-unit
+# magnitudes, so inheriting _SCALE_EPS's 1e-4 would loosen the shear gate 100x
+# in RELATIVE terms on the cm-unit class (0.01-magnitude scales, 42 of the 131
+# surveyed files) — a band the eps measurement above never covered (its spreads
+# were read at ~unit magnitudes). 1e-6 keeps the shear gate's measured
+# behavior; the corpus noise files still export without baking via
+# _is_unit_scale alone, and their childless meshes never reach the shear test.
+_UNIFORM_EPS = 1e-6
 _DEGENERATE_EPS = 1e-9  # below this a component destroys geometry, not scales it
 
 # Object types ``transform_apply`` has no data to write into. Blender only
@@ -598,7 +608,7 @@ def _is_unit_scale(scale) -> bool:
 
 
 def _is_uniform_scale(scale) -> bool:
-    return max(scale) - min(scale) <= _SCALE_EPS * max(1.0, max(abs(c) for c in scale))
+    return max(scale) - min(scale) <= _UNIFORM_EPS * max(1.0, max(abs(c) for c in scale))
 
 
 def _descendants(obj):

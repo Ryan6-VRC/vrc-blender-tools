@@ -52,9 +52,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--blender", default=os.environ.get("BLENDER"))
     ap.add_argument("--only", action="append", metavar="SUITE",
-                    help="run just the named suite file(s); the completeness "
-                         "check still runs, so a partial run cannot pose as "
-                         "the gate")
+                    help="run just the named suite file(s); the run then "
+                         "reports PARTIAL, never 'RUN_ALL OK' — a partial run "
+                         "is not the gate")
     args = ap.parse_args()
     if not args.blender or not os.path.isfile(args.blender):
         print("RUN_ALL FAIL: no Blender binary — pass --blender or set BLENDER "
@@ -91,10 +91,16 @@ def main():
             code = proc.returncode
         except subprocess.TimeoutExpired:
             out, code = "", None
-        ok = code == 0 and ("%s OK" % token) in out
+        # Whole-line anchor, not a substring: Blender exits 0 on an unhandled
+        # script exception, so the token is the only trustworthy signal — and a
+        # SyntaxError beside the OK print echoes that source line into the
+        # traceback, where a substring match would read the crash as a pass.
+        token_ok = any(ln.strip().startswith("%s OK" % token)
+                       for ln in out.splitlines())
+        ok = code == 0 and token_ok
         print("RUN_ALL %-28s %s (exit=%s, token=%s)"
               % (suite, "PASS" if ok else "FAIL", code,
-                 "seen" if ("%s OK" % token) in out else "MISSING"))
+                 "seen" if token_ok else "MISSING"))
         if not ok:
             failures.append(suite)
             tail = [ln for ln in out.splitlines() if ln.strip()][-15:]
@@ -105,7 +111,13 @@ def main():
     if failures:
         print("RUN_ALL FAIL:", ", ".join(failures))
         sys.exit(1)
-    print("RUN_ALL OK")
+    if args.only:
+        # Never the gate's verdict line — anything grepping for the gate must
+        # not mistake a hand-picked subset for a full pass.
+        print("RUN_ALL PARTIAL %d/%d — not the gate"
+              % (len(selected), len(SUITES)))
+    else:
+        print("RUN_ALL OK")
 
 
 if __name__ == "__main__":

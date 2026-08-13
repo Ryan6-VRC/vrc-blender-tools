@@ -80,7 +80,9 @@ def export_unity_fbx(filepath: str,
     disposable reference body never ships; own-base merges to one rig first),
     and no surveyed vendor file imports more than one armature. Merge the rigs
     first (``merge_armatures``), scope to one (``armature_obj``), or pass
-    ``keep_object_rotation=True`` to export every transform as-is.
+    ``keep_object_rotation=True`` to export every object ROTATION as-is —
+    the scale bake below still runs there (``bake_object_scale=False`` is its
+    own, separate opt-out).
     Note also that nothing in the ``avatarprep_`` stamp
     namespace records which frame the data is in; that is why a merge that bakes a
     wrong frame into the ``.blend`` (see ``merge_armatures``) is unrecoverable
@@ -250,11 +252,14 @@ def export_unity_fbx(filepath: str,
         raise ValueError(
             "%d armatures are in this export's scope (%s), and this export "
             "handles exactly one. Merge the rigs into one first "
-            "(merge_armatures), or delete the extra armature; from the "
-            "CLI/API, scope the export to one rig (--armature / "
-            "armature_obj=...); or pass keep_object_rotation=True to export "
-            "every transform as-is. See export_unity_fbx's orientation "
-            "docstring."
+            "(merge_armatures), or delete the extra armature AND its meshes "
+            "(deleting the armature alone leaves its meshes to ship "
+            "silently); from the CLI/API, scope the export to one rig "
+            "(--armature / armature_obj=...); or pass "
+            "keep_object_rotation=True to export every object ROTATION as-is "
+            "(the object-scale bake still runs and is permanent — "
+            "bake_object_scale=False / --no-bake-scale skips it). See "
+            "export_unity_fbx's orientation docstring."
             % (len(candidates),
                ", ".join(sorted(repr(o.name) for o in candidates))))
     # Refuse a parented armature rather than guess which frame the gate should
