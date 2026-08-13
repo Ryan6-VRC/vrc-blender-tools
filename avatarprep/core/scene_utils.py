@@ -371,15 +371,23 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
 # of margin on each side.
 _SCALE_EPS = 1e-4
 
-# The SPREAD predicate (_is_uniform_scale) keeps the old, tighter threshold.
-# Its max(1.0, max|c|) floor makes the tolerance ABSOLUTE at sub-unit
-# magnitudes, so inheriting _SCALE_EPS's 1e-4 would loosen the shear gate 100x
-# in RELATIVE terms on the cm-unit class (0.01-magnitude scales, 42 of the 131
-# surveyed files) — a band the eps measurement above never covered (its spreads
-# were read at ~unit magnitudes). 1e-6 keeps the shear gate's measured
-# behavior; the corpus noise files still export without baking via
-# _is_unit_scale alone, and their childless meshes never reach the shear test.
-_UNIFORM_EPS = 1e-6
+# How much composed shear the bake may drop, RELATIVE to the matrix's own
+# magnitude (``_composed_shear`` normalises; its docstring owns why that quantity
+# is the exact one). Relative is required, not a refinement: the same physical
+# shape reads 4.35e-1 of ABSOLUTE shear at unit magnitude and 4.35e-3 on a
+# cm-unit rig while moving the identical 0.216 m, so an absolute threshold is at
+# once 100x too loose on the cm-unit class (42 of the 131 surveyed files) and
+# tight enough to refuse pure float noise on a 100x rig, which reaches 7.6e-6
+# absolute. Relative reads 2.7515e-1 at every magnitude.
+#
+# 1e-5 sits 32x over the measured noise ceiling (3.13e-7 across 342 random
+# hierarchies, including the residue a 90/180 deg signed permutation leaves), 10x
+# over the noise-band (1+2.9e-6 spread) + 45 deg shape that must be ADMITTED at
+# 1.07e-6, and three orders under the 1.31e-2 a real 1 deg rotation composes.
+# Displacement is linear in shear (~1.9x), so this admits ~20 um on a 1 m rig —
+# two orders under ``_POSE_TRANSLATION_TOL``, the movement this file already
+# treats as negligible.
+_SHEAR_EPS = 1e-5
 _DEGENERATE_EPS = 1e-9  # below this a component destroys geometry, not scales it
 
 # Object types ``transform_apply`` has no data to write into. Blender only
@@ -443,14 +451,15 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     applying a parent pushes its scale onto a child that reads 1.0 today, so a
     child can become an offender during the run.
 
-    **Evaluates the depsgraph first.** Every other condition here reads direct
-    RNA (``o.scale``, ``o.delta_scale``, ``o.constraints``), which is never
-    stale; the out-of-scope-ancestor condition below reads ``matrix_world``,
-    which is. Measured on 5.2.0: setting ``h.scale = (2,2,2)`` then reading
-    ``h.matrix_world.to_scale()`` without an update returns ``(1,1,1)``, so that
-    refusal would silently pass for any caller setting a scale and exporting in
-    one go. ``view_layer.update()`` evaluates, it does not mutate, so the
-    reads-only contract above still holds.
+    **Evaluates the depsgraph first.** Most conditions here read direct RNA
+    (``o.scale``, ``o.delta_scale``, ``o.constraints``), which is never stale; the
+    out-of-scope-ancestor and shear conditions below read ``matrix_world``, which
+    is. Measured on 5.2.0: setting ``h.scale = (2,2,2)`` then reading
+    ``h.matrix_world.to_scale()`` without an update returns ``(1,1,1)``, so those
+    refusals would silently pass for any caller setting a transform and exporting
+    in one go — the shear one reading a flat 0.0 on a scene composing 0.275.
+    ``view_layer.update()`` evaluates, it does not mutate, so the reads-only
+    contract above still holds.
     """
     bpy.context.view_layer.update()
 
@@ -584,72 +593,96 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
                     "channels). Clear the pose, or apply it into the rest pose, "
                     "before exporting" % (name, tuple(round(c, 6) for c in scale), err))
 
-        # A non-uniform scale on an ancestor composes with a rotated descendant
-        # into a SHEARED world matrix. ``transform_apply`` re-decomposes into
-        # loc/rot/scale, which cannot represent shear, so it is silently dropped
-        # and the geometry moves (measured: 0.041 m on a 2x-in-X rig with a 45
-        # deg-rotated child). The object's OWN rotation is safe — scale is
-        # innermost in ``loc @ rot @ scale`` — so this is a descendant question.
-        #
-        # ``has_own_rotation``, not ``rotation_euler``: those are separate RNA
-        # fields, and this gate read the wrong one until now. Measured on the
-        # 2x-in-X parent with a 45 deg-rotated child, all three shapes compose the
-        # same 0.4350 of world shear while ``rotation_euler`` reads (0,0,0), so
-        # this condition silently passed every one of them —
-        # ``QUATERNION`` mode, ``AXIS_ANGLE`` mode, and a rotation carried in
-        # ``delta_rotation_euler`` (which ``matrix_basis`` includes and the euler
-        # field does not). The delta case is the rotation twin of the
-        # ``delta_scale`` refusal above.
-        #
-        # The determinant guard is what makes ``has_own_rotation`` safe HERE, and
-        # it is not optional. That helper reads a quaternion off ``matrix_basis``,
-        # which is a proper rotation only when the basis is rotation x POSITIVE
-        # scale. Measured, with the child's rotation identity in every channel: a
-        # child at scale (-1,1,1) decomposes to "180 deg about X" (det -1.0), and
-        # one at (0,1,1) to a quaternion one float32 ulp off identity (det +0.0) —
-        # both read as rotated, both compose 0.000000 of actual shear. Unguarded,
-        # this condition then fires FIRST (``hierarchy_ordered`` is
-        # parent-before-child) and shadows the two refusals that diagnose those
-        # objects correctly — the degenerate-scale one and the mirror one above —
-        # leaving the user a message naming a rotation the object does not have and
-        # a remedy (clear the descendant's rotation) that cannot work.
-        #
-        # Skipping a mirrored descendant here loses no refusal even when it DOES
-        # carry a real rotation: ``hierarchy_ordered`` returns "objects plus every
-        # descendant", so every candidate skipped is itself in ``closure`` and
-        # meets those same two refusals on its own turn, with the accurate message.
-        #
-        # The eps loosens from 1e-6 rad to ``_ROT_EQUAL_EPS`` and nothing moves
-        # with it: swept 1e-4 deg to 1 deg, the two tests agree at every step
-        # (``.angle`` has a float32 floor and reads exactly 0.0 at 0.01 deg), so no
-        # micrometre-residue import changes verdict.
-        #
-        # Reachability, stated to what was actually measured: the 11 staged
-        # fixtures (180 imported objects) were surveyed on ``rotation_mode``, which
-        # read ``XYZ`` throughout with the two idioms agreeing. That is evidence
-        # about the MODE widening only — the survey axis cannot see reflection or
-        # degeneracy, which is why those are settled by the measurement above
-        # rather than by it.
-        if not _is_uniform_scale(scale):
-            skewed = [c.name for c in _descendants(o)
-                      if c.matrix_basis.to_3x3().determinant() > _DEGENERATE_EPS
-                      and has_own_rotation(c)]
-            if skewed:
-                raise ValueError(
-                    "%r has non-uniform scale %r with rotated descendant(s) %s; the "
-                    "composed world matrix is sheared, and baking drops the shear "
-                    "silently (measured: 0.041 m of geometry movement). Make the "
-                    "scale uniform, or clear the descendants' rotations, before "
-                    "exporting" % (name, tuple(round(c, 6) for c in scale),
-                                   ", ".join(repr(n) for n in skewed[:4])))
+    # SHEAR, measured rather than inferred. A non-uniform scale anywhere above an
+    # object composes into a world matrix carrying shear; ``transform_apply``
+    # re-decomposes into loc/rot/scale, which cannot represent it, so it is dropped
+    # silently and the geometry moves (measured: 0.041 m on a 2x-in-X rig with a
+    # 45 deg-rotated child). The object's OWN rotation is safe — scale is innermost
+    # in ``loc @ rot @ scale`` — which is why this reads descendants, not ``o``.
+    #
+    # Measured, NOT inferred from "non-uniform ancestor AND rotated descendant".
+    # That conjunction is a proxy on both sides. It over-refuses: a rotation about
+    # an axis whose two perpendicular scale components are equal commutes with that
+    # scale and composes exactly zero shear, as does any 90/180 deg rotation about
+    # any axis (a signed permutation maps the scale frame onto itself) — 14 of 75
+    # swept shapes read 0.000000 and refused. And it under-refuses, which is the
+    # half that shipped a bug: shear entering through a sheared
+    # ``matrix_parent_inverse`` has no rotated descendant and no non-uniform
+    # ancestor to key on, so a UNIFORM (2,2,2) parent over an UNROTATED child was
+    # measured passing this gate and moving geometry 0.077 m.
+    #
+    # One pass over the closure, not one per (ancestor, descendant) pair: shear does
+    # not depend on which ancestor is asking, and the pairwise form costs 0.096 s
+    # against 0.0023 s on a 590-object closure (10 s on a deep chain) for an
+    # identical offender set.
+    #
+    # Roots are skipped because only a COMPENSATED child loses shear — a root's
+    # basis is never rewritten, so it has nothing to drop. An object whose parent is
+    # out of scope is a root here for the same reason, and the out-of-scope-ancestor
+    # condition above already owns that case with a message about scoping.
+    #
+    # The own-scale guard is what the old determinant guard was really for, restated
+    # as the thing it was approximating. A mirrored or degenerate descendant is
+    # itself in ``closure`` and meets the mirror or zero-component refusal on its own
+    # turn with the accurate message; measured, a child at (-1,1,1) rotated 45 deg
+    # under a (2,1,1) parent composes 2.75e-1 of REAL shear, so without this it is
+    # refused here first and handed a remedy that only half-works. It also keeps
+    # ``_composed_shear``'s division safe: a child at (0,0,0) decomposes to a zero
+    # scale. Running AFTER the per-object loop is the other half — by then every
+    # mirrored and degenerate object has already raised — and the two together mean
+    # neither a reorder nor a future caller can reintroduce either failure.
+    sheared = [(c.name, _composed_shear(c)) for c in closure
+               if c.parent is not None and c.parent.name in in_scope
+               and all(abs(v) > _DEGENERATE_EPS and v > 0 for v in c.scale)]
+    # ``not (s <= eps)`` rather than ``s > eps``: NaN compares False either way, and
+    # this direction refuses it instead of waving it through.
+    sheared = [(n, s) for n, s in sheared if not (s <= _SHEAR_EPS)]
+    if sheared:
+        raise ValueError(
+            "%s carr%s composed shear a loc/rot/scale decomposition cannot "
+            "represent, over the %g this bake may drop; ``transform_apply`` drops "
+            "it silently and the geometry moves with it (measured: 0.041 m on a "
+            "2x-in-X parent with a 45 deg-rotated child; movement scales with the "
+            "figure reported here). Make the non-uniform scale above %s uniform, "
+            "clear %s own rotation, or clear %s parent inverse (Object > Parent > "
+            "Clear Parent Inverse), before exporting"
+            % (", ".join("%r (shear %.6f)" % (n, s) for n, s in sorted(
+                   sheared, key=lambda t: -t[1])[:4]),
+               "ies" if len(sheared) == 1 else "y",
+               _SHEAR_EPS,
+               "it" if len(sheared) == 1 else "them",
+               "its" if len(sheared) == 1 else "their",
+               "its" if len(sheared) == 1 else "their"))
 
 
 def _is_unit_scale(scale) -> bool:
     return all(abs(c - 1.0) <= _SCALE_EPS for c in scale)
 
 
-def _is_uniform_scale(scale) -> bool:
-    return max(scale) - min(scale) <= _UNIFORM_EPS * max(1.0, max(abs(c) for c in scale))
+def _composed_shear(obj) -> float:
+    """How much of ``obj``'s composed world matrix a loc/rot/scale decomposition
+    cannot represent, relative to the matrix's own magnitude.
+
+    This is the EXACT quantity the bake drops, not a bound on it. ``transform_apply``
+    folds ``matrix_parent_inverse`` into the compensated child's basis and resets it
+    to identity (measured), so the matrix Blender re-decomposes is
+    ``parent_world_after^-1 @ matrix_world`` — and ``hierarchy_ordered`` being
+    parent-first means every in-scope ancestor is already unit-scale by then, making
+    that prefactor rigid. A rigid prefactor preserves shear, so the composed read and
+    the dropped quantity are equal. Measured across 342 random hierarchies (depth 2-5,
+    Keep-Transform parenting, bone parenting, 0.01x-100x magnitudes): zero cases where
+    this read ~0 while the bake moved geometry.
+
+    Reads ``matrix_world``, which is depsgraph-derived and therefore stale after a
+    direct write — safe only because ``check_scale_normalizable`` evaluates first;
+    its docstring owns that contract.
+    """
+    m = obj.matrix_world
+    loc, rot, sca = m.decompose()
+    rec = (mathutils.Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
+           @ mathutils.Matrix.Diagonal(sca.to_4d()))
+    delta = max(abs(m[r][c] - rec[r][c]) for r in range(3) for c in range(3))
+    return delta / max(abs(c) for c in sca)
 
 
 def _descendants(obj):
@@ -697,8 +730,9 @@ def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
     displacing them 0.25-0.30 m the deformed result moves 2.4e-07 / 3.6e-07 m
     across the apply, against 1.5e-07 on an untouched control on the same rig.
     It is **not** exact for a posed armature's translation channels, nor under
-    shear from a non-uniform ancestor — both refused above rather than absorbed,
-    because both were measured to move geometry by metres.
+    shear a loc/rot/scale decomposition cannot carry, from wherever it composes —
+    both refused above rather than absorbed, because both were measured to move
+    geometry by metres.
 
     Scope and ordering are :func:`hierarchy_ordered`'s.
     """

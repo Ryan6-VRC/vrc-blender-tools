@@ -127,9 +127,12 @@ def export_unity_fbx(filepath: str,
     them — ``check_scale_normalizable`` runs first and refuses the rest. Two of
     those refusals exist because the bake was measured to move geometry by metres
     rather than relocate a number: a posed armature (the bake rescales rest bones
-    but not pose translation channels — 9.9 m on a 0.01 rig) and shear from a
-    non-uniform scale over a rotated descendant (0.041 m, silently dropped in the
-    re-decomposition).
+    but not pose translation channels — 9.9 m on a 0.01 rig) and a composed shear
+    the re-decomposition cannot carry, so it is silently dropped (0.041 m on a
+    non-uniform scale over a rotated descendant, which is the shape that motivates
+    it but not the only one that composes it — measured 0.077 m on a UNIFORM
+    parent whose child carried a sheared ``matrix_parent_inverse``, which is why
+    the gate measures the composed matrix instead of keying on those two).
 
     A third refuses for a different reason — the layout promise above simply
     cannot be kept. An ancestor OUTSIDE this export's scope is neither baked nor
