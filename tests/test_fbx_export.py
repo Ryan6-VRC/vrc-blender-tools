@@ -399,6 +399,27 @@ def main():
     _refuses(_sheared_delta, "sheared",
              "non-uniform scale over a delta_rotation-only descendant")
 
+    # 11b. ...and must not shadow the refusals that name a mirrored or degenerate
+    # descendant correctly. has_own_rotation reads matrix_basis, which is a proper
+    # rotation only under POSITIVE scale: measured, an UNROTATED child at
+    # (-1,1,1) decomposes to "180 deg about X" and one at (0,1,1) to a quaternion
+    # an ulp off identity, both composing 0.000000 of actual shear. The shear
+    # condition sees them first (hierarchy_ordered is parent-before-child), so
+    # without the determinant guard the user gets a message naming a rotation the
+    # object does not have, and told to clear a rotation that is not there.
+    # Asserts the OFFENDER and the REMEDY, not just that something refused.
+    def _mirrored_under_nonuniform(a):
+        a.scale = (2.0, 1.0, 1.0)
+        bpy.data.objects["Body"].scale = (-1.0, 1.0, 1.0)
+    _refuses(_mirrored_under_nonuniform, "negative (mirrored) scale",
+             "a mirrored descendant under a non-uniform parent")
+
+    def _degenerate_under_nonuniform(a):
+        a.scale = (2.0, 1.0, 1.0)
+        bpy.data.objects["Body"].scale = (0.0, 1.0, 1.0)
+    _refuses(_degenerate_under_nonuniform, "zero scale component",
+             "a degenerate descendant under a non-uniform parent")
+
     def _zero(a):
         bpy.data.objects["Body"].scale = (0.0, 1.0, 1.0)
     _refuses(_zero, "zero scale component", "a zero scale component")
