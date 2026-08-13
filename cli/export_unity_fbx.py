@@ -4,7 +4,8 @@ Run with::
 
     blender <in.blend> --background --factory-startup \
         --python cli/export_unity_fbx.py -- --in <in.blend> --out <out.fbx> \
-        [--armature <name>] [--no-embed] [--keep-object-rotation]
+        [--armature <name>] [--no-embed] [--keep-object-rotation] \
+        [--no-bake-scale]
 
 Loads ``--in``, enables AvatarPrep from the bundled source package, and writes
 ``--out`` using the CATS export recipe. By default an armature object rotation is
@@ -48,7 +49,13 @@ def _parse_args():
                    action="store_true",
                    help="Export the armature object rotation as-is, skipping the "
                         "axis-convention gate (which otherwise clears an up-axis-"
-                        "preserving rotation and keeps an up-axis-moving one)")
+                        "preserving rotation and keeps an up-axis-moving one). "
+                        "The object-scale bake still runs — --no-bake-scale is "
+                        "its own opt-out")
+    p.add_argument("--no-bake-scale", dest="no_bake_scale", action="store_true",
+                   help="Do not bake parked object scale into object data (the "
+                        "bake is otherwise PERMANENT for the loaded scene); the "
+                        "written file then carries the parked scale on its nodes")
     return p.parse_args(argv)
 
 
@@ -69,14 +76,16 @@ def main():
                   % args.armature)
             sys.exit(1)
         armature = arm
-    else:
-        # Whole-scene export is valid, but an owned .blend that appended a
-        # disposable base-body reference would silently bake that second rig into
-        # the FBX. Warn loud (not fatal — multi-object scenes are legitimate).
+    elif args.keep_object_rotation:
+        # --keep-object-rotation is the one door that still whole-scene-exports a
+        # multi-armature scene (the gated path refuses it — core docstring). An
+        # owned .blend that appended a disposable base-body reference would
+        # silently ship that second rig, so name what is about to ship.
         arms = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
         if len(arms) > 1:
             print("AVATARPREP: WARNING %d armatures in scene (%s); exporting WHOLE "
-                  "SCENE — pass --armature <name> to scope to one rig"
+                  "SCENE (rotations as-is; parked scale still bakes unless "
+                  "--no-bake-scale) — pass --armature <name> to scope to one rig"
                   % (len(arms), ", ".join(sorted(a.name for a in arms))))
 
     out_path = os.path.abspath(args.out_path)
@@ -87,7 +96,8 @@ def main():
     try:
         fbx_export.export_unity_fbx(out_path, armature_obj=armature,
                                     embed_textures=not args.no_embed,
-                                    keep_object_rotation=args.keep_object_rotation)
+                                    keep_object_rotation=args.keep_object_rotation,
+                                    bake_object_scale=not args.no_bake_scale)
     except ValueError as e:  # e.g. non-unit scene scale_length (layout refusal)
         print("AVATARPREP: ERROR", e)
         sys.exit(1)

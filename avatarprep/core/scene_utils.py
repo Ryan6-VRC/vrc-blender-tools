@@ -200,8 +200,9 @@ _ROT_EQUAL_EPS = 1e-9
 def rotations_equal(qa, qb) -> bool:
     """True when two world rotations are equal up to double-cover and float noise.
 
-    Shared so the export and merge paths answer "can one delta serve both rigs?"
-    identically; ``merge_armatures`` states the reasoning at its own call site."""
+    ``merge_armatures`` asks it of its two rigs and states the reasoning at its
+    own call site; ``has_own_rotation`` reuses it as the double-cover-safe
+    identity compare."""
     return 1.0 - abs(qa.dot(qb)) < _ROT_EQUAL_EPS
 
 
@@ -359,7 +360,26 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
     return closure
 
 
-_SCALE_EPS = 1e-6      # a scale within this of 1.0 is already normalised
+# A scale within this of 1.0 is already normalised — the deviation-from-1.0
+# predicate (_is_unit_scale) only. 1e-4 sits between two measured bands of the
+# vendor-base corpus (131 FBX surveyed; Y:\VROutfits outfits NOT surveyed, so
+# these bands are avatar-base facts): exporter float noise tops out at 2.9e-6
+# spread (22 meshes on one Sio file; 6 distinct files over the old 1e-6, which
+# made every export of them permanently "bake" pure noise and print the
+# permanent-mutation line about it), while the smallest AUTHORED values sit at
+# 1.5e-2 spread (Uruki's non-uniform accessories) and 0.9 uniform — two orders
+# of margin on each side.
+_SCALE_EPS = 1e-4
+
+# The SPREAD predicate (_is_uniform_scale) keeps the old, tighter threshold.
+# Its max(1.0, max|c|) floor makes the tolerance ABSOLUTE at sub-unit
+# magnitudes, so inheriting _SCALE_EPS's 1e-4 would loosen the shear gate 100x
+# in RELATIVE terms on the cm-unit class (0.01-magnitude scales, 42 of the 131
+# surveyed files) — a band the eps measurement above never covered (its spreads
+# were read at ~unit magnitudes). 1e-6 keeps the shear gate's measured
+# behavior; the corpus noise files still export without baking via
+# _is_unit_scale alone, and their childless meshes never reach the shear test.
+_UNIFORM_EPS = 1e-6
 _DEGENERATE_EPS = 1e-9  # below this a component destroys geometry, not scales it
 
 # Object types ``transform_apply`` has no data to write into. Blender only
@@ -459,6 +479,12 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     # the nearest out-of-scope ancestor per boundary edge is complete: the
     # closure is downward-only, so a chain leaving it does so at exactly one
     # edge, and ``matrix_world`` carries everything above that edge.
+    #
+    # SCALE only, deliberately: an out-of-scope ancestor's ROTATION composes
+    # faithfully into the root-ified child's node — the written world transform
+    # is the one the scene had — so there is nothing to refuse there. Scale is
+    # refused because it collapses into the child's node as the very layout this
+    # function exists to remove.
     for o in closure:
         p = o.parent
         if p is None or p.name in in_scope:
@@ -582,7 +608,7 @@ def _is_unit_scale(scale) -> bool:
 
 
 def _is_uniform_scale(scale) -> bool:
-    return max(scale) - min(scale) <= _SCALE_EPS * max(1.0, max(abs(c) for c in scale))
+    return max(scale) - min(scale) <= _UNIFORM_EPS * max(1.0, max(abs(c) for c in scale))
 
 
 def _descendants(obj):
@@ -623,8 +649,10 @@ def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
     **Where the bake is exact, and where it is not.** For a mesh's own object
     scale it is exact even when non-uniform and even when skinned: armature
     deformation composes as ``M-1 D M v``, so baking ``S`` into the data leaves
-    the product invariant. Measured on the one library file shipping non-uniform
-    scale (``Uruki_Quad_v1.2``, ``C_hairpin`` / ``C_pouch``): under a pose
+    the product invariant. Measured on the one library asset shipping AUTHORED
+    non-uniform scale (``Uruki_Quad_v1.2``, ``C_hairpin`` / ``C_pouch``; five
+    further files read non-uniform only as exporter float noise, under
+    ``_SCALE_EPS`` and untouched): under a pose
     displacing them 0.25-0.30 m the deformed result moves 2.4e-07 / 3.6e-07 m
     across the apply, against 1.5e-07 on an untouched control on the same rig.
     It is **not** exact for a posed armature's translation channels, nor under
@@ -687,9 +715,10 @@ def carried_by_parenting(arm, scene: Optional[bpy.types.Scene] = None) -> set:
     delta. ``clear_axis_convention_rotation`` returns without moving anything on
     ``'preserved'`` and ``'noop'``, and it rotates each rig about its OWN origin,
     so per-rig clearing gives same-rotation rigs at differing origins DIFFERENT
-    deltas. Both callers therefore decide the axis class once and replay a single
-    delta (``export_unity_fbx``, ``merge_armatures``); seeding this into a
-    per-rig clearing loop would strand meshes instead of rescuing them."""
+    deltas. ``merge_armatures`` — the sole remaining caller; the export refuses
+    multi-rig scope outright — therefore decides the axis class once and replays
+    a single delta; seeding this into a per-rig clearing loop would strand
+    meshes instead of rescuing them."""
     if scene is None:
         scene = bpy.context.scene
     return {o.name for o in scene.objects
@@ -712,9 +741,9 @@ def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> list:
     the two rigs cannot disagree about what their shared rotation meant.
 
     Returns an ``undo`` list replayable by :func:`restore_transforms`, the same
-    shape ``clear_axis_convention_rotation`` returns. The merge apply path moves
-    permanently and drops it; ``export_unity_fbx`` restores after writing, so it
-    keeps it."""
+    shape ``clear_axis_convention_rotation`` returns. The merge apply path — the
+    sole caller since the export began refusing multi-rig scope — moves
+    permanently and drops it."""
     if already_moved is None:
         already_moved = set()
     bpy.context.view_layer.update()  # matrix_world is stale after direct writes

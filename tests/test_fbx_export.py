@@ -674,6 +674,29 @@ def main():
           "keep_object_rotation=True must not smuggle an out-of-scope scaled "
           "ancestor past the bake; got %r" % err)
 
+    # 14. The eps bands. _SCALE_EPS = 1e-4 sits between measured exporter float
+    # noise (2.9e-6 spread on 22 meshes of one vendor file; 6 corpus files over
+    # the old 1e-6) and the smallest authored values (1.5e-2 spread non-uniform,
+    # 0.9 uniform). The bake must SKIP the noise band — under 1e-6 every export
+    # of those files permanently rewrote real vendor meshes over pure float
+    # noise — and still catch authored scale.
+    _clear_scene()
+    arm = _make_rig()
+    body = scene_utils.get_bound_meshes(arm)[0]
+    body.scale = (1.0000029, 1.0, 0.9999987)   # the measured Sio/Kirsch band
+    bpy.context.view_layer.update()
+    applied = scene_utils.normalize_object_scale(
+        [arm] + scene_utils.get_bound_meshes(arm))
+    check(applied == [],
+          "a noise-band scale must not be baked (permanent mutation over float "
+          "noise); got %r" % (applied,))
+    body.scale = (0.9, 0.9, 0.9)               # nearest authored uniform value
+    bpy.context.view_layer.update()
+    applied = scene_utils.normalize_object_scale(
+        [arm] + scene_utils.get_bound_meshes(arm))
+    check(any(n == body.name for n, _ in applied),
+          "an authored 0.9 scale must still be baked; got %r" % (applied,))
+
     # Which checkout actually ran. An editable install records one absolute path,
     # so a second worktree can import the FIRST one's modules and report green on
     # changes it never loaded. Print the path, do not infer it from the cwd.
@@ -686,4 +709,7 @@ def main():
     sys.exit(0)
 
 
-main()
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _harness import run
+    run(main, "FBXEXPORT_TEST")
