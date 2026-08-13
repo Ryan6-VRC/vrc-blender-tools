@@ -632,6 +632,17 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     # out of scope is a root here for the same reason, and the out-of-scope-ancestor
     # condition above already owns that case with a message about scoping.
     #
+    # BONE and VERTEX parenting are measured, not excluded, but the reading is the
+    # composed WORLD one and a bone frame the bake never rewrites sits between
+    # parent and child — so for those the world read and the matrix the bake
+    # actually re-decomposes can diverge, and a bone frame whose shear cancels a
+    # sheared ``matrix_parent_inverse`` reads ~0 here while the local matrix still
+    # loses shear. Deliberately left unjudged rather than approximated: the exact
+    # local form needs a ``Diagonal(parent world scale) @ parent_inverse @ basis``
+    # prefactor this file has no measurement behind, and every claim here is
+    # measured. Object parenting — the shape every vendor import and every
+    # sanctioned workflow produces — is exact, per ``_composed_shear``.
+    #
     # Running AFTER the per-object loop is what keeps this from shadowing the mirror
     # and zero-component refusals, and it is sufficient on its own: that loop covers
     # the WHOLE closure, so a mirrored or degenerate object anywhere raises with its
