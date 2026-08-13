@@ -28,11 +28,9 @@ AvatarPrep is licensed **MIT** (see `LICENSE`). It was inspired by the now-dorma
    ```
 2. In Blender: **Edit → Preferences → Get Extensions → drop-down (top-right) → Install from Disk…** and pick the zip. (Or use `blender --command extension install-file -r user_default -e out/avatarprep-x.y.z.zip`.)
 3. In the 3D Viewport, open the **N-panel** (press `N`) and select the **AvatarPrep** tab. You get:
-   - **Apply Pose as Rest Pose** — select your armature, enter **Pose mode**,
-     pose it as desired, then click this button.
+   - **Apply Pose as Rest Pose** — select your armature, enter **Pose mode**, pose it as desired, then click this button.
    - **Export Unity FBX** — opens a file browser, exports with the CATS recipe.
-   - The panel also exposes the structural-**seam** ops — merge two armatures,
-     check their compatibility, and prune zero-weight bones.
+   - The panel also exposes the structural-**seam** ops — merge two armatures, check their compatibility, and prune zero-weight bones.
 
 ## 2. Headless / agent usage
 
