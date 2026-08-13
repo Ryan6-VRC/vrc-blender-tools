@@ -405,11 +405,12 @@ def main():
     # 11b. ...and must not shadow the refusals that name a mirrored or degenerate
     # descendant correctly. Both shapes have their own refusal, with an accurate
     # message and a remedy that works; the shear pass must not answer first with a
-    # message about shear. Two guards keep that true and BOTH are load-bearing —
-    # the pass runs after the per-object loop, and it skips non-positive own scale.
-    # The rotated variants below are why: unrotated, these compose 0.000000 and the
-    # shear pass would ignore them anyway, but at 45 deg they compose 2.75e-1 and
-    # 3.17e-1 of REAL shear, so ordering alone would still let shear answer first.
+    # message about shear. ORDERING is what keeps that true — the shear pass runs
+    # after a per-object loop covering the whole closure, so these raise before it
+    # is entered. The rotated variants below are why it matters: unrotated they
+    # compose 0.000000 and the shear pass would ignore them anyway, but at 45 deg
+    # they compose 2.75e-1 and 3.17e-1 of REAL shear, so a reorder would answer
+    # with shear and a remedy that only half-works.
     # Asserts the OFFENDER and the REMEDY, not just that something refused.
     def _mirrored_under_nonuniform(a):
         a.scale = (2.0, 1.0, 1.0)
@@ -524,6 +525,57 @@ def main():
     _refuses(_sheared_depth3, "composed shear",
              "a rotated grandchild under a non-uniform root")
 
+    # 11h. The shear reading must not be deflated by an unrelated large axis. Shear
+    # is per-column, so normalising the residual against max|scale| lets a big third
+    # axis hide it: measured, this shape read 4.35e-06 under max-normalisation and
+    # was ADMITTED while the bake moved geometry 0.082 m.
+    def _sheared_anisotropic(a):
+        a.scale = (2.0, 1.0, 100000.0)
+        bpy.data.objects["Body"].rotation_euler = (0, 0, 0.785398)
+    _refuses(_sheared_anisotropic, "composed shear",
+             "a rotated descendant under a wildly anisotropic parent")
+
+    # 11i. Nothing in scope will be baked, so no basis is rewritten and no shear is
+    # dropped — refusing here costs the user a rotation for nothing. The shear lives
+    # in a parent inverse, so the composed matrix reads 0.220534 either way; only
+    # "will anything actually be applied" separates this from 11e.
+    def _unbaked_parent_inverse(a):
+        a.scale = (1.0, 1.0, 1.0)
+        bpy.data.objects["Body"].matrix_parent_inverse = Matrix(
+            ((1.0, 0.5, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0),
+             (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+    _accepts(_unbaked_parent_inverse,
+             "a sheared parent inverse where the bake applies nothing")
+
+    # 11j. A degenerate COMPOSED frame must not divide by zero. The per-object
+    # zero-scale refusal cannot cover this: it reads authored local scale, which is
+    # unit here while the world decomposition is (0,0,0). The contract is a float
+    # (and a ValueError-only gate), not a ZeroDivisionError.
+    _clear_scene()
+    _arm2 = _make_rig()
+    _arm2.scale = (2.0, 1.0, 1.0)
+    _arm2.pose.bones["Root"].scale = (0.0, 0.0, 0.0)
+    _child = bpy.data.objects.new("BoneChild", None)
+    bpy.context.scene.collection.objects.link(_child)
+    _child.parent = _arm2
+    _child.parent_type = 'BONE'
+    _child.parent_bone = "Root"
+    bpy.context.view_layer.update()
+    check(scene_utils._is_unit_scale(tuple(_child.scale))
+          and max(abs(v) for v in _child.matrix_world.decompose()[2]) < 1e-9,
+          "fixture(composed-degenerate): local scale must read unit and the composed "
+          "frame degenerate, or this case tests nothing")
+    _crash = None
+    try:
+        scene_utils.check_scale_normalizable([_arm2])
+    except ValueError:
+        _crash = "ValueError"
+    except ZeroDivisionError:
+        _crash = "ZeroDivisionError"
+    check(_crash != "ZeroDivisionError",
+          "a degenerate composed frame must not raise ZeroDivisionError out of a "
+          "ValueError-only gate; got %s" % _crash)
+
     # 11g. The gate evaluates the depsgraph itself. matrix_world is stale after a
     # direct write, so a caller that scales and exports in one go would otherwise
     # get a flat 0.0 read on a scene composing 0.275 — the one failure direction
@@ -618,7 +670,7 @@ def main():
     # check_scale_normalizable's shear case, which normalize re-validates. Baking
     # first evaluates that guard before the rotation exists and after the parent
     # is already uniform, so the scene is correctly accepted — measured, the
-    # reordered run raises 'sheared' instead, with the clear having already
+    # reordered run raises the shear refusal instead, with the clear having already
     # mutated the scene and no file written.
     _clear_scene()
     arm = _make_rig()

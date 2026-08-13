@@ -357,7 +357,7 @@ def export_unity_fbx(filepath: str,
     #     too large, silently, with a byte-equivalent file.
     #   * The write gives the mesh a local rotation. Under a non-uniformly scaled
     #     PARENT that is ``check_scale_normalizable``'s shear case, which
-    #     ``normalize_object_scale`` re-validates: clear-first raises 'sheared'
+    #     ``normalize_object_scale`` re-validates: clear-first raises the shear refusal
     #     with the scene already mutated and no file, breaking the refusals-before-
     #     mutation invariant stated above.
     #

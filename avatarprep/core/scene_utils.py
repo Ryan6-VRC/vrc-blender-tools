@@ -611,6 +611,17 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     # ancestor to key on, so a UNIFORM (2,2,2) parent over an UNROTATED child was
     # measured passing this gate and moving geometry 0.077 m.
     #
+    # Only objects some in-scope ancestor's bake will actually COMPENSATE. Shear is
+    # dropped when ``transform_apply`` rewrites a child's basis, and it rewrites one
+    # only for a parent it applies — so a subtree with no non-unit ancestor loses
+    # nothing, whatever its composed matrix reads. Measured, both shapes this
+    # excludes: an all-unit scene whose shear lives in a ``matrix_parent_inverse``
+    # read 0.220534 and refused while the bake applied nothing at all, and a
+    # bone-parented child under a posed bone read 0.313383 the same way. Walking the
+    # chain rather than testing the immediate parent is required because applying a
+    # parent pushes its scale onto a unit intermediate, which is then applied in turn
+    # — the same live-re-read ``normalize_object_scale`` relies on.
+    #
     # One pass over the closure, not one per (ancestor, descendant) pair: shear does
     # not depend on which ancestor is asking, and the pairwise form costs 0.096 s
     # against 0.0023 s on a 590-object closure (10 s on a deep chain) for an
@@ -621,19 +632,21 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     # out of scope is a root here for the same reason, and the out-of-scope-ancestor
     # condition above already owns that case with a message about scoping.
     #
-    # The own-scale guard is what the old determinant guard was really for, restated
-    # as the thing it was approximating. A mirrored or degenerate descendant is
-    # itself in ``closure`` and meets the mirror or zero-component refusal on its own
-    # turn with the accurate message; measured, a child at (-1,1,1) rotated 45 deg
-    # under a (2,1,1) parent composes 2.75e-1 of REAL shear, so without this it is
-    # refused here first and handed a remedy that only half-works. It also keeps
-    # ``_composed_shear``'s division safe: a child at (0,0,0) decomposes to a zero
-    # scale. Running AFTER the per-object loop is the other half — by then every
-    # mirrored and degenerate object has already raised — and the two together mean
-    # neither a reorder nor a future caller can reintroduce either failure.
+    # Running AFTER the per-object loop is what keeps this from shadowing the mirror
+    # and zero-component refusals, and it is sufficient on its own: that loop covers
+    # the WHOLE closure, so a mirrored or degenerate object anywhere raises with its
+    # own accurate message before this pass is entered. It matters because such an
+    # object does compose real shear once rotated — measured, a child at (-1,1,1)
+    # rotated 45 deg under a (2,1,1) parent composes 2.75e-1 — so a reorder would
+    # hand the user a remedy that only half-works. Keep the pass here.
+    #
+    # No own-scale filter guards this, deliberately: it would be dead alongside the
+    # ordering above, and the degeneracy that can actually reach the division is the
+    # COMPOSED one, which authored local scale cannot see. ``_composed_shear`` owns
+    # that, at the division itself.
     sheared = [(c.name, _composed_shear(c)) for c in closure
                if c.parent is not None and c.parent.name in in_scope
-               and all(abs(v) > _DEGENERATE_EPS and v > 0 for v in c.scale)]
+               and _has_baked_ancestor(c, in_scope)]
     # ``not (s <= eps)`` rather than ``s > eps``: NaN compares False either way, and
     # this direction refuses it instead of waving it through.
     sheared = [(n, s) for n, s in sheared if not (s <= _SHEAR_EPS)]
@@ -661,7 +674,7 @@ def _is_unit_scale(scale) -> bool:
 
 def _composed_shear(obj) -> float:
     """How much of ``obj``'s composed world matrix a loc/rot/scale decomposition
-    cannot represent, relative to the matrix's own magnitude.
+    cannot represent, per basis column and relative to that column's own scale.
 
     This is the EXACT quantity the bake drops, not a bound on it. ``transform_apply``
     folds ``matrix_parent_inverse`` into the compensated child's basis and resets it
@@ -677,22 +690,39 @@ def _composed_shear(obj) -> float:
     direct write — safe only because ``check_scale_normalizable`` evaluates first;
     its docstring owns that contract.
     """
-    m = obj.matrix_world
-    loc, rot, sca = m.decompose()
-    rec = (mathutils.Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
-           @ mathutils.Matrix.Diagonal(sca.to_4d()))
-    delta = max(abs(m[r][c] - rec[r][c]) for r in range(3) for c in range(3))
-    return delta / max(abs(c) for c in sca)
+    m3 = obj.matrix_world.to_3x3()
+    _, rot, sca = obj.matrix_world.decompose()
+    rec = rot.to_matrix() @ mathutils.Matrix.Diagonal(sca)
+    # Per COLUMN, not against the largest component: each column of the composed
+    # basis is scaled by its own factor, so dividing the whole residual by
+    # max|scale| lets one large unrelated axis deflate the reading. Measured, a
+    # 45 deg-rotated child under (2,1,1e5): max-normalised reads 4.35e-06 and is
+    # ADMITTED while the bake moves geometry 0.082 m; per-column reads 2.7515e-01
+    # there and at (2,1,1), (2,1,100), (2,1,1e4) alike — the magnitude invariance
+    # ``_SHEAR_EPS`` is derived against.
+    #
+    # The clamp keeps a degenerate COMPOSED frame from dividing by zero. It is not
+    # reachable through the per-object zero-scale refusal, which reads authored
+    # local scale: measured, a child at local (1,1,1) bone-parented to a pose bone
+    # at (0,0,0) decomposes to a world scale of (0,0,0), and this function is
+    # contracted to return a float, not to raise out of a ValueError-only gate.
+    # The residual is ~0 there too, so the clamp yields 0.0 rather than a spurious
+    # refusal.
+    return max(abs(m3[r][c] - rec[r][c]) / max(abs(sca[c]), _DEGENERATE_EPS)
+               for r in range(3) for c in range(3))
 
 
-def _descendants(obj):
-    out = []
-    stack = list(obj.children)
-    while stack:
-        o = stack.pop()
-        out.append(o)
-        stack.extend(o.children)
-    return out
+def _has_baked_ancestor(obj, in_scope) -> bool:
+    """True when some in-scope ancestor of ``obj`` carries a scale the bake will
+    apply — i.e. when ``obj``'s basis will actually be rewritten, and can therefore
+    lose shear. Keyed on ``_is_unit_scale``, the same predicate the apply loop
+    re-reads live."""
+    p = obj.parent
+    while p is not None and p.name in in_scope:
+        if not _is_unit_scale(tuple(p.scale)):
+            return True
+        p = p.parent
+    return False
 
 
 def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
