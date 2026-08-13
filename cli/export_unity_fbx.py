@@ -69,14 +69,15 @@ def main():
                   % args.armature)
             sys.exit(1)
         armature = arm
-    else:
-        # Whole-scene export is valid, but an owned .blend that appended a
-        # disposable base-body reference would silently bake that second rig into
-        # the FBX. Warn loud (not fatal — multi-object scenes are legitimate).
+    elif args.keep_object_rotation:
+        # --keep-object-rotation is the one door that still whole-scene-exports a
+        # multi-armature scene (the gated path refuses it — core docstring). An
+        # owned .blend that appended a disposable base-body reference would
+        # silently ship that second rig, so name what is about to ship.
         arms = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
         if len(arms) > 1:
             print("AVATARPREP: WARNING %d armatures in scene (%s); exporting WHOLE "
-                  "SCENE — pass --armature <name> to scope to one rig"
+                  "SCENE as-is — pass --armature <name> to scope to one rig"
                   % (len(arms), ", ".join(sorted(a.name for a in arms))))
 
     out_path = os.path.abspath(args.out_path)

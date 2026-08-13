@@ -203,4 +203,7 @@ def main():
     sys.exit(0)
 
 
-main()
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _harness import run
+    run(main, "RESTPOSE_TEST")

@@ -67,7 +67,7 @@ class AVATARPREP_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
         # changed rather than a plain success: a script reads the console
         # AVATARPREP: line, an artist never does.
         scaled = [o.name for o in context.scene.objects
-                  if any(abs(c - 1.0) > 1e-6 for c in o.scale)]
+                  if not scene_utils._is_unit_scale(tuple(o.scale))]
         try:
             fbx_export.export_unity_fbx(self.filepath,
                                         embed_textures=self.embed_textures,

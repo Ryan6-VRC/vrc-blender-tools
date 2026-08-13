@@ -84,4 +84,4 @@ tests/                 # verify.py + committed Felis fixture (per-avatar blends 
 ## Known limitations
 - `apply_pose` requires the armature to be in **Pose mode** (same as CATS). The CLI handles this automatically.
 - Multi-armature scenes: the proportion CLI (`apply_proportion_edge`, incl. `--whatif`) scopes to a named rig via `--armature` and **fails loud** on ambiguity.
-- FBX export defaults to the whole scene (matching CATS); `--armature` exports one rig and the meshes it deforms, selection-only. Unlike the proportion CLIs, a missing `--armature` in a multi-armature scene only **warns** and exports the whole scene — so always pass `--armature` when a disposable reference body is present, or it ships too.
+- FBX export defaults to the whole scene (matching CATS); `--armature` exports one rig and the meshes it deforms, selection-only. A multi-armature scene **refuses** a whole-scene export — so a disposable reference body can never ship by accident. Pass `--armature` to scope to one rig, merge the rigs first, or pass `--keep-object-rotation` to export every transform as-is.

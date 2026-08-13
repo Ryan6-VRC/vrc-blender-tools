@@ -741,4 +741,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _harness import run
+    run(main, "MERGE_TEST")
