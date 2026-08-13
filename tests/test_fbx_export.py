@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 import bpy
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 
 FAILURES = []
 
@@ -362,6 +362,42 @@ def main():
         a.scale = (2.0, 1.0, 1.0)
         bpy.data.objects["Body"].rotation_euler = (0, 0, 0.785398)
     _refuses(_sheared, "sheared", "non-uniform scale over a rotated descendant")
+
+    # 11a. The shear condition must read the rotation the descendant actually
+    # has, not ``rotation_euler``. Those are separate RNA fields, and all three
+    # shapes below compose the SAME 0.4350 of world shear as _sheared above while
+    # reading ``rotation_euler == (0,0,0)`` — so a euler-keyed condition passed
+    # every one of them silently, which is the direction that matters here (a
+    # suppressed refusal, not a spurious one). Each fixture asserts that identity
+    # euler read first, or the case tests nothing.
+    def _sheared_mode(mode):
+        def build(a):
+            a.scale = (2.0, 1.0, 1.0)
+            body = bpy.data.objects["Body"]
+            body.rotation_mode = mode
+            if mode == 'QUATERNION':
+                body.rotation_quaternion = Quaternion((0.0, 0.0, 1.0), 0.785398)
+            else:
+                body.rotation_axis_angle = (0.785398, 0.0, 0.0, 1.0)
+            check(body.rotation_euler.to_quaternion().angle < 1e-6,
+                  "fixture(%s): rotation_euler must read identity, or this case "
+                  "tests nothing" % mode)
+        return build
+    for _mode in ('QUATERNION', 'AXIS_ANGLE'):
+        _refuses(_sheared_mode(_mode), "sheared",
+                 "non-uniform scale over a %s-mode rotated descendant" % _mode)
+
+    # The rotation twin of the delta_scale refusal below: matrix_basis includes
+    # delta rotation, rotation_euler does not.
+    def _sheared_delta(a):
+        a.scale = (2.0, 1.0, 1.0)
+        body = bpy.data.objects["Body"]
+        body.delta_rotation_euler = (0.0, 0.785398, 0.0)
+        check(body.rotation_euler.to_quaternion().angle < 1e-6,
+              "fixture(delta): rotation_euler must read identity, or this case "
+              "tests nothing")
+    _refuses(_sheared_delta, "sheared",
+             "non-uniform scale over a delta_rotation-only descendant")
 
     def _zero(a):
         bpy.data.objects["Body"].scale = (0.0, 1.0, 1.0)

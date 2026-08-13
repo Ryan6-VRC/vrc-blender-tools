@@ -590,9 +590,26 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
         # and the geometry moves (measured: 0.041 m on a 2x-in-X rig with a 45
         # deg-rotated child). The object's OWN rotation is safe — scale is
         # innermost in ``loc @ rot @ scale`` — so this is a descendant question.
+        #
+        # ``has_own_rotation``, not ``rotation_euler``: those are separate RNA
+        # fields, and this gate read the wrong one until now. Measured on the
+        # 2x-in-X parent with a 45 deg-rotated child, all three shapes compose the
+        # same 0.4350 of world shear while ``rotation_euler`` reads (0,0,0), so
+        # this condition silently passed every one of them —
+        # ``QUATERNION`` mode, ``AXIS_ANGLE`` mode, and a rotation carried in
+        # ``delta_rotation_euler`` (which ``matrix_basis`` includes and the euler
+        # field does not). The delta case is the rotation twin of the
+        # ``delta_scale`` refusal above. Unreachable from vendor import — measured,
+        # all 180 objects across 11 staged fixtures import in ``XYZ`` mode with the
+        # two idioms agreeing — so this widening costs nothing on vendor input and
+        # closes the in-``.blend``-authoring path, which is where it is real.
+        #
+        # The eps loosens from 1e-6 rad to ``_ROT_EQUAL_EPS`` and nothing moves
+        # with it: swept 1e-4 deg to 1 deg, the two tests agree at every step
+        # (``.angle`` has a float32 floor and reads exactly 0.0 at 0.01 deg), so no
+        # micrometre-residue import changes verdict.
         if not _is_uniform_scale(scale):
-            skewed = [c.name for c in _descendants(o)
-                      if c.rotation_euler.to_quaternion().angle > 1e-6]
+            skewed = [c.name for c in _descendants(o) if has_own_rotation(c)]
             if skewed:
                 raise ValueError(
                     "%r has non-uniform scale %r with rotated descendant(s) %s; the "
