@@ -590,9 +590,50 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
         # and the geometry moves (measured: 0.041 m on a 2x-in-X rig with a 45
         # deg-rotated child). The object's OWN rotation is safe — scale is
         # innermost in ``loc @ rot @ scale`` — so this is a descendant question.
+        #
+        # ``has_own_rotation``, not ``rotation_euler``: those are separate RNA
+        # fields, and this gate read the wrong one until now. Measured on the
+        # 2x-in-X parent with a 45 deg-rotated child, all three shapes compose the
+        # same 0.4350 of world shear while ``rotation_euler`` reads (0,0,0), so
+        # this condition silently passed every one of them —
+        # ``QUATERNION`` mode, ``AXIS_ANGLE`` mode, and a rotation carried in
+        # ``delta_rotation_euler`` (which ``matrix_basis`` includes and the euler
+        # field does not). The delta case is the rotation twin of the
+        # ``delta_scale`` refusal above.
+        #
+        # The determinant guard is what makes ``has_own_rotation`` safe HERE, and
+        # it is not optional. That helper reads a quaternion off ``matrix_basis``,
+        # which is a proper rotation only when the basis is rotation x POSITIVE
+        # scale. Measured, with the child's rotation identity in every channel: a
+        # child at scale (-1,1,1) decomposes to "180 deg about X" (det -1.0), and
+        # one at (0,1,1) to a quaternion one float32 ulp off identity (det +0.0) —
+        # both read as rotated, both compose 0.000000 of actual shear. Unguarded,
+        # this condition then fires FIRST (``hierarchy_ordered`` is
+        # parent-before-child) and shadows the two refusals that diagnose those
+        # objects correctly — the degenerate-scale one and the mirror one above —
+        # leaving the user a message naming a rotation the object does not have and
+        # a remedy (clear the descendant's rotation) that cannot work.
+        #
+        # Skipping a mirrored descendant here loses no refusal even when it DOES
+        # carry a real rotation: ``hierarchy_ordered`` returns "objects plus every
+        # descendant", so every candidate skipped is itself in ``closure`` and
+        # meets those same two refusals on its own turn, with the accurate message.
+        #
+        # The eps loosens from 1e-6 rad to ``_ROT_EQUAL_EPS`` and nothing moves
+        # with it: swept 1e-4 deg to 1 deg, the two tests agree at every step
+        # (``.angle`` has a float32 floor and reads exactly 0.0 at 0.01 deg), so no
+        # micrometre-residue import changes verdict.
+        #
+        # Reachability, stated to what was actually measured: the 11 staged
+        # fixtures (180 imported objects) were surveyed on ``rotation_mode``, which
+        # read ``XYZ`` throughout with the two idioms agreeing. That is evidence
+        # about the MODE widening only — the survey axis cannot see reflection or
+        # degeneracy, which is why those are settled by the measurement above
+        # rather than by it.
         if not _is_uniform_scale(scale):
             skewed = [c.name for c in _descendants(o)
-                      if c.rotation_euler.to_quaternion().angle > 1e-6]
+                      if c.matrix_basis.to_3x3().determinant() > _DEGENERATE_EPS
+                      and has_own_rotation(c)]
             if skewed:
                 raise ValueError(
                     "%r has non-uniform scale %r with rotated descendant(s) %s; the "

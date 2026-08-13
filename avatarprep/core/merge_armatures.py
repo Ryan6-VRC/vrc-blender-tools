@@ -537,6 +537,18 @@ def merge_armatures(base_arm: bpy.types.Object,
             #   * Rigs whose rotations only MOVE the up axis are baked correctly
             #     (that is what the equal-rotation branch does deliberately), so
             #     for them this is a note about which frame was used, not a defect.
+            #
+            # Both ``.angle`` reads below are safe, and deliberately left as
+            # ``.angle`` — neither is a recurrence of the double-cover defect the
+            # ``abs(dot)`` gate above exists for. The ``rotation_difference()`` one
+            # CAN come back antipodal (that is exactly the 1.7e-07 case), which is
+            # what the fold on the next line is for, and it feeds a display number
+            # only. The ``matrix_world`` one cannot: measured, sweeping euler-Z
+            # 0-720 deg and five rotation axes 0-720 deg, ``mat3_normalized_to_quat``
+            # never returns w<0 (min +0.0000000, at 540 deg and at (1,1,1)/180 deg),
+            # so ``.angle`` on a matrix-derived quaternion is bounded to [0, pi].
+            # The gate above measured ``rotation_difference`` BETWEEN two matrix
+            # quaternions, which is the different — and genuinely unsafe — thing.
             angle = bq.rotation_difference(mq).angle
             deg = math.degrees(min(angle, 2.0 * math.pi - angle))
             stranded = [a.name for a in (base_arm, merge_arm)
