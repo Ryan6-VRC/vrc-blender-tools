@@ -58,6 +58,25 @@ def main():
     assert got == sorted(names), \
         "importer no longer preserves bone names verbatim: %r" % got
 
+    # An empty mesh must not be MEASURED, though it is still counted. bound_box on a
+    # zero-vertex mesh is eight all-zero corners, so including it reports that object's
+    # origin as geometry: a cube 10 m up reads as 10.5 m tall instead of 1.0 m.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.mesh.primitive_cube_add(location=(0, 0, 10))
+    solo = import_mod.observe_import()["height_m"]
+    empty = bpy.data.objects.new("Empty", bpy.data.meshes.new("EmptyData"))
+    bpy.context.collection.objects.link(empty)
+    both = import_mod.observe_import()
+    assert both["meshes"] == 2, "the empty mesh should still be counted, got %r" % both
+    assert abs(both["height_m"] - solo) < 1e-6, \
+        "an empty mesh changed height_m from %r to %r" % (solo, both["height_m"])
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    only_empty = bpy.data.objects.new("Empty", bpy.data.meshes.new("EmptyData"))
+    bpy.context.collection.objects.link(only_empty)
+    assert import_mod.observe_import()["height_m"] == 0, \
+        "a scene of only empty meshes should report height_m 0"
+
     print("IMPORT_TEST OK")
 
 

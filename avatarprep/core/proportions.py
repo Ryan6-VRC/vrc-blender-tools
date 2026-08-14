@@ -315,10 +315,19 @@ def apply_framed_scale(armature, pose_bones, value, *, space="normal", pivot="me
 
 
 def _world_bbox_center(meshes) -> mathutils.Vector:
+    """Centre of the meshes' combined world bounding box.
+
+    A zero-vertex mesh is SKIPPED: its ``bound_box`` is eight all-zero corners, so
+    including it drags the box toward that object's origin as though geometry were
+    there, moving the pivot this returns. ``found`` therefore counts meshes WITH
+    vertices — a set of only empty meshes has no bbox centre and must raise rather than
+    return an origin that looks like an answer."""
     lo = mathutils.Vector((1e18, 1e18, 1e18))
     hi = mathutils.Vector((-1e18, -1e18, -1e18))
     found = False
     for m in meshes:
+        if len(m.data.vertices) == 0:
+            continue
         for corner in m.bound_box:
             w = m.matrix_world @ mathutils.Vector(corner)
             for k in range(3):

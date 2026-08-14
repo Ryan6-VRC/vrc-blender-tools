@@ -107,7 +107,8 @@ def observe_import(objects=None) -> Dict[str, Any]:
       * ``bones``             — total bone count across all armatures (0 if none)
       * ``bones_per_armature``— list of per-armature bone counts
       * ``shapekeys``         — total shape-key count across all meshes (basis excluded)
-      * ``height_m``          — world-space bounding-box height in metres (0 if no meshes)
+      * ``height_m``          — world-space bounding-box height in metres, over the meshes
+                                that HAVE vertices (0 when none does)
       * ``unparented_meshes`` — names of MESH objects with no parent
     """
     objs = list(bpy.data.objects) if objects is None else list(objects)
@@ -115,8 +116,11 @@ def observe_import(objects=None) -> Dict[str, Any]:
     meshes = [o for o in objs if o.type == 'MESH']
     bones_per_armature = [len(a.data.bones) for a in arms]
 
+    # A zero-vertex mesh's bound_box is eight all-zero corners, which would report the
+    # object's origin as real geometry and pull height_m to span from z=0.
+    measurable = [m for m in meshes if len(m.data.vertices) > 0]
     zmin, zmax = 1e9, -1e9
-    for m in meshes:
+    for m in measurable:
         for c in m.bound_box:
             wz = (m.matrix_world @ Vector(c)).z
             zmin = min(zmin, wz)
@@ -133,6 +137,6 @@ def observe_import(objects=None) -> Dict[str, Any]:
         "bones": sum(bones_per_armature),
         "bones_per_armature": bones_per_armature,
         "shapekeys": total_sk,
-        "height_m": round(zmax - zmin, 4) if meshes else 0,
+        "height_m": round(zmax - zmin, 4) if measurable else 0,
         "unparented_meshes": [m.name for m in meshes if m.parent is None],
     }

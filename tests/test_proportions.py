@@ -607,6 +607,28 @@ def test_cli_whatif_writes_nothing_and_reports_geometry():
     check(rc == 2, "--out under --whatif should exit 2, got %s" % rc)
 
 
+def test_bbox_center_skips_empty_meshes():
+    """pivot 'bbox_center' scales about the meshes' own centre. A zero-vertex mesh's
+    bound_box is eight all-zero corners, so counting it drags that centre toward the
+    object's origin and the whole avatar scales about the wrong point."""
+    from avatarprep.core import proportions as P
+    _clear_scene()
+    arm = _make_arm()
+    mesh = _make_mesh(arm)
+    mesh.location = Vector((0, 0, 10))
+    solo = P._world_bbox_center([mesh]).copy()
+
+    empty = bpy.data.objects.new("Empty", bpy.data.meshes.new("EmptyData"))
+    bpy.context.collection.objects.link(empty)
+    both = P._world_bbox_center([mesh, empty])
+    check((both - solo).length < 1e-9,
+          "an empty mesh moved the bbox centre from %r to %r" % (solo[:], both[:]))
+
+    # Only empty meshes is not a centre at the origin -- it is no centre at all.
+    expect_raises(lambda: P._world_bbox_center([empty]), "no mesh geometry",
+                  "bbox centre of only empty meshes")
+
+
 def main():
     _clear_scene()
     _add_repo_root_to_path()
@@ -625,6 +647,7 @@ def main():
     test_whatif_geometry_equals_real_apply()
     test_collateral_lengths()
     test_cli_whatif_writes_nothing_and_reports_geometry()
+    test_bbox_center_skips_empty_meshes()
     if FAILURES:
         for f in FAILURES:
             print("PROP_TEST FAIL:", f)
