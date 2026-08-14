@@ -28,7 +28,7 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep, resolve_arm, write_report
+from cli._common import enable_avatarprep, resolve_arm, write_report, open_blend, run_cli
 
 
 def _parse_args():
@@ -129,7 +129,7 @@ def _load_merge_side(path, merge_name):
 def main():
     args = _parse_args()
     import bpy
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
+    open_blend(args.in_path, writes=False)
     enable_avatarprep()
     from avatarprep.core.merge_armatures import (compare_armatures, remedy_lines,
                                                  report_offenders)
@@ -170,4 +170,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "compare_armatures")

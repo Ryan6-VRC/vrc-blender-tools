@@ -20,7 +20,8 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep, kv, write_report
+from cli._common import (enable_avatarprep, kv, write_report, open_blend, run_cli,
+                         add_force_load_repair)
 
 
 def _parse_args():
@@ -49,6 +50,7 @@ def _parse_args():
                         "name surfaces as 'shapekey not found on any mesh'. Repeatable")
     p.add_argument("--report", dest="report", default=None,
                    help="Write the full result dict here as JSON")
+    add_force_load_repair(p)
     args = p.parse_args(argv)
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")
@@ -85,7 +87,8 @@ def _resolve_armature(name):
 def main():
     args = _parse_args()
     import bpy
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
+    open_blend(args.in_path, writes=not args.whatif,
+               force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import scene_utils, proportions
 
@@ -149,4 +152,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "apply_proportion_edge")

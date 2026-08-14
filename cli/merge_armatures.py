@@ -26,7 +26,8 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep, kv, resolve_arm, write_report
+from cli._common import (enable_avatarprep, kv, resolve_arm, write_report, open_blend,
+                         run_cli, add_force_load_repair)
 
 
 def _parse_args():
@@ -65,6 +66,7 @@ def _parse_args():
                         "when it is worth reading. It carries postcheck only when a real "
                         "merge got that far: never under --whatif, and not on a "
                         "pre-mutation FAIL")
+    add_force_load_repair(p)
     args = p.parse_args(argv)
     if args.whatif and args.out_path:
         p.error("--out is meaningless under --whatif (preview mutates nothing)")
@@ -74,7 +76,8 @@ def _parse_args():
 def main():
     args = _parse_args()
     import bpy
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
+    open_blend(args.in_path, writes=not args.whatif,
+               force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core.merge_armatures import merge_armatures
 
@@ -153,4 +156,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "merge_armatures")

@@ -29,7 +29,8 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep, resolve_arm, write_report
+from cli._common import (enable_avatarprep, resolve_arm, write_report, open_blend,
+                         run_cli, add_force_load_repair)
 
 
 def _parse_args():
@@ -49,6 +50,7 @@ def _parse_args():
                    help="Prune even when an object rides a doomed bone, orphaning it")
     p.add_argument("--report", dest="report", default=None,
                    help="Write the removal plan and result here as JSON")
+    add_force_load_repair(p)
     args = p.parse_args(argv)
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")
@@ -72,7 +74,8 @@ def _prepare_path(path, kind):
 def main():
     args = _parse_args()
     import bpy
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
+    open_blend(args.in_path, writes=not args.whatif,
+               force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import scene_utils
     from avatarprep.core.prune_bones import prune_zero_weight_bones, PruneRefused
@@ -151,4 +154,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "prune_bones")

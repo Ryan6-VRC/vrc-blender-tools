@@ -81,6 +81,68 @@ def classify_stamp(base_raw, merge_raw) -> str:
     return "equal" if base_raw == merge_raw else "different"
 
 
+# --- File-open classification --------------------------------------------------
+# ``bpy.ops.wm.open_mainfile`` raises RuntimeError for two opposite outcomes: a
+# RECOVERABLE repair, where the file loads completely and Blender reports what it
+# altered as it read, and a genuine failure, where nothing loads and the PREVIOUSLY
+# loaded main stays live. One exception, opposite meanings — so the verdict is read
+# from post-load state, never from the message text. Blender also alters data
+# WITHOUT raising (an unresolvable linked library is a WARNING), which is why the
+# raise alone cannot define 'repaired'.
+
+def classify_open(raised_msg, landed, missing_libs):
+    """Classify one open attempt from post-load state. Returns ``(kind, detail)``.
+
+      'failed'   — the load did not land on the requested file; the previous main is
+                   still live, so proceeding would operate on the wrong scene
+      'repaired' — landed, but Blender altered data as it read: it raised (a reported
+                   repair, e.g. a deleted invalid ShapeKey) and/or left linked
+                   libraries unresolvable (no raise for that one)
+      'clean'    — landed, nothing altered
+
+    ``detail`` is plain prose naming what was altered, for the caller to wrap in its
+    own line grammar; empty for 'clean'. Pure by design: ``landed`` and
+    ``missing_libs`` are read from ``bpy`` by the caller, so the whole branch table is
+    testable without a corrupt ``.blend`` — the one file known to trigger a reported
+    repair is vendor-licensed and cannot ship as a fixture."""
+    if not landed:
+        return "failed", (raised_msg or "").strip()
+    parts = []
+    if raised_msg:
+        parts.append("reported repair: %s" % raised_msg.strip())
+    if missing_libs:
+        parts.append("unresolvable linked librar%s: %s"
+                     % ("y" if len(missing_libs) == 1 else "ies", ", ".join(missing_libs)))
+    if not parts:
+        return "clean", ""
+    return "repaired", "; ".join(parts)
+
+
+def open_policy(kind, *, writes, force_load_repair) -> str:
+    """Policy verdict for a classified open.
+
+    ``writes`` is a property of the INVOCATION, not the file — a door that can save
+    passes ``writes=not whatif``, so a *preview* of a repaired file still runs and
+    only the write is blocked.
+
+      'error'   — 'failed', either way. Nothing else may run.
+      'refuse'  — 'repaired' on a writing invocation, no override. Saving would
+                  launder Blender's alteration into the deliverable, where nothing
+                  downstream can detect it (``docs/blender.md`` carries the measured
+                  case: a base body up at 0 shape keys after one such load).
+      'forced'  — 'repaired', writing, override given. Proceed, logged loudly.
+      'warn'    — 'repaired' on a reading invocation. Proceed; the reads are real but
+                  they describe the repaired state.
+      'proceed' — 'clean'."""
+    if kind == "failed":
+        return "error"
+    if kind == "repaired":
+        if not writes:
+            return "warn"
+        return "forced" if force_load_repair else "refuse"
+    return "proceed"
+
+
 def _baked_entry(ob) -> Dict[str, Any]:
     """The per-mesh baked entry, AS STORED (unchanged from the pre-grouping flat
     list). A valid map → ``{name, baked: {shapekey: value}}``; a present-but-non-map

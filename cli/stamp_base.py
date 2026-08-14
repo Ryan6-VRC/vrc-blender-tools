@@ -9,7 +9,9 @@ names the armature OBJECT (as prune_bones does) and ``--base`` is the lineage LA
 STRING to stamp (e.g. ``shinano``), NOT an armature object. Base identity is an
 agent assertion, never guessed — this door is the only writer of avatarprep_base.
 
-Exit codes: 0 = stamped (--out saved) · 2 = ERROR (bad armature name, write failure).
+Exit codes: 0 = stamped (--out saved) · 1 = REFUSED (--out NOT saved; the source
+loaded only with repairs — --force-load-repair accepts them deliberately) ·
+2 = ERROR (bad armature name, unopenable --in, write failure).
 """
 import os
 import sys
@@ -20,7 +22,7 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep, resolve_arm
+from cli._common import enable_avatarprep, resolve_arm, open_blend, run_cli, add_force_load_repair
 
 
 def _parse_args():
@@ -35,13 +37,14 @@ def _parse_args():
     p.add_argument("--base", dest="base", required=True,
                    help="avatar lineage LABEL string to stamp (e.g. 'shinano'); "
                         "this is a label, NOT an armature object")
+    add_force_load_repair(p)
     return p.parse_args(argv)
 
 
 def main():
     args = _parse_args()
     import bpy
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
+    open_blend(args.in_path, writes=True, force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import scene_utils
 
@@ -62,4 +65,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "stamp_base")
