@@ -10,6 +10,10 @@ source package (deterministic, no dependence on user prefs), calls the pure core
 function, and saves the result to ``--out``. ``--scale-test`` first scales the
 whole armature pose by 1.2x so the change is clearly non-identity (used by the
 verification harness).
+
+Exit codes: 0 = baked (--out saved) · 1 = REFUSED (--out NOT saved; a bound mesh the
+depsgraph will not evaluate would bake undeformed) · 2 = ERROR (unopenable --in,
+no armature, write failure).
 """
 
 import os
@@ -66,7 +70,14 @@ def main():
         print("AVATARPREP: applied 1.2x pose scale to %d bones"
               % len(armature.pose.bones))
 
-    result = rest_pose.apply_pose(armature)
+    try:
+        result = rest_pose.apply_pose(armature)
+    except rest_pose.RestPoseRefused as refused:
+        print("AVATARPREP: apply_pose REFUSED —", refused)
+        for o in refused.offenders:
+            print("AVATARPREP: OFFENDER", o)
+        print("AVATARPREP: nothing was baked; --out NOT written.")
+        sys.exit(1)
     print("AVATARPREP: rest pose applied on %s (meshes=%d)"
           % (result["armature"], len(result["meshes_processed"])))
     for m in result["meshes_processed"]:
