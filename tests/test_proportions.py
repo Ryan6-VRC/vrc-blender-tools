@@ -360,6 +360,253 @@ def test_baked_coupling():
           "unbaked key must not warn: %r" % rep_ok["warnings"])
 
 
+
+# --- staged --whatif geometry (R8) ---------------------------------------------
+
+def _sk_with_delta(ob, name, dz):
+    """Add a shape key that actually MOVES geometry. ``shape_key_add`` alone makes a
+    zero-delta key, which cannot exercise a measurement."""
+    if ob.data.shape_keys is None:
+        ob.shape_key_add(name="Basis")
+    kb = ob.shape_key_add(name=name)
+    for p in kb.data:
+        p.co = p.co + Vector((0.0, 0.0, dz))
+    kb.slider_min = min(kb.slider_min, 0.0)
+    kb.slider_max = max(kb.slider_max, 1.0)
+    # shape_key_add returns the block ALREADY at value 1.0 (measured on 5.2.0), so a
+    # morph left as-is is live before the edge touches it -- and an edge driving it to
+    # 1.0 would then move nothing, making the stage look inert when it is not.
+    kb.value = 0.0
+    return kb
+
+
+def _rig_for_measure(no_inherit=False):
+    """Root -> Spine, genuinely parented so the edge's object transform has exactly one
+    root bone to drive, plus a bound mesh with a bounds-moving morph."""
+    from avatarprep.core import scene_utils
+    arm = _make_arm(bones=(("Root", (0, 0, 0), (0, 0, 0.1)),
+                           ("Spine", (0, 0, 0.1), (0, 0, 0.3))))
+    with scene_utils.edit_mode(arm) as ebs:
+        ebs["Spine"].parent = ebs["Root"]
+        if no_inherit:
+            ebs["Spine"].inherit_scale = 'NONE'
+    mesh = _make_mesh(arm, groups=("Root", "Spine"))
+    _sk_with_delta(mesh, "Tall", 0.25)
+    arm["avatarprep_base"] = "a"
+    arm["avatarprep_state"] = "s0"
+    return arm, mesh
+
+
+def test_measure_geometry_skips_empty_meshes():
+    """bound_box on a zero-vertex mesh is eight all-zero corners, which would inject
+    world z=0 as if it were geometry. measure_geometry reads evaluated vertices and
+    skips such a mesh; this pins that it contributes nothing."""
+    _clear_scene()
+    from avatarprep.core import measure
+    arm, mesh = _rig_for_measure()
+    empty = bpy.data.objects.new("Empty", bpy.data.meshes.new("EmptyData"))
+    bpy.context.collection.objects.link(empty)
+    empty.parent = arm
+    m = measure.measure_geometry(arm, [mesh, empty])
+    check(m["per_mesh"]["Empty"] is None, "a zero-vertex mesh should map to None")
+    check(m["aggregate"]["min"][2] > 0.01,
+          "an empty mesh must not drag aggregate min_z to the origin, got %r"
+          % m["aggregate"]["min"][2])
+    check(abs(m["aggregate"]["min"][2] - m["per_mesh"]["Body"]["min"][2]) < 1e-9,
+          "aggregate should equal the only real mesh's bounds")
+    # No mesh with vertices at all -> no aggregate, rather than a fabricated zero box.
+    m2 = measure.measure_geometry(arm, [empty])
+    check(m2["aggregate"] is None, "no measurable mesh should give aggregate None")
+
+
+def test_stage_hook_order():
+    _clear_scene()
+    from avatarprep.core import proportions as P
+    arm, mesh = _rig_for_measure()
+    seen = []
+    P.apply_proportion_edge(arm, [mesh], {
+        "source": "s0", "target": "s1", "source_base": "a",
+        "object": {"scale": 1.0, "translate": [0, 0, 0.05]},
+        "scales": [{"bones": ["Spine"], "value": [1.0, 1.2, 1.0]}],
+        "shapekeys": {"Tall": 1.0}}, stage_hook=lambda n: seen.append(n))
+    check(seen == ["pre", "object", "scales", "shapekeys"],
+          "stage hook should fire once per stage in order, got %s" % seen)
+
+    # A stage the edge does not have must not fire.
+    _clear_scene()
+    arm, mesh = _rig_for_measure()
+    seen2 = []
+    P.apply_proportion_edge(arm, [mesh], {
+        "source": "s0", "target": "s1", "source_base": "a",
+        "scales": [{"bones": ["Spine"], "value": [1.0, 1.2, 1.0]}]},
+        skip_shapekeys=True, stage_hook=lambda n: seen2.append(n))
+    check(seen2 == ["pre", "scales"],
+          "absent stages must not fire, got %s" % seen2)
+
+
+def test_whatif_geometry_equals_real_apply():
+    """The claim the whole feature rests on: numbers measured by the in-memory trial
+    equal the numbers a real apply produces. Uses an edge with a NON-EMPTY shapekeys
+    block whose morph reaches the bounds -- both shipped longlimb edges carry no
+    shapekeys at all, so an edge without one cannot validate this stage."""
+    from avatarprep.core import proportions as P, measure
+    edge = {"source": "s0", "target": "s1", "source_base": "a",
+            "object": {"scale": 1.0, "translate": [0, 0, 0.05]},
+            "scales": [{"bones": ["Spine"], "value": [1.0, 1.3, 1.0]}],
+            "shapekeys": {"Tall": 1.0}}
+
+    _clear_scene()
+    arm, mesh = _rig_for_measure()
+    stages = []
+    P.apply_proportion_edge(arm, [mesh], dict(edge),
+                            stage_hook=lambda n: stages.append(
+                                (n, measure.measure_geometry(arm, [mesh]))))
+    trial_final = stages[-1][1]
+    check([n for n, _ in stages] == ["pre", "object", "scales", "shapekeys"],
+          "all four stages should have measured")
+    check(stages[-1][1]["aggregate"]["max"][2] > stages[-2][1]["aggregate"]["max"][2],
+          "the shapekeys stage must actually move the bounds, or it proves nothing")
+
+    _clear_scene()
+    arm2, mesh2 = _rig_for_measure()
+    P.apply_proportion_edge(arm2, [mesh2], dict(edge))
+    real_final = measure.measure_geometry(arm2, [mesh2])
+
+    for key in ("min", "max"):
+        for i in range(3):
+            a = trial_final["aggregate"][key][i]
+            b = real_final["aggregate"][key][i]
+            check(abs(a - b) < 1e-9,
+                  "trial aggregate %s[%d] %.12f != real %.12f" % (key, i, a, b))
+    for bn, a in trial_final["bones"].items():
+        b = real_final["bones"][bn]
+        check(abs(a["length"] - b["length"]) < 1e-9,
+              "trial bone %s length %.12f != real %.12f" % (bn, a["length"], b["length"]))
+
+
+def test_collateral_lengths():
+    """The spread report: a child that inherits its parent's scale changes length
+    without being named, and inherit_scale NONE is supposed to stop it. Nothing before
+    this proved either."""
+    from avatarprep.core import proportions as P, measure
+    edge = {"source": "s0", "target": "s1", "source_base": "a",
+            "scales": [{"bones": ["Root"], "value": [1.0, 1.5, 1.0]}]}
+
+    _clear_scene()
+    arm, mesh = _rig_for_measure()
+    pre = measure.measure_geometry(arm, [mesh])
+    P.apply_proportion_edge(arm, [mesh], dict(edge), skip_shapekeys=True)
+    post = measure.measure_geometry(arm, [mesh])
+    spread = measure.collateral_lengths(pre, post, {"Root"})
+    check([r["bone"] for r in spread] == ["Spine"],
+          "Spine should inherit Root's scale and be reported, got %s"
+          % [r["bone"] for r in spread])
+
+    _clear_scene()
+    arm2, mesh2 = _rig_for_measure(no_inherit=True)
+    pre2 = measure.measure_geometry(arm2, [mesh2])
+    P.apply_proportion_edge(arm2, [mesh2], dict(edge), skip_shapekeys=True)
+    post2 = measure.measure_geometry(arm2, [mesh2])
+    spread2 = measure.collateral_lengths(pre2, post2, {"Root"})
+    check(spread2 == [],
+          "inherit_scale NONE should stop the spread, got %s"
+          % [r["bone"] for r in spread2])
+
+    named = measure.bone_length_deltas(pre, post, ["Root"])
+    # Bone coords are float32, so the achieved percentage lands within ~1e-5 of nominal,
+    # not on it. Tightening this past float32 would make the suite flaky, not stricter.
+    check(len(named) == 1 and abs(named[0]["pct"] - 50.0) < 1e-3,
+          "the named bone's achieved pct should be +50%%, got %s" % named)
+    check(measure.bone_length_deltas(pre, post, ["NoSuchBone"]) == [],
+          "an absent bone should be skipped, not faked")
+
+
+def test_cli_whatif_writes_nothing_and_reports_geometry():
+    """Drive the door. The byte-identity assertion is the guard that an in-memory trial
+    can never become a write, however the code around it is refactored later."""
+    import hashlib
+    import json
+    import subprocess
+    import tempfile
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    door = os.path.join(root, "cli", "apply_proportion_edge.py")
+    tmp = tempfile.mkdtemp(prefix="avatarprep_whatif_")
+    src = os.path.join(tmp, "src.blend")
+    edge_path = os.path.join(tmp, "edge.json")
+    bad_edge_path = os.path.join(tmp, "bad_edge.json")
+
+    _clear_scene()
+    _rig_for_measure()
+    bpy.ops.wm.save_as_mainfile(filepath=src)
+    digest = hashlib.sha256(open(src, "rb").read()).hexdigest()
+
+    with open(edge_path, "w", encoding="utf-8") as fh:
+        json.dump({"source": "s0", "target": "s1", "source_base": "a",
+                   "object": {"scale": 1.0, "translate": [0, 0, 0.05]},
+                   "scales": [{"bones": ["Spine"], "value": [1.0, 1.3, 1.0]}],
+                   "shapekeys": {"Tall": 1.0}}, fh)
+    # A real state mismatch: the rig is stamped s0, this edge demands sX.
+    with open(bad_edge_path, "w", encoding="utf-8") as fh:
+        json.dump({"source": "sX", "target": "s1", "source_base": "a",
+                   "scales": [{"bones": ["Spine"], "value": [1.0, 1.3, 1.0]}]}, fh)
+
+    def run(extra):
+        proc = subprocess.run([bpy.app.binary_path, "--background", "--factory-startup",
+                               "--python", door, "--", "--in", src] + extra,
+                              capture_output=True, text=True, timeout=600)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    report = os.path.join(tmp, "r.json")
+    rc, out = run(["--edge", edge_path, "--whatif", "--report", report])
+    check(rc == 0, "clean whatif should exit 0, got %s (%r)" % (rc, out[-400:]))
+    check(hashlib.sha256(open(src, "rb").read()).hexdigest() == digest,
+          "--whatif must leave --in BYTE-IDENTICAL")
+    check(not os.path.exists(os.path.join(tmp, "src.blend1")),
+          "--whatif must not leave a Blender backup beside --in")
+
+    data = json.load(open(report, encoding="utf-8"))
+    check("geometry" in data, "--report should carry a geometry block")
+    check("offenders" in data and "warnings" in data,
+          "the pre-existing report shape must survive")
+    geo = data["geometry"]
+    check([s["stage"] for s in geo["stages"]] == ["pre", "object", "scales", "shapekeys"],
+          "stages should be present and ordered, got %s"
+          % [s["stage"] for s in geo["stages"]])
+    check(geo["stages"][0].get("delta_from_previous") is None,
+          "the pre stage has no previous stage to differ from")
+    for s in geo["stages"][1:]:
+        check(isinstance(s["delta_from_previous"]["d_height"], float),
+              "each later stage should carry a numeric delta")
+    check(geo["bones"]["pre"] and geo["bones"]["post"],
+          "both ends' bone positions should be reported")
+    check("head" in list(geo["bones"]["pre"].values())[0],
+          "bones should carry head/tail so any span is derivable without applying")
+    check(geo["scale_ops"] and geo["scale_ops"][0]["lengths"],
+          "per-op achieved bone lengths should be reported")
+    check("collateral_lengths" in geo, "the spread report should be present")
+    check(geo["loaded_with_repairs"] is None,
+          "a clean load should record no repair against these numbers")
+    check("whatif stage" in out and "whatif total" in out,
+          "the printed tier should carry staged aggregates, got %r" % out[-400:])
+    check("per_mesh" not in out,
+          "per-mesh detail belongs in --report, not in the printed tier")
+
+    # Offenders must short-circuit: no trial runs on a rig that failed the gate, so no
+    # geometry is reported and nothing claims to know what the edge would do.
+    report2 = os.path.join(tmp, "r2.json")
+    rc, out = run(["--edge", bad_edge_path, "--whatif", "--report", report2])
+    check(rc == 1, "offenders under whatif should exit 1, got %s" % rc)
+    check("OFFENDER" in out, "offenders should be named")
+    check("whatif stage" not in out,
+          "no geometry may be reported when the gate failed, got %r" % out[-400:])
+    data2 = json.load(open(report2, encoding="utf-8"))
+    check("geometry" not in data2,
+          "a failed gate must not attach a geometry block")
+
+    rc, out = run(["--edge", edge_path, "--whatif", "--out", os.path.join(tmp, "o.blend")])
+    check(rc == 2, "--out under --whatif should exit 2, got %s" % rc)
+
+
 def main():
     _clear_scene()
     _add_repo_root_to_path()
@@ -373,6 +620,11 @@ def main():
     test_apply_proportion_edge_skip_shapekeys()
     test_apply_proportion_edge_median()
     test_baked_coupling()
+    test_measure_geometry_skips_empty_meshes()
+    test_stage_hook_order()
+    test_whatif_geometry_equals_real_apply()
+    test_collateral_lengths()
+    test_cli_whatif_writes_nothing_and_reports_geometry()
     if FAILURES:
         for f in FAILURES:
             print("PROP_TEST FAIL:", f)

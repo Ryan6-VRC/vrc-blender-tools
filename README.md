@@ -43,10 +43,11 @@ The `avatarprep.core` package is a plain Python package (no operator/UI context)
 A line each on the ops with the least obvious behavior (not the full set — that's the meta-repo `TOOLS.md`); behavior lives in the meta-repo `docs/blender.md`, and the callable surface (entry points, flags) in `TOOLS.md`.
 
 - **Apply Pose as Rest Pose** (`core.rest_pose.apply_pose`) — shape-key-safe bake of the current pose into the rest pose.
-- **Proportion edges** (`core.proportions.apply_proportion_edge`) — apply a proportion **edge** (a JSON file mapping one named proportion state to another); the agent chains edges to walk a path. `--whatif` validates an edge against the scene read-only (no mutation). Bundled `edges/` is a curated sample library (migrated real edges plus known base-equivalency samples) that doubles as this repo's test-fixture corpus — it is not packaged into the extension build, and real per-avatar edges live at the Unity-project level (see `docs/LAYOUT.md`).
+- **Proportion edges** (`core.proportions.apply_proportion_edge`) — apply a proportion **edge** (a JSON file mapping one named proportion state to another); the agent chains edges to walk a path. `--whatif` validates the edge and reports the geometry it would produce, measured by an in-memory trial that is never saved. Bundled `edges/` is a curated sample library (migrated real edges plus known base-equivalency samples) that doubles as this repo's test-fixture corpus — it is not packaged into the extension build, and real per-avatar edges live at the Unity-project level (see `docs/LAYOUT.md`).
 - **Stamp Base** (`core.scene_utils.write_stamp` via the `stamp_base` door) — stamps the avatar body lineage on an armature as a deliberate agent assertion.
 - **Report Stamps** (`core.scene_utils.report_stamps`) — read-only query of every armature's base/state stamps and, grouped under each armature, its bound meshes' baked-morph maps (plus an `unbound` bucket for meshes owned by no single armature).
 - **Bake Shape Key to Basis** (`core.shapekey_bake.bake_shapekey_to_basis`) — folds one body-shape morph into Basis and records the reversible fold.
+- **Rename Objects** (`core.rename_objects.rename_objects`) — renames scene objects as a **set**, so `Face=Body Body=Body_Base` is a legal swap rather than a silent `Body.001`, and emits the `{ourName: sourceName}` map a downstream by-name material copy needs. Object names only; the mesh datablock name is left alone.
 
 ## 4. Verification
 
@@ -68,7 +69,8 @@ blender --background --factory-startup --python tests/verify.py -- --asset path/
 ```
 avatarprep/            # the extension package
   core/                # pure logic (no Operator/UI): scene_utils, import_fbx, prune_bones,
-                       #   rest_pose, merge_armatures, proportions, shapekey_bake, fbx_export, render_mesh
+                       #   rest_pose, merge_armatures, proportions, shapekey_bake, fbx_export,
+                       #   render_mesh, measure, rename_objects
   operators.py         # thin operator wrappers
   ui.py                # N-panel (category "AvatarPrep")
   __init__.py          # register()/unregister() — NO upper version guard
