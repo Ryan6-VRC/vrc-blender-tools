@@ -22,7 +22,7 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep
+from cli._common import enable_avatarprep, open_blend, run_cli, add_force_load_repair
 
 
 def _parse_args():
@@ -49,13 +49,14 @@ def _parse_args():
                         "'Char_Body'. The bake recomputes normals and profiles never morph "
                         "the head, so this asserts where the head lives on THIS rig; pass "
                         "'' to disable")
+    add_force_load_repair(p)
     return p.parse_args(argv)
 
 
 def main():
     args = _parse_args()
     import bpy
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
+    open_blend(args.in_path, writes=True, force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import shapekey_bake
 
@@ -86,4 +87,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "bake_shapekey")

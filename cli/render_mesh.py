@@ -30,7 +30,7 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep
+from cli._common import enable_avatarprep, open_blend, run_cli
 
 
 class _Parser(argparse.ArgumentParser):
@@ -76,11 +76,10 @@ def main():
     args = _parse_args()
     import bpy
 
-    try:
-        bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-    except Exception as e:
-        print("AVATARPREP: rendermesh ? => FAIL: could not open --in: %s" % e)
-        sys.exit(2)
+    # A bad --in exits in open_blend's own ERROR grammar rather than this tool's
+    # `rendermesh ? => FAIL` one: the open is the shared door's verdict, not a render
+    # verdict, and one message per failure beats two spellings of it.
+    open_blend(args.in_path, writes=False)
 
     try:
         enable_avatarprep()
@@ -109,4 +108,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "render_mesh")

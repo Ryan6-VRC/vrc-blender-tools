@@ -398,7 +398,16 @@ def _set_no_inherit_scale(armature, bone_names):
 
 
 def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_overrides=None,
-                  shapekey_overrides=None, skip_shapekeys=False) -> Dict[str, Any]:
+                  shapekey_overrides=None, skip_shapekeys=False,
+                  stage_hook=None) -> Dict[str, Any]:
+    """Apply one edge. ``stage_hook(name)``, when given, is called at each stage
+    boundary — ``'pre'``, then ``'object'`` / ``'scales'`` / ``'shapekeys'`` for the
+    stages this edge actually has.
+
+    The hook exists so ``--whatif`` can measure the real transform at each boundary
+    instead of predicting it: a second implementation of this engine, however careful,
+    is a second thing to keep in sync. It observes only — nothing here reads it back,
+    so a hook cannot change what gets applied."""
     if armature is None or armature.type != 'ARMATURE':
         raise EdgeError("apply_proportion_edge requires a valid armature")
     if meshes is None:
@@ -423,6 +432,9 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
     # just before the final state write (base first, state last).
     scene_utils.write_stamp(armature, scene_utils.STAMP_STATE, scene_utils.STATE_APPLYING)
 
+    if stage_hook:
+        stage_hook("pre")
+
     _ensure_pose_mode(armature)
 
     if edge["object"]:
@@ -431,6 +443,8 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
         if abs(s - 1.0) > 1e-12 or any(abs(c) > 1e-12 for c in t):
             pose_object_transform(armature, meshes, s, t, pivot=edge["object"]["pivot"])
             report["bakes"].append(rest_pose.apply_pose(armature))
+            if stage_hook:
+                stage_hook("object")
             _ensure_pose_mode(armature)
 
     if edge["no_inherit_scale"] or edge["scales"]:
@@ -448,10 +462,14 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
                                    space=op["space"], pivot=op["pivot"])
             report["scales_applied"] += 1
         report["bakes"].append(rest_pose.apply_pose(armature))
+        if stage_hook:
+            stage_hook("scales")
 
     if not skip_shapekeys:
         eff = _effective_shapekeys(edge, shapekey_overrides)
         report["shapekeys"] = apply_shapekeys(meshes, eff)
+        if stage_hook:
+            stage_hook("shapekeys")
 
     # Transition the (base, state) pair. Base FIRST, state LAST: state carries the
     # STATE_APPLYING sentinel, so a crash between these two writes leaves the sentinel

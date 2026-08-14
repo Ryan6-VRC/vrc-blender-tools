@@ -23,7 +23,7 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep
+from cli._common import enable_avatarprep, open_blend, run_cli
 
 
 def _parse_args():
@@ -41,11 +41,7 @@ def _parse_args():
 def main():
     args = _parse_args()
     import bpy
-    try:
-        bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-    except Exception as e:
-        print("AVATARPREP: ERROR failed to open --in:", e)
-        sys.exit(2)
+    open_blend(args.in_path, writes=False)
     enable_avatarprep()
     from avatarprep.core import scene_utils
 
@@ -88,4 +84,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "report_stamps")

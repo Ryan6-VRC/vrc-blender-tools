@@ -5,11 +5,26 @@ Run:
       --in <in.blend> --out <out.blend> --edge <edge.json> [--skip-shapekeys] \
       [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
 
-  # Read-only gate: validate the edge against the scene. No mutation; --out
-  # must be omitted (passing it errors — a preview never writes a deliverable).
+  # Preview: validate the edge, then report the geometry it would produce. Writes
+  # nothing; --out must be omitted (passing it errors — a preview never writes a
+  # deliverable).
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --edge <edge.json> --whatif [--skip-shapekeys] \
       [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
+
+--whatif mutates nothing ON DISK. Once the validate gate is clean it trial-applies the
+real engine in memory and measures the result at each stage boundary, then discards it
+— so the reported min-z / crown / height and the achieved per-bone lengths are measured,
+not predicted. That is what a height-touching edge previously needed a full
+author-apply-measure-reauthor pass to learn. Costs 1.6-4.5 s on a full avatar.
+
+Aggregate extremes answer the HEIGHT question and nothing wider: a morph that reshapes
+mid-body without reaching the feet or the crown legitimately moves min-z and max-z by
+zero, so a 0.000 delta is not evidence that a shapekeys block did nothing. Per-mesh
+bounds in --report are the next place to look.
+
+Exit codes: 0 = would apply (with numbers) · 1 = offenders, would not apply ·
+2 = ERROR (bad edge path, unopenable --in, --out combined with --whatif).
 """
 import os
 import sys
@@ -20,7 +35,8 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep, kv, write_report
+from cli._common import (enable_avatarprep, kv, write_report, open_blend, run_cli,
+                         add_force_load_repair)
 
 
 def _parse_args():
@@ -36,7 +52,8 @@ def _parse_args():
     p.add_argument("--armature", dest="armature", default=None,
                    help="Armature object to target; required when the scene has more than one")
     p.add_argument("--whatif", dest="whatif", action="store_true",
-                   help="Validate the edge against the scene and report offenders; no mutation, no --out")
+                   help="Validate the edge, then report the geometry it would produce "
+                        "(measured by an in-memory trial that is never saved); no --out")
     p.add_argument("--skip-shapekeys", action="store_true",
                    help="Apply only the edge's bone changes, leaving shape keys untouched")
     p.add_argument("--bone-override", action="append", default=[], metavar="OLD=NEW",
@@ -49,6 +66,7 @@ def _parse_args():
                         "name surfaces as 'shapekey not found on any mesh'. Repeatable")
     p.add_argument("--report", dest="report", default=None,
                    help="Write the full result dict here as JSON")
+    add_force_load_repair(p)
     args = p.parse_args(argv)
     if not args.whatif and not args.out_path:
         p.error("--out is required unless --whatif is given")
@@ -82,12 +100,95 @@ def _resolve_armature(name):
     return arms[0]
 
 
+def _geometry_report(stages, edge, bone_overrides, repair):
+    """Assemble the staged geometry block from the trial's measurements.
+
+    ``repair`` rides along deliberately: these numbers were measured on whatever the
+    load produced, and a number measured on a repaired load must not be copyable into
+    a tracked edge JSON without that fact attached."""
+    from avatarprep.core import measure
+    pre = stages[0][1]
+    out = {"loaded_with_repairs": repair, "stages": [], "bones": {},
+           "scale_ops": []}
+    prev = pre
+    for name, m in stages:
+        entry = {"stage": name, "aggregate": m["aggregate"], "per_mesh": m["per_mesh"]}
+        if name != "pre":
+            entry["delta_from_previous"] = measure.aggregate_delta(prev, m)
+        out["stages"].append(entry)
+        prev = m
+    final = stages[-1][1]
+    out["delta_total"] = measure.aggregate_delta(pre, final)
+    # Every bone's head/tail on both ends, so any span an author cares about is
+    # derivable from the report without applying (shoulder-to-wrist is
+    # |UpperArm.head - Hand.head|); measure.py owns why it isn't pre-chosen here.
+    out["bones"] = {"pre": pre["bones"], "post": final["bones"]}
+    named = set()
+    for i, op in enumerate(edge["scales"]):
+        names = [bone_overrides.get(b, b) for b in op["bones"]]
+        named.update(names)
+        out["scale_ops"].append({
+            "index": i, "value": op["value"], "space": op["space"],
+            "pivot": op["pivot"], "bones": names,
+            "lengths": measure.bone_length_deltas(pre, final, names)})
+    out["collateral_lengths"] = measure.collateral_lengths(pre, final, named)
+    return out
+
+
+def _print_geometry(geometry, repair):
+    """Printed tier: aggregate per stage plus achieved per-bone lengths. Per-mesh
+    bounds and every bone's head/tail stay in --report; a 22-mesh avatar would bury
+    the two numbers that decide a height edge."""
+    for entry in geometry["stages"]:
+        agg = entry["aggregate"]
+        if agg is None:
+            print("AVATARPREP: whatif stage %-10s no mesh geometry to measure"
+                  % entry["stage"])
+            continue
+        d = entry.get("delta_from_previous")
+        suffix = ""
+        if d:
+            suffix = "  (d_min_z %+.6f d_max_z %+.6f d_height %+.6f)" % (
+                d["d_min_z"], d["d_max_z"], d["d_height"])
+        print("AVATARPREP: whatif stage %-10s min_z %.6f max_z %.6f height %.6f%s"
+              % (entry["stage"], agg["min"][2], agg["max"][2], agg["height"], suffix))
+    for op in geometry["scale_ops"]:
+        for row in op["lengths"]:
+            pct = "n/a" if row["pct"] is None else "%+.2f%%" % row["pct"]
+            print("AVATARPREP: whatif scales[%d] bone %s length %.6f -> %.6f (%s achieved)"
+                  % (op["index"], row["bone"], row["before"], row["after"], pct))
+    collateral = geometry["collateral_lengths"]
+    if collateral:
+        print("AVATARPREP: whatif %d unnamed bone(s) also changed length — the scale "
+              "spread past the bones the edge names:" % len(collateral))
+        for row in collateral[:12]:
+            pct = "n/a" if row["pct"] is None else "%+.2f%%" % row["pct"]
+            print("AVATARPREP: whatif   %s %.6f -> %.6f (%s)"
+                  % (row["bone"], row["before"], row["after"], pct))
+        if len(collateral) > 12:
+            print("AVATARPREP: whatif   ... %d more; --report has all of them"
+                  % (len(collateral) - 12))
+    else:
+        # Stated positively: silence here would be indistinguishable from not looking.
+        print("AVATARPREP: whatif no bone outside the edge's scale ops changed length")
+    total = geometry["delta_total"]
+    if total:
+        print("AVATARPREP: whatif total d_min_z %+.6f d_max_z %+.6f d_height %+.6f"
+              % (total["d_min_z"], total["d_max_z"], total["d_height"]))
+    if repair:
+        # Re-stated AFTER the numbers: a reader who scrolled to the measurements must
+        # not miss that they describe a state Blender altered as it read the file.
+        print("AVATARPREP: WARNING the numbers above were measured on a repaired load: %s"
+              % repair)
+
+
 def main():
     args = _parse_args()
     import bpy
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
+    repair = open_blend(args.in_path, writes=not args.whatif,
+                        force_load_repair=args.force_load_repair)
     enable_avatarprep()
-    from avatarprep.core import scene_utils, proportions
+    from avatarprep.core import scene_utils, proportions, measure
 
     armature = _resolve_armature(args.armature)
 
@@ -120,10 +221,31 @@ def main():
         for w in warnings:
             print("AVATARPREP: WARNING", w)
 
+        if offenders:
+            if args.report:
+                write_report(args.report, report)
+            sys.exit(1)
+
+        # Gate clean, so measure what the edge would actually do. The trial applies the
+        # real engine in memory and is never saved (--out is refused at parse time), so
+        # every number below is measured rather than predicted -- validated bit-exact
+        # against a real apply on both shipped longlimb edges and on a shapekey-bearing
+        # fixture. Cost is 1.6-4.5 s on a full avatar.
+        stages = []
+        proportions.apply_proportion_edge(
+            armature, meshes, edge, bone_overrides=bone_overrides,
+            shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys,
+            stage_hook=lambda name: stages.append(
+                (name, measure.measure_geometry(armature, meshes))))
+
+        geometry = _geometry_report(stages, edge, bone_overrides, repair)
+        report["geometry"] = geometry
+        _print_geometry(geometry, repair)
+
         if args.report:
             write_report(args.report, report)
 
-        sys.exit(1 if offenders else 0)
+        sys.exit(0)
 
     try:
         report = proportions.apply_proportion_edge(
@@ -149,4 +271,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "apply_proportion_edge")

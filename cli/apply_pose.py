@@ -21,7 +21,7 @@ import argparse
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import enable_avatarprep
+from cli._common import enable_avatarprep, open_blend, run_cli, add_force_load_repair
 
 
 def _parse_args():
@@ -37,6 +37,7 @@ def _parse_args():
                    help="Where to save the result")
     p.add_argument("--scale-test", action="store_true",
                    help="Scale the armature pose by 1.2x before applying (test)")
+    add_force_load_repair(p)
     return p.parse_args(argv)
 
 
@@ -44,8 +45,7 @@ def main():
     args = _parse_args()
     import bpy
 
-    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.in_path))
-
+    open_blend(args.in_path, writes=True, force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import scene_utils, rest_pose
 
@@ -80,4 +80,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main, "apply_pose")
