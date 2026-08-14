@@ -258,6 +258,16 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
             warnings.append("mesh %r is not bound to the armature; object transform won't reach it"
                             % m.name)
 
+    # An unevaluated mesh is an OFFENDER here rather than at the bake. apply_proportion_edge
+    # calls rest_pose.apply_pose partway through, where a refusal would land on
+    # half-transformed geometry with the state stamp at its crash sentinel; this gate runs
+    # before the first mutation, so the edge declines cleanly and --whatif reports it
+    # without trialling. rest_pose owns the predicate and why it is that one.
+    for name in rest_pose.unevaluated_meshes(meshes):
+        offenders.append("mesh %r is not evaluated (hidden in the viewport, or in an "
+                         "excluded or viewport-hidden collection); the rest-pose bake "
+                         "would write it UNDEFORMED" % name)
+
     return {"offenders": offenders, "warnings": warnings}
 
 

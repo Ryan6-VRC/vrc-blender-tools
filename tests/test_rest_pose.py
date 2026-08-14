@@ -120,6 +120,130 @@ def _eval_key(mesh, key_name):
     return cos
 
 
+
+def _posed_rig_with_mesh():
+    """One bone scaled 2x in Y, one bound quad sitting at the bone tip. Deformation is
+    a clean z 1.0 -> 2.0, so an undeformed bake is unmistakable."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    ad = bpy.data.armatures.new("A")
+    arm = bpy.data.objects.new("Armature", ad)
+    bpy.context.collection.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    arm.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    b = ad.edit_bones.new("Root")
+    b.head = Vector((0, 0, 0))
+    b.tail = Vector((0, 0, 1))
+    bpy.ops.object.mode_set(mode='OBJECT')
+    me = bpy.data.meshes.new("BodyData")
+    me.from_pydata([(0, 0, 1.0), (0.1, 0, 1.0), (0, 0.1, 1.0)], [], [(0, 1, 2)])
+    me.update()
+    ob = bpy.data.objects.new("Body", me)
+    bpy.context.collection.objects.link(ob)
+    vg = ob.vertex_groups.new(name="Root")
+    vg.add([0, 1, 2], 1.0, 'REPLACE')
+    mod = ob.modifiers.new("Armature", 'ARMATURE')
+    mod.object = arm
+    ob.parent = arm
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode='POSE')
+    arm.pose.bones["Root"].scale = (1.0, 2.0, 1.0)
+    bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    return arm, ob
+
+
+def _to_subcollection(ob):
+    col = bpy.data.collections.new("Sub")
+    bpy.context.scene.collection.children.link(col)
+    bpy.context.scene.collection.objects.unlink(ob)
+    col.objects.link(ob)
+    return col, bpy.context.view_layer.layer_collection.children[col.name]
+
+
+def test_refuses_unevaluated_meshes():
+    """A mesh the depsgraph will not evaluate bakes UNDEFORMED and reports itself
+    processed. Refuse instead -- and refuse on exactly the states that break.
+
+    The three that bake correctly are asserted too, because the tempting predicates get
+    them wrong: visible_get() reads False for hide_set and for a LAYER collection's
+    hide_viewport, both of which bake fine, so it would refuse working files.
+    """
+    from avatarprep.core import rest_pose
+
+    def hide_viewport(a, o):
+        o.hide_viewport = True
+
+    def eye(a, o):
+        o.hide_set(True)
+
+    def coll_exclude(a, o):
+        _to_subcollection(o)[1].exclude = True
+
+    def coll_hide(a, o):
+        _to_subcollection(o)[0].hide_viewport = True
+
+    def layer_coll_hide(a, o):
+        _to_subcollection(o)[1].hide_viewport = True
+
+    cases = [
+        ("visible", lambda a, o: None, False),
+        ("obj.hide_viewport", hide_viewport, True),
+        ("obj.hide_set", eye, False),
+        ("collection excluded", coll_exclude, True),
+        ("collection.hide_viewport", coll_hide, True),
+        ("layer_coll.hide_viewport", layer_coll_hide, False),
+    ]
+    for label, setup, should_refuse in cases:
+        arm, ob = _posed_rig_with_mesh()
+        setup(arm, ob)
+        bpy.context.view_layer.update()
+        before = [round(v.co.z, 4) for v in ob.data.vertices]
+        try:
+            rest_pose.apply_pose(arm, [ob])
+            refused = False
+        except rest_pose.RestPoseRefused as e:
+            refused = True
+            check(ob.name in " | ".join(e.offenders),
+                  "%s: the refusal should name the mesh, got %s" % (label, e.offenders))
+            check([round(v.co.z, 4) for v in ob.data.vertices] == before,
+                  "%s: a refusal must not have mutated the mesh" % label)
+        check(refused == should_refuse,
+              "%s: refused=%s, expected %s" % (label, refused, should_refuse))
+        if not refused:
+            baked = round(ob.data.vertices[0].co.z, 3)
+            check(abs(baked - 2.0) < 1e-2,
+                  "%s: baked z should be 2.0 (deformed), got %s -- if this is 1.0 the "
+                  "predicate let an unevaluated mesh through" % (label, baked))
+
+
+def test_edge_refuses_before_mutating():
+    """The edge path must decline at validate, not at the bake: apply_proportion_edge
+    calls apply_pose partway through, where a refusal would land on half-transformed
+    geometry with the state stamp at its crash sentinel."""
+    from avatarprep.core import proportions, scene_utils
+    arm, ob = _posed_rig_with_mesh()
+    bpy.ops.object.mode_set(mode='POSE')
+    arm.pose.bones["Root"].scale = (1.0, 1.0, 1.0)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    arm["avatarprep_base"] = "a"
+    arm["avatarprep_state"] = "s0"
+    ob.hide_viewport = True
+    bpy.context.view_layer.update()
+    edge = {"source": "s0", "target": "s1", "source_base": "a",
+            "scales": [{"bones": ["Root"], "value": [1.0, 1.3, 1.0]}]}
+    report = proportions.validate_proportion_edge(arm, [ob], proportions.load_edge(edge))
+    check(any("not evaluated" in o for o in report["offenders"]),
+          "validate should offend on an unevaluated mesh, got %s" % report["offenders"])
+    try:
+        proportions.apply_proportion_edge(arm, [ob], edge)
+        FAILURES.append("apply_proportion_edge should have aborted on the offender")
+    except proportions.EdgeError:
+        pass
+    check(scene_utils.read_stamp(arm, scene_utils.STAMP_STATE) == "s0",
+          "the state stamp must be untouched -- not left at the crash sentinel")
+
+
 def main():
     _add_repo_root_to_path()
     _clear_scene()
@@ -196,6 +320,8 @@ def main():
     check(bpy.context.view_layer.objects.active is arm, "active object not restored after bake")
     check(arm.mode == 'POSE', "armature mode not restored to POSE after bake (got %r)" % arm.mode)
 
+    test_refuses_unevaluated_meshes()
+    test_edge_refuses_before_mutating()
     if FAILURES:
         print("RESTPOSE_TEST FAIL:", "; ".join(FAILURES))
         sys.exit(1)

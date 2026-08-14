@@ -20,6 +20,35 @@ import numpy as np
 from . import scene_utils
 
 
+class RestPoseRefused(Exception):
+    """Raised before any mutation when a bound mesh cannot be baked correctly.
+    Carries ``offenders`` (list of str) so a door can print them individually."""
+
+    def __init__(self, message, offenders):
+        super().__init__(message)
+        self.offenders = offenders
+
+
+def unevaluated_meshes(mesh_objs) -> List[str]:
+    """Names of the meshes the depsgraph will not evaluate, which therefore cannot bake.
+
+    ``_eval_coords`` reads the EVALUATED mesh. For an object the depsgraph skips, that
+    read returns the rest shape rather than the deformed one, and writing it back under
+    the new identity rest pose commits the mesh at its old shape while the skeleton
+    moved — wrong by the whole pose delta, silent, and unrecoverable once saved.
+
+    The predicate is ``is_evaluated``, chosen by measuring the bake's actual correctness
+    against every hiding state on 5.2.0. It matters that it is this and not a visibility
+    flag: ``hide_set`` (the eye) and a LAYER collection's ``hide_viewport`` both bake
+    correctly while reading as not-visible, so ``visible_get()`` would refuse working
+    files; the object's own ``hide_viewport`` and a COLLECTION datablock's
+    ``hide_viewport`` both bake wrong while the object is still in the view layer, so a
+    view-layer membership test would miss them. This asserts the state that decides the
+    outcome rather than a proxy for it."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    return [o.name for o in mesh_objs if not o.evaluated_get(depsgraph).is_evaluated]
+
+
 def _eval_coords(mesh_obj: bpy.types.Object, n: int) -> np.ndarray:
     """Flat ``3*n`` array of the mesh's CURRENT evaluated (armature-deformed)
     vertex coordinates, in the object's local space."""
@@ -138,6 +167,20 @@ def apply_pose(armature_obj: bpy.types.Object,
 
     if mesh_objs is None:
         mesh_objs = scene_utils.get_bound_meshes(armature_obj)
+
+    # Pre-flight, BEFORE the first capture: an unevaluated mesh would bake undeformed
+    # and report itself processed. Refuse rather than repair — unhiding is one click for
+    # whoever hid it, and no file in the corpus carries one, so silently reaching in and
+    # changing visibility state would be machinery paying rent for a case that does not
+    # arise. A recurrence promotes this to a repair.
+    blind = unevaluated_meshes(mesh_objs)
+    if blind:
+        raise RestPoseRefused(
+            "apply_pose refused: %d bound mesh(es) the depsgraph will not evaluate"
+            % len(blind),
+            ["mesh %r is not evaluated (hidden in the viewport, or in an excluded or "
+             "viewport-hidden collection); it would bake UNDEFORMED. Make it evaluable "
+             "and re-run" % name for name in blind])
 
     saved = scene_utils.SavedSelection()
     try:
