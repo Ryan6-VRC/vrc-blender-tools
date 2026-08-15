@@ -631,6 +631,44 @@ def test_bbox_center_skips_empty_meshes():
                   "bbox centre of only empty meshes")
 
 
+def test_bbox_center_refuses_unevaluated_meshes():
+    """The pivot refuses what the measuring doors only report. _world_bounds does not
+    skip an unevaluated mesh — it measures it, off unevaluated geometry and a
+    matrix_world that never re-evaluated — so a pivot computed from it moves the avatar
+    by an unbounded amount. apply_proportion_edge's preflight refuses on the same
+    predicate first, so this guard is unreachable on every shipped path; it is pinned
+    here because the core is built to be called directly and a second caller must not
+    inherit the trap by omission."""
+    from avatarprep.core import proportions as P
+    _clear_scene()
+    arm = _make_arm()
+    mesh = _make_mesh(arm)
+    hidden = _make_mesh(arm, name="HiddenMesh")
+    hidden.hide_viewport = True
+    bpy.context.view_layer.update()
+    expect_raises(lambda: P._world_bbox_center([mesh, hidden]), "HiddenMesh",
+                  "bbox centre with an unevaluated mesh")
+    expect_raises(lambda: P._world_bbox_center([mesh, hidden]), "not evaluated",
+                  "bbox centre refusal names the predicate")
+
+    # The two cases must not collapse into one another. A VISIBLE zero-vertex mesh is
+    # skipped silently and does not raise (test_bbox_center_skips_empty_meshes owns why),
+    # so it is visible here deliberately: _world_bounds appends to `unevaluated` BEFORE
+    # the zero-vertex skip, which makes a HIDDEN empty mesh refuse instead.
+    empty = bpy.data.objects.new("EmptyMesh", bpy.data.meshes.new("EmptyData"))
+    bpy.context.collection.objects.link(empty)
+    bpy.context.view_layer.update()
+    try:
+        P._world_bbox_center([mesh, empty])
+    except Exception as e:
+        FAILURES.append("a visible zero-vertex mesh must be skipped, not refused: %s" % e)
+
+    empty.hide_viewport = True
+    bpy.context.view_layer.update()
+    expect_raises(lambda: P._world_bbox_center([mesh, empty]), "EmptyMesh",
+                  "a hidden empty mesh refuses (unevaluated is checked first)")
+
+
 def _bounds_height(meshes):
     from avatarprep.core import measure
     b = measure._world_bounds(meshes)
@@ -827,6 +865,7 @@ def main():
     test_collateral_lengths()
     test_cli_whatif_writes_nothing_and_reports_geometry()
     test_bbox_center_skips_empty_meshes()
+    test_bbox_center_refuses_unevaluated_meshes()
     test_world_bounds_reads_the_evaluated_result()
     test_world_bounds_transform_is_the_full_affine()
     test_world_bounds_is_not_a_lagging_cache()

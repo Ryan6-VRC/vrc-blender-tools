@@ -47,7 +47,12 @@ returns its ORIGINAL, unmodified data from ``evaluated_get`` — silently, no er
 ``measure_geometry`` on a HIDDEN subsurf-L2 cube reads the same wrong 2.000000 the
 cage would have given. ``rest_pose.unevaluated_meshes`` is the predicate that names
 such objects (its docstring owns why ``is_evaluated`` and not a visibility flag), and
-``observe_import`` reports them; the doors here do not refuse on it.
+``observe_import`` reports them; the doors here do not refuse on it. Such a mesh is
+MEASURED rather than skipped — off unevaluated geometry and off a ``matrix_world`` that
+never re-evaluated either, which the forced update in ``_world_bounds`` does not rescue
+— and named in the returned ``unevaluated`` list. Of the three readers above, one does
+refuse on that list: ``proportions._world_bbox_center``, because a pivot returns one
+vector that moves the avatar and so cannot report.
 
 Pure bpy: no operator, no UI.
 """
