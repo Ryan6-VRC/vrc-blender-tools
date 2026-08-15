@@ -149,10 +149,20 @@ def measure_geometry(armature, meshes) -> Dict[str, Any]:
     above. ``aggregate`` is ``None`` when no mesh has any vertices.
 
     ``unevaluated`` names the meshes measured at their UNDEFORMED shape (the module
-    docstring's blind spot). This function does not refuse on them — whether the
-    measuring doors should is an open design call — but a caller that prints a number
-    from here without printing this list is reporting a clean measurement it did not
-    make.
+    docstring's blind spot). This function reports rather than refuses, and that is
+    settled rather than merely unimplemented: every consumer that ACTS on a number from
+    here is gated on the same predicate upstream — ``apply_proportion_edge`` and its
+    ``--whatif`` door refuse before any number exists to read — while the one consumer
+    that only looks (``own-base``'s post-import gut-check) wants to be told a mesh is
+    hidden, which is what refusing would withhold. Refusing here would buy nothing and
+    would cost the one door whose job is to say so.
+
+    That holds only while it holds. A caller that prints a number from here without this
+    list beside it is reporting a clean measurement it did not make, and a caller that
+    ACTS on one with no gate upstream is the case this contract does not cover — it wants
+    its own refusal. ``proportions._world_bbox_center`` is the worked example: it consumes
+    this list and refuses, because a pivot returns one vector that moves the avatar and so
+    cannot report.
 
     Bones are reported as raw head/tail positions rather than any pre-chosen span, so
     a caller can difference whatever distance it actually cares about (shoulder-to-
