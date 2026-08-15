@@ -262,11 +262,11 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
     # calls rest_pose.apply_pose partway through, where a refusal would land on
     # half-transformed geometry with the state stamp at its crash sentinel; this gate runs
     # before the first mutation, so the edge declines cleanly and --whatif reports it
-    # without trialling. rest_pose owns the predicate and why it is that one.
+    # without trialling. rest_pose owns the predicate, the states string, and why it is
+    # that one.
     for name in rest_pose.unevaluated_meshes(meshes):
-        offenders.append("mesh %r is not evaluated (hidden in the viewport, or in an "
-                         "excluded or viewport-hidden collection); the rest-pose bake "
-                         "would write it UNDEFORMED" % name)
+        offenders.append("mesh %r is not evaluated (%s); the rest-pose bake would write "
+                         "it UNDEFORMED" % (name, rest_pose.UNEVALUATED_STATES))
 
     return {"offenders": offenders, "warnings": warnings}
 
@@ -330,12 +330,31 @@ def _world_bbox_center(meshes) -> mathutils.Vector:
     This is the pivot ``pose_object_transform`` scales real geometry about, so an
     approximate answer here MOVES the avatar — which is why it reads
     ``measure._world_bounds`` (that module's docstring owns why ``bound_box``, what this
-    used to read, cannot serve a pivot).
+    used to read, cannot serve a pivot, and why an unevaluated mesh is measured there
+    rather than skipped).
 
-    A mesh contributing no evaluated geometry is skipped, and a set of only such meshes
-    has no centre — it must raise rather than return an origin that looks like an
-    answer."""
+    Refuses on an unevaluated mesh, where the measuring doors only report: a pivot
+    returns one vector that moves the avatar, and its error is unbounded — the stale
+    transform is arbitrary. ``apply_proportion_edge``'s preflight refuses on the same
+    predicate before reaching here, so this is unreachable on every shipped path; it is
+    here so a second caller cannot inherit the trap by omission, on a core surface built
+    to be called directly.
+
+    A mesh contributing no EVALUATED geometry is the other case and is skipped, not
+    refused: an empty mesh has no bounds, and counting its origin is the ``bound_box``
+    bug. A set of only such meshes has no centre — it must raise rather than return an
+    origin that looks like an answer. An empty mesh that is also hidden is unevaluated
+    first and refuses, matching the upstream preflight."""
     b = measure._world_bounds(meshes)
+    # Before the emptiness raise below, which cannot catch this: an unevaluated mesh
+    # still yields real (stale) bounds, so nothing further down would ever fire and the
+    # caller would get a confident wrong pivot.
+    if b["unevaluated"]:
+        raise EdgeError("object transform: bbox_center pivot would be measured off "
+                        "unevaluated geometry and a stale transform. Mesh(es) not "
+                        "evaluated (%s): %s. Make them evaluable and re-run"
+                        % (rest_pose.UNEVALUATED_STATES,
+                           ", ".join(repr(n) for n in b["unevaluated"])))
     if b["min"] is None:
         raise EdgeError("object transform: no mesh geometry to compute bbox center")
     return (mathutils.Vector(b["min"]) + mathutils.Vector(b["max"])) * 0.5

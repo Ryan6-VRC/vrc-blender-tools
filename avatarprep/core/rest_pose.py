@@ -29,6 +29,19 @@ class RestPoseRefused(Exception):
         self.offenders = offenders
 
 
+# The states that make a mesh unevaluated, quoted verbatim by every door that names this
+# offender — this module's own refusal, ``proportions.validate_proportion_edge``'s, and
+# ``proportions._world_bbox_center``'s — so three copies cannot drift apart on what
+# Blender actually does. Both distinctions here are measured, and the doors state them
+# because the near-miss states are the ones a reader reaches for first: the outliner EYE
+# looks like the cause and is not one (``test_refuses_unevaluated_meshes`` pins it, and
+# the eye on a LAYER collection, as evaluating fine), and an object linked into no
+# collection at all is a cause that reads like nothing at all.
+UNEVALUATED_STATES = ("disabled in viewports — the monitor icon, on the object itself or "
+                      "on its collection datablock — in an excluded collection, or linked "
+                      "into no collection at all. The outliner eye is NOT one of these")
+
+
 def unevaluated_meshes(mesh_objs) -> List[str]:
     """Names of the meshes the depsgraph will not evaluate, which therefore cannot bake.
 
@@ -178,9 +191,8 @@ def apply_pose(armature_obj: bpy.types.Object,
         raise RestPoseRefused(
             "apply_pose refused: %d bound mesh(es) the depsgraph will not evaluate"
             % len(blind),
-            ["mesh %r is not evaluated (hidden in the viewport, or in an excluded or "
-             "viewport-hidden collection); it would bake UNDEFORMED. Make it evaluable "
-             "and re-run" % name for name in blind])
+            ["mesh %r is not evaluated (%s); it would bake UNDEFORMED. Make it evaluable "
+             "and re-run" % (name, UNEVALUATED_STATES) for name in blind])
 
     saved = scene_utils.SavedSelection()
     try:
