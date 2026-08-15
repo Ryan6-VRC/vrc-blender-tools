@@ -15,9 +15,8 @@ sessions where a VIEW_3D area is available.
 from typing import Any, Dict
 
 import bpy
-from mathutils import Vector
 
-from . import scene_utils
+from . import scene_utils, measure, rest_pose
 
 
 def _read_unit_scale_factor(path: str):
@@ -68,26 +67,40 @@ def import_fbx(path: str, **settings) -> Dict[str, Any]:
     # objects), so capture what exists before importing and diff afterwards.
     before = set(bpy.data.objects)
 
+    def _finish():
+        """Stamp, then observe. Runs under the SAME context the import ran under.
+
+        ``observe_import`` resolves ``bpy.context.view_layer`` (to force an update and
+        get a depsgraph), and under ``temp_override(window=…)`` the scene and view layer
+        follow that window. Since the branch above deliberately scans EVERY window for a
+        VIEW_3D, a two-window session can import into one window's view layer while the
+        caller's context points at another — where the new objects are absent, and
+        ``evaluated_get`` would hand back unevaluated data with no error. Observing
+        inside the override keeps both halves on one view layer. (The old ``bound_box``
+        read was view-layer-independent, so this exposure arrived with the fix.)"""
+        # Stamp every newly-imported armature with the reserved ``unproportioned`` origin
+        # state (a fresh import is, by definition, unproportioned — the as-shipped shape).
+        # Base lineage is NOT touched here — base is a deliberate agent assertion made
+        # only through the stamp_base door, never guessed at import. A fresh import reads
+        # base=absent (honest/unknown).
+        for arm in (o for o in new_objects if o.type == 'ARMATURE'):
+            scene_utils.write_stamp(arm, scene_utils.STAMP_STATE, "unproportioned")
+        return observe_import(new_objects)
+
     if win and area:                                  # windowed (MCP) path
         region = next((r for r in area.regions if r.type == 'WINDOW'), None)
         ctx = {"window": win, "area": area}
         if region:
             ctx["region"] = region
         scene_utils.op_override(bpy.ops.wm.fbx_import, ctx, execution_context='EXEC_DEFAULT', **kwargs)
+        new_objects = [o for o in bpy.data.objects if o not in before]
+        with bpy.context.temp_override(**ctx):
+            snap = _finish()
     else:                                             # no VIEW_3D context (headless OR windowed without a VIEW_3D area)
         bpy.ops.wm.fbx_import(**kwargs)
+        new_objects = [o for o in bpy.data.objects if o not in before]
+        snap = _finish()
 
-    new_objects = [o for o in bpy.data.objects if o not in before]
-
-    # Stamp every newly-imported armature with the reserved ``unproportioned`` origin
-    # state (a fresh import is, by definition, unproportioned — the as-shipped shape).
-    # Base lineage is NOT touched here — base is a deliberate agent assertion made only
-    # through the stamp_base door, never guessed at import. A fresh import reads
-    # base=absent (honest/unknown).
-    for arm in (o for o in new_objects if o.type == 'ARMATURE'):
-        scene_utils.write_stamp(arm, scene_utils.STAMP_STATE, "unproportioned")
-
-    snap = observe_import(new_objects)
     snap["unit_scale_factor"] = _read_unit_scale_factor(path)
     return snap
 
@@ -107,24 +120,25 @@ def observe_import(objects=None) -> Dict[str, Any]:
       * ``bones``             — total bone count across all armatures (0 if none)
       * ``bones_per_armature``— list of per-armature bone counts
       * ``shapekeys``         — total shape-key count across all meshes (basis excluded)
-      * ``height_m``          — world-space bounding-box height in metres, over the meshes
-                                that HAVE vertices (0 when none does)
+      * ``height_m``          — world-space height in metres of the meshes' EVALUATED
+                                geometry (0 when none has any). Rounded to 4 dp, which
+                                is now the dominant error on accessory-scale objects: a
+                                fixed +-0.05 mm reads ~0.04% on a 0.1 m prop against
+                                ~0.004% on a body. Fine for a gut-check, not a tolerance.
       * ``unparented_meshes`` — names of MESH objects with no parent
+      * ``unevaluated_meshes``— names of meshes the depsgraph will not evaluate, whose
+                                measurement is therefore silently their UNDEFORMED
+                                shape. The one blind spot no measure here escapes, so it
+                                is named rather than left looking like a clean read
+                                (``rest_pose.unevaluated_meshes`` owns the predicate).
     """
     objs = list(bpy.data.objects) if objects is None else list(objects)
     arms = [o for o in objs if o.type == 'ARMATURE']
     meshes = [o for o in objs if o.type == 'MESH']
     bones_per_armature = [len(a.data.bones) for a in arms]
 
-    # A zero-vertex mesh's bound_box is eight all-zero corners, which would report the
-    # object's origin as real geometry and pull height_m to span from z=0.
-    measurable = [m for m in meshes if len(m.data.vertices) > 0]
-    zmin, zmax = 1e9, -1e9
-    for m in measurable:
-        for c in m.bound_box:
-            wz = (m.matrix_world @ Vector(c)).z
-            zmin = min(zmin, wz)
-            zmax = max(zmax, wz)
+    b = measure._world_bounds(meshes)
+    height_m = round(b["max"][2] - b["min"][2], 4) if b["min"] is not None else 0
 
     total_sk = sum(
         (len(m.data.shape_keys.key_blocks) - 1) if m.data.shape_keys else 0
@@ -137,6 +151,7 @@ def observe_import(objects=None) -> Dict[str, Any]:
         "bones": sum(bones_per_armature),
         "bones_per_armature": bones_per_armature,
         "shapekeys": total_sk,
-        "height_m": round(zmax - zmin, 4) if measurable else 0,
+        "height_m": height_m,
         "unparented_meshes": [m.name for m in meshes if m.parent is None],
+        "unevaluated_meshes": rest_pose.unevaluated_meshes(meshes),
     }

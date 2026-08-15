@@ -77,6 +77,42 @@ def main():
     assert import_mod.observe_import()["height_m"] == 0, \
         "a scene of only empty meshes should report height_m 0"
 
+    # height_m measures the EVALUATED result. bound_box -- what this used to read --
+    # reports the control cage: 2.0 for a subsurf-L2 size-2 cube whose real height is
+    # 1.679013. measure.py's docstring holds the full set of shapes bound_box gets
+    # wrong and test_proportions.py pins them on the shared helper; this is the one
+    # assertion that the SNAPSHOT is wired to it, which is what own-base Phase 2 reads.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    bpy.context.object.modifiers.new("s", 'SUBSURF').levels = 2
+    h = import_mod.observe_import()["height_m"]
+    assert abs(h - 1.6790) < 1e-3, \
+        "height_m should measure the evaluated mesh (~1.679), got %r -- 2.0 means it " \
+        "is reading bound_box again" % h
+
+    # A mesh the depsgraph will not evaluate is measured as its UNDEFORMED shape, by
+    # every measure in this repo. Nothing here can fix that, so it must not read as a
+    # clean measurement: the snapshot names the offender instead.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    hidden = bpy.context.object
+    hidden.name = "HiddenCube"
+    hidden.modifiers.new("s", 'SUBSURF').levels = 2
+    snap = import_mod.observe_import()
+    assert snap["unevaluated_meshes"] == [], \
+        "a visible mesh must not be reported unevaluated, got %r" % snap["unevaluated_meshes"]
+    hidden.hide_viewport = True
+    snap = import_mod.observe_import()
+    assert snap["unevaluated_meshes"] == ["HiddenCube"], \
+        "a hide_viewport mesh must be named unevaluated, got %r" % snap["unevaluated_meshes"]
+    assert abs(snap["height_m"] - 2.0) < 1e-3, \
+        "the honest reading of an unevaluated mesh is its undeformed 2.0, got %r -- if " \
+        "this ever reads 1.679 the blind spot closed and the key can go" % snap["height_m"]
+
+    # Which checkout actually ran: an editable install records one absolute path, so a
+    # second worktree can import the first one's source and pass regardless of its own
+    # changes (dispatched-work.md, Worktree mechanics).
+    print("IMPORT_TEST module:", import_mod.__file__)
     print("IMPORT_TEST OK")
 
 

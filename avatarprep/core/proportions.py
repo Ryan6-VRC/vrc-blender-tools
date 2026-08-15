@@ -11,7 +11,7 @@ import bpy
 import idprop
 import mathutils
 
-from . import scene_utils, rest_pose
+from . import scene_utils, rest_pose, measure
 
 
 class EdgeError(ValueError):
@@ -327,25 +327,18 @@ def apply_framed_scale(armature, pose_bones, value, *, space="normal", pivot="me
 def _world_bbox_center(meshes) -> mathutils.Vector:
     """Centre of the meshes' combined world bounding box.
 
-    A zero-vertex mesh is SKIPPED: its ``bound_box`` is eight all-zero corners, so
-    including it drags the box toward that object's origin as though geometry were
-    there, moving the pivot this returns. ``found`` therefore counts meshes WITH
-    vertices — a set of only empty meshes has no bbox centre and must raise rather than
-    return an origin that looks like an answer."""
-    lo = mathutils.Vector((1e18, 1e18, 1e18))
-    hi = mathutils.Vector((-1e18, -1e18, -1e18))
-    found = False
-    for m in meshes:
-        if len(m.data.vertices) == 0:
-            continue
-        for corner in m.bound_box:
-            w = m.matrix_world @ mathutils.Vector(corner)
-            for k in range(3):
-                lo[k] = min(lo[k], w[k]); hi[k] = max(hi[k], w[k])
-            found = True
-    if not found:
+    This is the pivot ``pose_object_transform`` scales real geometry about, so an
+    approximate answer here MOVES the avatar — which is why it reads
+    ``measure._world_bounds`` (that module's docstring owns why ``bound_box``, what this
+    used to read, cannot serve a pivot).
+
+    A mesh contributing no evaluated geometry is skipped, and a set of only such meshes
+    has no centre — it must raise rather than return an origin that looks like an
+    answer."""
+    b = measure._world_bounds(meshes)
+    if b["min"] is None:
         raise EdgeError("object transform: no mesh geometry to compute bbox center")
-    return (lo + hi) * 0.5
+    return (mathutils.Vector(b["min"]) + mathutils.Vector(b["max"])) * 0.5
 
 
 def _root_pose_bone(armature):

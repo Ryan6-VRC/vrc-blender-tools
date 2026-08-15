@@ -5,6 +5,7 @@ Run:
 
 Prints PROP_TEST OK and exits 0 on success; PROP_TEST FAIL: <reason> exit 1 otherwise.
 """
+import math
 import os
 import sys
 
@@ -608,9 +609,10 @@ def test_cli_whatif_writes_nothing_and_reports_geometry():
 
 
 def test_bbox_center_skips_empty_meshes():
-    """pivot 'bbox_center' scales about the meshes' own centre. A zero-vertex mesh's
-    bound_box is eight all-zero corners, so counting it drags that centre toward the
-    object's origin and the whole avatar scales about the wrong point."""
+    """pivot 'bbox_center' scales about the meshes' own centre. A mesh with no geometry
+    must contribute nothing: counting it drags that centre toward the object's origin
+    and the whole avatar scales about the wrong point. (The centre now comes from
+    measure._world_bounds; this pins the skip behaviour across that move.)"""
     from avatarprep.core import proportions as P
     _clear_scene()
     arm = _make_arm()
@@ -627,6 +629,115 @@ def test_bbox_center_skips_empty_meshes():
     # Only empty meshes is not a centre at the origin -- it is no centre at all.
     expect_raises(lambda: P._world_bbox_center([empty]), "no mesh geometry",
                   "bbox centre of only empty meshes")
+
+
+def _bounds_height(meshes):
+    from avatarprep.core import measure
+    b = measure._world_bounds(meshes)
+    return None if b["min"] is None else b["max"][2] - b["min"][2]
+
+
+def test_world_bounds_reads_the_evaluated_result():
+    """The five shapes bound_box gets wrong. Each is a size-2 cube whose TRUE height is
+    known, so a cage read is a specific wrong number rather than 'some drift'."""
+    from avatarprep.core import measure
+    for label, setup, want in (
+        ("subsurf L2", lambda o: setattr(o.modifiers.new("s", 'SUBSURF'), "levels", 2), 1.679013),
+        ("solidify", None, 2.346410),
+        ("array x4 on Z", None, 8.0),
+        ("rotated 45 deg X", None, 2.828427),
+    ):
+        _clear_scene()
+        bpy.ops.mesh.primitive_cube_add(size=2.0)
+        o = bpy.context.object
+        if label == "subsurf L2":
+            setup(o)
+        elif label == "solidify":
+            sm = o.modifiers.new("s", 'SOLIDIFY'); sm.thickness = 0.3; sm.offset = 1.0
+        elif label == "array x4 on Z":
+            am = o.modifiers.new("a", 'ARRAY'); am.count = 4
+            am.relative_offset_displace = (0, 0, 1)
+        else:
+            o.rotation_euler = (math.radians(45), 0, 0)
+        got = _bounds_height([o])
+        check(abs(got - want) < 1e-5,
+              "%s: bound_box would read 2.0; expected evaluated %.6f, got %.6f"
+              % (label, want, got))
+
+    # A CENTRED mirror is exact through bound_box too -- pinned so nobody "fixes" the
+    # cases above by keying on 'has a generative modifier'.
+    _clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    o = bpy.context.object
+    mm = o.modifiers.new("m", 'MIRROR'); mm.use_axis = (False, False, True)
+    check(abs(_bounds_height([o]) - 2.0) < 1e-6,
+          "a centred mirror adds no geometry; height should stay 2.0")
+
+
+def test_world_bounds_is_not_a_lagging_cache():
+    """bound_box returns the PREVIOUS shape-key value's box: set 1.0 and it reads the
+    0.0 box, set 0.5 and it reads the 1.0 box. The evaluated read must track the value
+    it is asked about, on the first read, with no intervening evaluation."""
+    _clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    o = bpy.context.object
+    o.shape_key_add(name="Basis", from_mix=False)
+    sk = o.shape_key_add(name="Tall", from_mix=False)
+    for v in sk.data:
+        v.co.z *= 3.0
+    for value, want in ((1.0, 6.0), (0.5, 4.0), (0.0, 2.0)):
+        sk.value = value
+        got = _bounds_height([o])
+        check(abs(got - want) < 1e-6,
+              "shape key at %.1f should measure %.1f, got %.6f (a lagging cache reads "
+              "the previous value's box)" % (value, want, got))
+
+
+def test_world_bounds_forces_the_view_layer_update():
+    """matrix_world is stale after a reparent until something updates the view layer.
+    Reading it unforced reported -50% on a real avatar, so the update belongs in the
+    helper -- not in each caller, where it is one omission from silently wrong."""
+    _clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    o = bpy.context.object
+    check(abs(_bounds_height([o]) - 2.0) < 1e-6, "baseline cube should measure 2.0")
+    holder = bpy.data.objects.new("Holder", None)
+    bpy.context.collection.objects.link(holder)
+    holder.scale = Vector((1, 1, 3))
+    o.parent = holder            # exactly what merge_armatures does to merge meshes
+    got = _bounds_height([o])
+    check(abs(got - 6.0) < 1e-6,
+          "a reparent onto a z*3 holder should measure 6.0; got %.6f (stale "
+          "matrix_world reads the pre-reparent 2.0)" % got)
+
+
+def test_world_bounds_measurability_is_the_evaluated_count():
+    """'Has vertices' means the EVALUATED count. A mesh with zero authored verts under a
+    generative modifier has real geometry, and the original count calls it empty --
+    which is what the two bound_box readers used to do."""
+    _clear_scene()
+    o = bpy.data.objects.new("Generated", bpy.data.meshes.new("GenData"))
+    bpy.context.collection.objects.link(o)
+    check(len(o.data.vertices) == 0, "fixture must start with zero authored verts")
+
+    # A node group that generates a 2 m cube from nothing. Built explicitly rather than
+    # via the default group, which outputs the (empty) input geometry unchanged.
+    ng = bpy.data.node_groups.new("GenCube", 'GeometryNodeTree')
+    ng.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    out = ng.nodes.new("NodeGroupOutput")
+    cube = ng.nodes.new("GeometryNodeMeshCube")
+    cube.inputs["Size"].default_value = (2.0, 2.0, 2.0)
+    ng.links.new(cube.outputs["Mesh"], out.inputs[0])
+    o.modifiers.new("gn", 'NODES').node_group = ng
+
+    dg = bpy.context.evaluated_depsgraph_get()
+    check(len(o.evaluated_get(dg).data.vertices) == 8,
+          "fixture must evaluate to real geometry, got %d verts"
+          % len(o.evaluated_get(dg).data.vertices))
+    got = _bounds_height([o])
+    check(got is not None and abs(got - 2.0) < 1e-6,
+          "a mesh generating geometry must be measured (expected 2.0, got %r) -- the "
+          "original vertex count calls it empty" % got)
 
 
 def main():
@@ -648,6 +759,10 @@ def main():
     test_collateral_lengths()
     test_cli_whatif_writes_nothing_and_reports_geometry()
     test_bbox_center_skips_empty_meshes()
+    test_world_bounds_reads_the_evaluated_result()
+    test_world_bounds_is_not_a_lagging_cache()
+    test_world_bounds_forces_the_view_layer_update()
+    test_world_bounds_measurability_is_the_evaluated_count()
     if FAILURES:
         for f in FAILURES:
             print("PROP_TEST FAIL:", f)

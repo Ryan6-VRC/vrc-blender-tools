@@ -1,27 +1,110 @@
 """World-space geometry measurement for AvatarPrep.
 
-The authoritative measure, as distinct from ``import_fbx.observe_import``'s
-``height_m`` — which is deliberately the cheap "this one's off, re-import" gut-check
-and reads ``object.bound_box``. ``bound_box`` is wrong in three shapes measured on
-this corpus, so nothing that has to be trusted may use it:
+``_world_bounds`` is THE measure. Everything in this repo needing a world-space bound
+reads it: ``measure_geometry`` here, ``import_fbx.observe_import``'s ``height_m``, and
+``proportions._world_bbox_center``'s pivot. Those were three separate copies of the
+technique, two of them on ``object.bound_box``.
 
-  * a generative modifier reads the CONTROL CAGE, not the result (subsurf L2 on a
-    unit cube: bound_box height 1.000000 vs evaluated 0.839506);
+``bound_box`` is wrong in five shapes measured on this corpus (5.2.0), which is why no
+door reads it any more:
+
+  * a GENERATIVE MODIFIER reads the control cage, not the result — subsurf L2 on a
+    size-2 cube reads 2.000000 against an evaluated 1.679013 (+19.1%); solidify 0.3
+    reads -14.8%; an array x4 and an off-centre mirror each read -75.0%. A CENTRED
+    mirror is exact, so "has a mirror" is not the predicate;
+  * it is AXIS-ALIGNED IN LOCAL SPACE, so transforming its eight corners to world
+    misstates a rotated object: a cube at 45 deg X reads -29.3%, at 15 deg -18.4%.
+    Axis-aligned rotations (+-90, 180 — including the FBX importer's own up-axis
+    conversion) map exactly, which is why this stays dormant on fresh imports;
+  * it is a LAGGING CACHE, not merely a cage read. A shape key set to 1.0 reads the
+    value-0.0 box; set then to 0.5 it reads the value-1.0 box — each read returns the
+    PREVIOUS state's answer. A forced depsgraph update fixes this case and no other;
   * a zero-vertex mesh reports eight all-zero corners, injecting world z=0 as if it
     were geometry (a cube spanning 9.5..10.5 beside one empty mesh reads min_z 0.0);
-  * a hidden or view-layer-excluded mesh keeps its last evaluated value, and reading
-    it before anything forces evaluation returns that stale value.
+  * ``matrix_world`` is itself stale until the view layer updates, so a reparent or an
+    object-scale change lands in no reader that does not force one — measured at -50%
+    for a reparent onto a scaled empty, -99% for an armature rescale. ``_world_bounds``
+    forces the update; that is why it lives HERE rather than in each caller.
 
-Reading evaluated vertices costs more and is exact. Pure bpy: no operator, no UI.
+Evaluated vertices cost more and are exact: ~25 ms on a 283k-vert avatar, ~3-9 ms on a
+typical body, against an 80 ms FBX import. numpy rather than a Python loop — the loop
+this replaced cost 62 ms per 97k verts.
+
+THE ONE REMAINING BLIND SPOT, which no reader here escapes: an object the depsgraph
+will not evaluate (its own ``hide_viewport``, or a view-layer-excluded collection)
+returns its ORIGINAL, unmodified data from ``evaluated_get`` — silently, no error,
+``is_evaluated == False``. Reading evaluated vertices buys nothing there:
+``measure_geometry`` on a HIDDEN subsurf-L2 cube reads the same wrong 2.000000 the
+cage would have given. ``rest_pose.unevaluated_meshes`` is the predicate that names
+such objects (its docstring owns why ``is_evaluated`` and not a visibility flag), and
+``observe_import`` reports them; the doors here do not refuse on it.
+
+Pure bpy: no operator, no UI.
 """
 from typing import Any, Dict, List, Optional
 
 import bpy
 import mathutils
+import numpy as np
 
 
 def _empty(v):
     return [v, v, v]
+
+
+def _world_bounds(meshes) -> Optional[Dict[str, Any]]:
+    """World-space min/max of ``meshes``' evaluated geometry, or ``None`` if none has
+    any — plus ``per_mesh``, mapping each name to its own bounds (``None`` when that
+    mesh contributes nothing). The module docstring owns why this reads evaluated
+    vertices rather than ``bound_box``.
+
+    Forces ``view_layer.update()`` first: ``matrix_world`` is stale after a reparent or
+    an object-scale change until something does, and every caller reads world space.
+
+    A mesh is measurable when its EVALUATED vertex count is non-zero — deliberately not
+    the original count, which the two ``bound_box`` callers used to test. The two
+    disagree on a mesh whose geometry is generated rather than authored: 0 original
+    verts under a Geometry Nodes modifier evaluates to real geometry, and the original
+    count reports it as absent. The evaluated count is what "has vertices" has to mean
+    for a function that measures the evaluated result.
+
+    Non-MESH objects are skipped rather than raising. The callers already filter, but a
+    shared helper that crashed on an EMPTY (whose evaluated ``.data`` is ``None``) would
+    just relocate that crash to whichever door forgot."""
+    bpy.context.view_layer.update()
+    dg = bpy.context.evaluated_depsgraph_get()
+
+    lo = np.array([1e18, 1e18, 1e18])
+    hi = np.array([-1e18, -1e18, -1e18])
+    per_mesh: Dict[str, Any] = {}
+    found = False
+
+    for m in meshes:
+        if m.type != 'MESH':
+            continue
+        ev = m.evaluated_get(dg)
+        n = len(ev.data.vertices)
+        if n == 0:
+            per_mesh[m.name] = None
+            continue
+        co = np.empty(n * 3, dtype=np.float64)
+        ev.data.vertices.foreach_get("co", co)
+        co = co.reshape(n, 3)
+        mw = np.array(m.matrix_world, dtype=np.float64)
+        world = co @ mw[:3, :3].T + mw[:3, 3]
+        mlo, mhi = world.min(axis=0), world.max(axis=0)
+        # Plain floats, not np.float64: these cross into json.dump via the CLIs, and
+        # np.float64 is not JSON-serializable.
+        per_mesh[m.name] = {"min": [float(x) for x in mlo], "max": [float(x) for x in mhi],
+                            "height": float(mhi[2] - mlo[2])}
+        lo = np.minimum(lo, mlo)
+        hi = np.maximum(hi, mhi)
+        found = True
+
+    if not found:
+        return {"min": None, "max": None, "per_mesh": per_mesh}
+    return {"min": [float(x) for x in lo], "max": [float(x) for x in hi],
+            "per_mesh": per_mesh}
 
 
 def measure_geometry(armature, meshes) -> Dict[str, Any]:
@@ -36,39 +119,13 @@ def measure_geometry(armature, meshes) -> Dict[str, Any]:
     a caller can difference whatever distance it actually cares about (shoulder-to-
     wrist is ``|UpperArm.head - Hand.head|``) without this function guessing which
     span an edge was authored against."""
-    bpy.context.view_layer.update()
-    dg = bpy.context.evaluated_depsgraph_get()
-
-    lo = mathutils.Vector((1e18, 1e18, 1e18))
-    hi = mathutils.Vector((-1e18, -1e18, -1e18))
-    per_mesh: Dict[str, Any] = {}
-    found = False
-
-    for m in meshes:
-        ev = m.evaluated_get(dg)
-        verts = ev.data.vertices
-        if len(verts) == 0:
-            per_mesh[m.name] = None
-            continue
-        mlo = mathutils.Vector((1e18, 1e18, 1e18))
-        mhi = mathutils.Vector((-1e18, -1e18, -1e18))
-        mw = m.matrix_world
-        for v in verts:
-            w = mw @ v.co
-            for k in range(3):
-                if w[k] < mlo[k]:
-                    mlo[k] = w[k]
-                if w[k] > mhi[k]:
-                    mhi[k] = w[k]
-        per_mesh[m.name] = {"min": list(mlo), "max": list(mhi), "height": mhi[2] - mlo[2]}
-        found = True
-        for k in range(3):
-            lo[k] = min(lo[k], mlo[k])
-            hi[k] = max(hi[k], mhi[k])
+    b = _world_bounds(meshes)
+    per_mesh = b["per_mesh"]
 
     aggregate = None
-    if found:
-        aggregate = {"min": list(lo), "max": list(hi), "height": hi[2] - lo[2]}
+    if b["min"] is not None:
+        aggregate = {"min": b["min"], "max": b["max"],
+                     "height": b["max"][2] - b["min"][2]}
 
     A = armature.matrix_world
     bones = {}

@@ -6,6 +6,7 @@ are thin wrappers around these functions.
 """
 
 from . import scene_utils  # noqa: F401
+from . import measure  # noqa: F401
 from . import rest_pose  # noqa: F401
 from . import fbx_export  # noqa: F401
 from . import import_fbx  # noqa: F401
@@ -15,5 +16,6 @@ from . import proportions  # noqa: F401
 from . import render_mesh  # noqa: F401
 from . import shapekey_bake  # noqa: F401
 
-__all__ = ["scene_utils", "rest_pose", "fbx_export", "import_fbx", "merge_armatures",
-           "prune_bones", "proportions", "render_mesh", "shapekey_bake"]
+__all__ = ["scene_utils", "measure", "rest_pose", "fbx_export", "import_fbx",
+           "merge_armatures", "prune_bones", "proportions", "render_mesh",
+           "shapekey_bake"]
