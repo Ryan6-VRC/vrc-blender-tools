@@ -111,6 +111,11 @@ def _geometry_report(stages, edge, bone_overrides, repair):
     out = {"loaded_with_repairs": repair, "stages": [], "bones": {},
            "scale_ops": []}
     prev = pre
+    # ``m["unevaluated"]`` is deliberately not carried into the entry: the gate above
+    # exits 1 before any stage is measured, so on every reachable path it is empty. Carry
+    # it the moment that gate softens — a report is the one artifact that outlives the
+    # stdout warning, and a measured number in it with no caveat beside it is the defect
+    # measure.measure_geometry's contract names.
     for name, m in stages:
         entry = {"stage": name, "aggregate": m["aggregate"], "per_mesh": m["per_mesh"]}
         if name != "pre":
@@ -242,9 +247,13 @@ def main():
         report["geometry"] = geometry
         _print_geometry(geometry, repair)
 
-        # Every number above counts these meshes at their UNDEFORMED shape -- the
-        # depsgraph will not evaluate them. Unwarned, a --whatif readout claims to be
-        # measured geometry while carrying an unmeasured mesh.
+        # A backstop, not the protection: validate_proportion_edge makes an unevaluated
+        # mesh an OFFENDER, so the exit above fires on the same predicate over the same
+        # mesh list and nothing here is reachable today (measured: a rig with one hidden
+        # bound mesh exits 1 at the gate, with no geometry block in the report at all).
+        # Kept because the reachable version of this door is one softened offender away,
+        # and then a --whatif readout would claim to be measured geometry while carrying
+        # an unmeasured mesh -- which is the thing the numbers above cannot show.
         for name in sorted({n for _, m in stages for n in m["unevaluated"]}):
             print("AVATARPREP: WARNING mesh not evaluated, measured undeformed:", name)
 
