@@ -5,6 +5,7 @@ Run:
 
 Prints PROP_TEST OK and exits 0 on success; PROP_TEST FAIL: <reason> exit 1 otherwise.
 """
+import math
 import os
 import sys
 
@@ -608,9 +609,10 @@ def test_cli_whatif_writes_nothing_and_reports_geometry():
 
 
 def test_bbox_center_skips_empty_meshes():
-    """pivot 'bbox_center' scales about the meshes' own centre. A zero-vertex mesh's
-    bound_box is eight all-zero corners, so counting it drags that centre toward the
-    object's origin and the whole avatar scales about the wrong point."""
+    """pivot 'bbox_center' scales about the meshes' own centre. A mesh with no geometry
+    must contribute nothing: counting it drags that centre toward the object's origin
+    and the whole avatar scales about the wrong point. (The centre now comes from
+    measure._world_bounds; this pins the skip behaviour across that move.)"""
     from avatarprep.core import proportions as P
     _clear_scene()
     arm = _make_arm()
@@ -627,6 +629,183 @@ def test_bbox_center_skips_empty_meshes():
     # Only empty meshes is not a centre at the origin -- it is no centre at all.
     expect_raises(lambda: P._world_bbox_center([empty]), "no mesh geometry",
                   "bbox centre of only empty meshes")
+
+
+def _bounds_height(meshes):
+    from avatarprep.core import measure
+    b = measure._world_bounds(meshes)
+    return None if b["min"] is None else b["max"][2] - b["min"][2]
+
+
+def test_world_bounds_reads_the_evaluated_result():
+    """The five shapes bound_box gets wrong. Each is a size-2 cube whose TRUE height is
+    known, so a cage read is a specific wrong number rather than 'some drift'."""
+    def _subsurf(o):
+        o.modifiers.new("s", 'SUBSURF').levels = 2
+
+    def _solidify(o):
+        sm = o.modifiers.new("s", 'SOLIDIFY'); sm.thickness = 0.3; sm.offset = 1.0
+
+    def _array(o):
+        am = o.modifiers.new("a", 'ARRAY'); am.count = 4
+        am.relative_offset_displace = (0, 0, 1)
+
+    def _rotate(o):
+        o.rotation_euler = (math.radians(45), 0, 0)
+
+    # Every setup lives in the table and is called unconditionally: a dispatch chain in
+    # the body would silently drop a row added here into whichever branch was last.
+    for label, setup, want in (
+        ("subsurf L2", _subsurf, 1.679013),
+        ("solidify", _solidify, 2.346410),
+        ("array x4 on Z", _array, 8.0),
+        ("rotated 45 deg X", _rotate, 2.828427),
+    ):
+        _clear_scene()
+        bpy.ops.mesh.primitive_cube_add(size=2.0)
+        o = bpy.context.object
+        setup(o)
+        got = _bounds_height([o])
+        check(got is not None and abs(got - want) < 1e-5,
+              "%s: bound_box would read 2.0; expected evaluated %.6f, got %r"
+              % (label, want, got))
+
+    # A CENTRED mirror is exact through bound_box too -- pinned so nobody "fixes" the
+    # cases above by keying on 'has a generative modifier'.
+    _clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    o = bpy.context.object
+    mm = o.modifiers.new("m", 'MIRROR'); mm.use_axis = (False, False, True)
+    check(abs(_bounds_height([o]) - 2.0) < 1e-6,
+          "a centred mirror adds no geometry; height should stay 2.0")
+
+
+def test_world_bounds_transform_is_the_full_affine():
+    """ABSOLUTE bounds under translation AND a non-axis-aligned rotation.
+
+    The helper hand-rolls the object transform as ``co @ mw[:3,:3].T + mw[:3,3]``, and
+    every other assertion in this file is blind to getting that wrong: they measure a
+    HEIGHT, which is translation-invariant, about an ORIGIN-CENTRED cube, whose bounds
+    are identical under R and R-transpose. Both mutations -- dropping the translation
+    (``mw[3,:3]``) and transposing the rotation -- pass the rest of the suite. This is
+    the assertion that fails on them, and it matters most for
+    ``proportions._world_bbox_center``, whose result MOVES the avatar.
+
+    The fixture has to be built for this and cannot be a plain cube at an angle: a cube
+    is symmetric about its own origin, and transposing a single-axis rotation is the same
+    as negating it, so R and R-transpose give it identical bounds. It needs geometry
+    asymmetric about the object origin AND rotation about two axes. The test proves that
+    discrimination below rather than assuming it."""
+    _clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=(1, 2, 10))
+    o = bpy.context.object
+    for v in o.data.vertices:                 # break symmetry about the object origin
+        v.co.x += 0.7; v.co.y += 0.35; v.co.z += 1.3
+    o.rotation_euler = (math.radians(35), math.radians(50), 0)
+
+    from avatarprep.core import measure
+    got = measure._world_bounds([o])
+
+    # Ground truth from the evaluated vertices, via mathutils rather than the helper's
+    # numpy -- an independent path, so a shared error cannot cancel out.
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = o.evaluated_get(dg)
+    mw = o.matrix_world
+    ws = [mw @ v.co for v in ev.data.vertices]
+    want_min = [min(w[i] for w in ws) for i in range(3)]
+    want_max = [max(w[i] for w in ws) for i in range(3)]
+    for i, axis in enumerate("xyz"):
+        check(abs(got["min"][i] - want_min[i]) < 1e-6,
+              "min.%s: expected %.6f, got %.6f" % (axis, want_min[i], got["min"][i]))
+        check(abs(got["max"][i] - want_max[i]) < 1e-6,
+              "max.%s: expected %.6f, got %.6f" % (axis, want_max[i], got["max"][i]))
+
+    # Prove the fixture can SEE each mutation: recompute bounds the wrong ways and
+    # require them to differ from the truth. Without this, a later fixture edit could
+    # quietly restore the symmetry that made the suite blind in the first place.
+    R = mw.to_3x3()
+    t = mw.translation
+    for label, bad in (
+        ("transposed rotation", [R.transposed() @ v.co + t for v in ev.data.vertices]),
+        ("dropped translation", [R @ v.co for v in ev.data.vertices]),
+    ):
+        bad_min = [min(w[i] for w in bad) for i in range(3)]
+        drift = max(abs(bad_min[i] - want_min[i]) for i in range(3))
+        check(drift > 1e-3,
+              "fixture cannot discriminate '%s' (drift %.9f) -- it needs geometry "
+              "asymmetric about the object origin and rotation about two axes" % (label, drift))
+
+
+def test_world_bounds_is_not_a_lagging_cache():
+    """bound_box returns the PREVIOUS shape-key value's box: set 1.0 and it reads the
+    0.0 box, set 0.5 and it reads the 1.0 box. The evaluated read must track the value
+    it is asked about, on the first read, with no intervening evaluation."""
+    _clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    o = bpy.context.object
+    o.shape_key_add(name="Basis", from_mix=False)
+    sk = o.shape_key_add(name="Tall", from_mix=False)
+    for v in sk.data:
+        v.co.z *= 3.0
+    for value, want in ((1.0, 6.0), (0.5, 4.0), (0.0, 2.0)):
+        sk.value = value
+        got = _bounds_height([o])
+        check(abs(got - want) < 1e-6,
+              "shape key at %.1f should measure %.1f, got %.6f (a lagging cache reads "
+              "the previous value's box)" % (value, want, got))
+
+
+def test_world_bounds_forces_the_view_layer_update():
+    """matrix_world is stale after a reparent until something forces an evaluation, and
+    reading it unforced reported -50% on a real avatar.
+
+    This pins the OUTCOME, not the mechanism: it stays green if the explicit
+    view_layer.update() is deleted, because the evaluated_depsgraph_get() beside it
+    forces the evaluation too. That is measured, not assumed -- and it is why the helper
+    must fetch its own depsgraph per call rather than accept one from a caller, since a
+    handle fetched before the mutation reads stale."""
+    _clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    o = bpy.context.object
+    check(abs(_bounds_height([o]) - 2.0) < 1e-6, "baseline cube should measure 2.0")
+    holder = bpy.data.objects.new("Holder", None)
+    bpy.context.collection.objects.link(holder)
+    holder.scale = Vector((1, 1, 3))
+    o.parent = holder            # exactly what merge_armatures does to merge meshes
+    got = _bounds_height([o])
+    check(abs(got - 6.0) < 1e-6,
+          "a reparent onto a z*3 holder should measure 6.0; got %.6f (stale "
+          "matrix_world reads the pre-reparent 2.0)" % got)
+
+
+def test_world_bounds_measurability_is_the_evaluated_count():
+    """'Has vertices' means the EVALUATED count. A mesh with zero authored verts under a
+    generative modifier has real geometry, and the original count calls it empty --
+    which is what the two bound_box readers used to do."""
+    _clear_scene()
+    o = bpy.data.objects.new("Generated", bpy.data.meshes.new("GenData"))
+    bpy.context.collection.objects.link(o)
+    check(len(o.data.vertices) == 0, "fixture must start with zero authored verts")
+
+    # A node group that generates a 2 m cube from nothing. Built explicitly rather than
+    # via the default group, which outputs the (empty) input geometry unchanged.
+    ng = bpy.data.node_groups.new("GenCube", 'GeometryNodeTree')
+    ng.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    out = ng.nodes.new("NodeGroupOutput")
+    cube = ng.nodes.new("GeometryNodeMeshCube")
+    cube.inputs["Size"].default_value = (2.0, 2.0, 2.0)
+    ng.links.new(cube.outputs["Mesh"], out.inputs[0])
+    o.modifiers.new("gn", 'NODES').node_group = ng
+
+    dg = bpy.context.evaluated_depsgraph_get()
+    check(len(o.evaluated_get(dg).data.vertices) == 8,
+          "fixture must evaluate to real geometry, got %d verts"
+          % len(o.evaluated_get(dg).data.vertices))
+    got = _bounds_height([o])
+    check(got is not None and abs(got - 2.0) < 1e-6,
+          "a mesh generating geometry must be measured (expected 2.0, got %r) -- the "
+          "original vertex count calls it empty" % got)
+    bpy.data.node_groups.remove(ng)   # _clear_scene() does not purge node groups
 
 
 def main():
@@ -648,6 +827,11 @@ def main():
     test_collateral_lengths()
     test_cli_whatif_writes_nothing_and_reports_geometry()
     test_bbox_center_skips_empty_meshes()
+    test_world_bounds_reads_the_evaluated_result()
+    test_world_bounds_transform_is_the_full_affine()
+    test_world_bounds_is_not_a_lagging_cache()
+    test_world_bounds_forces_the_view_layer_update()
+    test_world_bounds_measurability_is_the_evaluated_count()
     if FAILURES:
         for f in FAILURES:
             print("PROP_TEST FAIL:", f)

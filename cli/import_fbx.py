@@ -57,6 +57,11 @@ def main():
              snap["bones"], snap["shapekeys"], snap["height_m"]))
     for m in snap["unparented_meshes"]:
         print("AVATARPREP: WARNING unparented mesh", m)
+    # height_m counts these at their UNDEFORMED shape: the depsgraph will not evaluate
+    # them, and no measure in this repo escapes that. Staying silent would let the height
+    # read as a clean measurement.
+    for m in snap["unevaluated_meshes"]:
+        print("AVATARPREP: WARNING mesh not evaluated, measured undeformed:", m)
 
     out_path = os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
