@@ -242,6 +242,12 @@ def main():
         report["geometry"] = geometry
         _print_geometry(geometry, repair)
 
+        # Every number above counts these meshes at their UNDEFORMED shape -- the
+        # depsgraph will not evaluate them. Unwarned, a --whatif readout claims to be
+        # measured geometry while carrying an unmeasured mesh.
+        for name in sorted({n for _, m in stages for n in m["unevaluated"]}):
+            print("AVATARPREP: WARNING mesh not evaluated, measured undeformed:", name)
+
         if args.report:
             write_report(args.report, report)
 

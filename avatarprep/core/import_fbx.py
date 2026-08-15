@@ -16,7 +16,7 @@ from typing import Any, Dict
 
 import bpy
 
-from . import scene_utils, measure, rest_pose
+from . import scene_utils, measure
 
 
 def _read_unit_scale_factor(path: str):
@@ -67,7 +67,7 @@ def import_fbx(path: str, **settings) -> Dict[str, Any]:
     # objects), so capture what exists before importing and diff afterwards.
     before = set(bpy.data.objects)
 
-    def _finish():
+    def _finish(new_objects):
         """Stamp, then observe. Runs under the SAME context the import ran under.
 
         ``observe_import`` resolves ``bpy.context.view_layer`` (to force an update and
@@ -93,13 +93,11 @@ def import_fbx(path: str, **settings) -> Dict[str, Any]:
         if region:
             ctx["region"] = region
         scene_utils.op_override(bpy.ops.wm.fbx_import, ctx, execution_context='EXEC_DEFAULT', **kwargs)
-        new_objects = [o for o in bpy.data.objects if o not in before]
         with bpy.context.temp_override(**ctx):
-            snap = _finish()
+            snap = _finish([o for o in bpy.data.objects if o not in before])
     else:                                             # no VIEW_3D context (headless OR windowed without a VIEW_3D area)
         bpy.ops.wm.fbx_import(**kwargs)
-        new_objects = [o for o in bpy.data.objects if o not in before]
-        snap = _finish()
+        snap = _finish([o for o in bpy.data.objects if o not in before])
 
     snap["unit_scale_factor"] = _read_unit_scale_factor(path)
     return snap
@@ -137,8 +135,9 @@ def observe_import(objects=None) -> Dict[str, Any]:
     meshes = [o for o in objs if o.type == 'MESH']
     bones_per_armature = [len(a.data.bones) for a in arms]
 
-    b = measure._world_bounds(meshes)
-    height_m = round(b["max"][2] - b["min"][2], 4) if b["min"] is not None else 0
+    bounds = measure._world_bounds(meshes)
+    height_m = (round(bounds["max"][2] - bounds["min"][2], 4)
+                if bounds["min"] is not None else 0)
 
     total_sk = sum(
         (len(m.data.shape_keys.key_blocks) - 1) if m.data.shape_keys else 0
@@ -153,5 +152,5 @@ def observe_import(objects=None) -> Dict[str, Any]:
         "shapekeys": total_sk,
         "height_m": height_m,
         "unparented_meshes": [m.name for m in meshes if m.parent is None],
-        "unevaluated_meshes": rest_pose.unevaluated_meshes(meshes),
+        "unevaluated_meshes": bounds["unevaluated"],
     }

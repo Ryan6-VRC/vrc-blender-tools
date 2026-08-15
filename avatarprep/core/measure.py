@@ -1,12 +1,18 @@
 """World-space geometry measurement for AvatarPrep.
 
-``_world_bounds`` is THE measure. Everything in this repo needing a world-space bound
-reads it: ``measure_geometry`` here, ``import_fbx.observe_import``'s ``height_m``, and
+``_world_bounds`` is the measurement door. Every MEASURE in this repo reads it:
+``measure_geometry`` here, ``import_fbx.observe_import``'s ``height_m``, and
 ``proportions._world_bbox_center``'s pivot. Those were three separate copies of the
 technique, two of them on ``object.bound_box``.
 
+One ``bound_box`` reader remains and is deliberately not a measure:
+``render_mesh._world_aabb`` frames a camera off the EVALUATED ``bound_box``, which dodges
+the cage and lagging-cache rows below but still inherits the rotated-object and
+zero-vertex ones. A mis-framed contact sheet is visible in the sheet itself, so it does
+not carry a measurement's burden — but do not cite it as precedent for measuring.
+
 ``bound_box`` is wrong in five shapes measured on this corpus (5.2.0), which is why no
-door reads it any more:
+measure reads it any more:
 
   * a GENERATIVE MODIFIER reads the control cage, not the result — subsurf L2 on a
     size-2 cube reads 2.000000 against an evaluated 1.679013 (+19.1%); solidify 0.3
@@ -21,10 +27,14 @@ door reads it any more:
     PREVIOUS state's answer. A forced depsgraph update fixes this case and no other;
   * a zero-vertex mesh reports eight all-zero corners, injecting world z=0 as if it
     were geometry (a cube spanning 9.5..10.5 beside one empty mesh reads min_z 0.0);
-  * ``matrix_world`` is itself stale until the view layer updates, so a reparent or an
-    object-scale change lands in no reader that does not force one — measured at -50%
-    for a reparent onto a scaled empty, -99% for an armature rescale. ``_world_bounds``
-    forces the update; that is why it lives HERE rather than in each caller.
+  * ``matrix_world`` is itself stale until something forces an evaluation, so a reparent
+    or an object-scale change lands in no reader that forces none — measured at -50% for
+    a reparent onto a scaled empty and -99% for an armature rescale, which is what the
+    old ``bound_box`` readers did, calling neither. ``evaluated_depsgraph_get()`` is what
+    actually forces it (measured: a bare ``matrix_world`` read after a reparent gives
+    scale_z 1.0, and the same read after a depsgraph fetch gives 3.0), and a depsgraph
+    handle fetched BEFORE the mutation does not count — it must be re-fetched after.
+    ``_world_bounds`` fetches per call, so nothing here can go stale.
 
 Evaluated vertices cost more and are exact: ~25 ms on a 283k-vert avatar, ~3-9 ms on a
 typical body, against an 80 ms FBX import. numpy rather than a Python loop — the loop
@@ -44,7 +54,6 @@ Pure bpy: no operator, no UI.
 from typing import Any, Dict, List, Optional
 
 import bpy
-import mathutils
 import numpy as np
 
 
@@ -52,14 +61,21 @@ def _empty(v):
     return [v, v, v]
 
 
-def _world_bounds(meshes) -> Optional[Dict[str, Any]]:
-    """World-space min/max of ``meshes``' evaluated geometry, or ``None`` if none has
-    any — plus ``per_mesh``, mapping each name to its own bounds (``None`` when that
-    mesh contributes nothing). The module docstring owns why this reads evaluated
-    vertices rather than ``bound_box``.
+def _world_bounds(meshes) -> Dict[str, Any]:
+    """World-space bounds of ``meshes``' evaluated geometry.
 
-    Forces ``view_layer.update()`` first: ``matrix_world`` is stale after a reparent or
-    an object-scale change until something does, and every caller reads world space.
+    ``min``/``max`` are ``None`` when no mesh has any evaluated geometry — the dict
+    itself is always returned, and ``per_mesh`` is always present, mapping each name to
+    its own bounds (``None`` for a mesh contributing nothing). Callers test
+    ``b["min"] is None``, never ``b is None``. The module docstring owns why this reads
+    evaluated vertices rather than ``bound_box``.
+
+    Forces an evaluation before reading, because ``matrix_world`` is stale after a
+    reparent or an object-scale change and every caller reads world space. The
+    ``evaluated_depsgraph_get()`` below is what does that; the explicit
+    ``view_layer.update()`` is redundant beside it and kept deliberately, so the
+    requirement is stated at the point of use rather than resting on a side effect of
+    a call that a later edit could reasonably move or cache.
 
     A mesh is measurable when its EVALUATED vertex count is non-zero — deliberately not
     the original count, which the two ``bound_box`` callers used to test. The two
@@ -79,10 +95,18 @@ def _world_bounds(meshes) -> Optional[Dict[str, Any]]:
     per_mesh: Dict[str, Any] = {}
     found = False
 
+    unevaluated = []
     for m in meshes:
         if m.type != 'MESH':
             continue
         ev = m.evaluated_get(dg)
+        # Measured anyway, at its UNDEFORMED shape and off a stale matrix_world. Recorded
+        # here rather than at one caller, so no reader has to know to look for it. Same
+        # predicate as ``rest_pose.unevaluated_meshes``, whose docstring owns why
+        # ``is_evaluated`` and not a visibility flag — read inline off the ``ev`` already
+        # in hand rather than re-evaluating every mesh a second time.
+        if not ev.is_evaluated:
+            unevaluated.append(m.name)
         n = len(ev.data.vertices)
         if n == 0:
             per_mesh[m.name] = None
@@ -102,30 +126,37 @@ def _world_bounds(meshes) -> Optional[Dict[str, Any]]:
         found = True
 
     if not found:
-        return {"min": None, "max": None, "per_mesh": per_mesh}
+        return {"min": None, "max": None, "per_mesh": per_mesh,
+                "unevaluated": unevaluated}
     return {"min": [float(x) for x in lo], "max": [float(x) for x in hi],
-            "per_mesh": per_mesh}
+            "per_mesh": per_mesh, "unevaluated": unevaluated}
 
 
 def measure_geometry(armature, meshes) -> Dict[str, Any]:
     """World-space bounds of ``meshes`` plus every bone's world head/tail.
 
-    Returns ``{"aggregate", "per_mesh", "bones"}``. A zero-vertex mesh maps to
-    ``None`` in ``per_mesh`` and contributes nothing to ``aggregate`` — it carries no
-    bounds, and counting its origin as geometry is the ``bound_box`` bug above.
-    ``aggregate`` is ``None`` when no mesh has any vertices.
+    Returns ``{"aggregate", "per_mesh", "bones", "unevaluated"}``. A zero-vertex mesh
+    maps to ``None`` in ``per_mesh`` and contributes nothing to ``aggregate`` — it
+    carries no bounds, and counting its origin as geometry is the ``bound_box`` bug
+    above. ``aggregate`` is ``None`` when no mesh has any vertices.
+
+    ``unevaluated`` names the meshes measured at their UNDEFORMED shape (the module
+    docstring's blind spot). This function does not refuse on them — whether the
+    measuring doors should is an open design call — but a caller that prints a number
+    from here without printing this list is reporting a clean measurement it did not
+    make.
 
     Bones are reported as raw head/tail positions rather than any pre-chosen span, so
     a caller can difference whatever distance it actually cares about (shoulder-to-
     wrist is ``|UpperArm.head - Hand.head|``) without this function guessing which
     span an edge was authored against."""
-    b = _world_bounds(meshes)
-    per_mesh = b["per_mesh"]
+    bounds = _world_bounds(meshes)
+    per_mesh = bounds["per_mesh"]
 
     aggregate = None
-    if b["min"] is not None:
-        aggregate = {"min": b["min"], "max": b["max"],
-                     "height": b["max"][2] - b["min"][2]}
+    if bounds["min"] is not None:
+        aggregate = {"min": bounds["min"], "max": bounds["max"],
+                     "height": bounds["max"][2] - bounds["min"][2]}
 
     A = armature.matrix_world
     bones = {}
@@ -134,7 +165,8 @@ def measure_geometry(armature, meshes) -> Dict[str, Any]:
         tail = A @ b.tail_local
         bones[b.name] = {"head": list(head), "tail": list(tail),
                          "length": (tail - head).length}
-    return {"aggregate": aggregate, "per_mesh": per_mesh, "bones": bones}
+    return {"aggregate": aggregate, "per_mesh": per_mesh, "bones": bones,
+            "unevaluated": bounds["unevaluated"]}
 
 
 def bone_length_deltas(pre, post, bone_names) -> List[Dict[str, Any]]:
