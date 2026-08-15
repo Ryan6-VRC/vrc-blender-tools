@@ -107,9 +107,12 @@ def _world_bounds(meshes) -> Dict[str, Any]:
         ev = m.evaluated_get(dg)
         # Measured anyway, at its UNDEFORMED shape and off a stale matrix_world. Recorded
         # here rather than at one caller, so no reader has to know to look for it. Same
-        # predicate as ``rest_pose.unevaluated_meshes``, whose docstring owns why
-        # ``is_evaluated`` and not a visibility flag — read inline off the ``ev`` already
-        # in hand rather than re-evaluating every mesh a second time.
+        # predicate as ``rest_pose.unevaluated_meshes`` (whose docstring owns why
+        # ``is_evaluated`` and not a visibility flag) — but only ON MESHES: that one also
+        # names a non-MESH object, which the filter above dropped before reaching here.
+        # It is the stricter of the two, so a caller running both is not covered by it.
+        # Read inline off the ``ev`` already in hand rather than re-evaluating every mesh
+        # a second time.
         if not ev.is_evaluated:
             unevaluated.append(m.name)
         n = len(ev.data.vertices)

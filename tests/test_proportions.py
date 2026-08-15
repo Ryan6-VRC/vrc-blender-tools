@@ -651,6 +651,21 @@ def test_bbox_center_refuses_unevaluated_meshes():
     expect_raises(lambda: P._world_bbox_center([mesh, hidden]), "not evaluated",
                   "bbox centre refusal names the predicate")
 
+    # The negative direction, because the tempting predicate gets it wrong: visible_get()
+    # reads False for hide_set, which evaluates fine, so a "simplification" of
+    # _world_bounds' flag to a visibility test would start refusing working files. This
+    # door consumes _world_bounds' own list, so pinning the predicate in test_rest_pose
+    # does not cover it. (That suite pins the LAYER-collection eye against the same
+    # mutation; one case here kills it at this door too.)
+    eyed = _make_mesh(arm, name="EyeHidden")
+    eyed.hide_set(True)
+    bpy.context.view_layer.update()
+    try:
+        P._world_bbox_center([mesh, eyed])
+    except Exception as e:
+        FAILURES.append("hide_set evaluates fine and must not be refused: %s" % e)
+    bpy.data.objects.remove(eyed, do_unlink=True)
+
     # The two cases must not collapse into one another. A VISIBLE zero-vertex mesh is
     # skipped silently and does not raise (test_bbox_center_skips_empty_meshes owns why),
     # so it is visible here deliberately: _world_bounds appends to `unevaluated` BEFORE
