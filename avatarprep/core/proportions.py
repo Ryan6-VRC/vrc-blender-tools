@@ -276,6 +276,36 @@ def apply_local_scale(pose_bone, value) -> None:
     pose_bone.scale = mathutils.Vector((value[0], value[1], value[2]))
 
 
+def apply_local_scale_op(pose_bones, value) -> None:
+    """One local/individual op over a set of bones, with Blender's interactive semantics:
+    every named bone ends at ``value`` relative to what it was, once, however many of its
+    ancestors the same op also names.
+
+    Setting each pose scale directly compounds down a chain: a finger's Intermediate
+    inherits its Proximal's 1.02 and adds its own, so one "Fingers Y:1.02" lands 1.02,
+    1.04, 1.06. A hand-made rig measured against that op shows 1.02 on every segment
+    (Blender's resize on a selected chain compensates the selected parent), so the record's
+    language and the reference disagree with the naive apply by up to 0.4 mm at a
+    fingertip. Here a bone divides out the scale it inherits from same-op ancestors,
+    walking up until a bone that does not inherit (``inherit_scale == 'NONE'``) breaks the
+    chain. Component-wise division is exact where the chain's axes align (finger and
+    breast chains); a bent chain under a non-uniform value is an approximation, as it is
+    in Blender. Only ancestors in *this* op compensate: separate ops compound, as separate
+    manual resizes do."""
+    named = {pb.name for pb in pose_bones}
+    for pb in pose_bones:
+        inherits_named = False
+        cur = pb
+        while cur.parent is not None and cur.bone.inherit_scale != 'NONE':
+            cur = cur.parent
+            if cur.name in named:
+                inherits_named = True
+                break
+        # The nearest same-op ancestor's world scale is ``value`` once — it compensated
+        # too — so the divisor is ``value``, not a product down the chain.
+        pb.scale = mathutils.Vector((1.0, 1.0, 1.0)) if inherits_named             else mathutils.Vector((value[0], value[1], value[2]))
+
+
 def world_scale_matrix(pivot, frame3, value) -> mathutils.Matrix:
     """T(pivot) @ R(frame) @ S(value) @ R(frame)^-1 @ T(pivot)^-1, all 4x4."""
     S = mathutils.Matrix.Diagonal((value[0], value[1], value[2], 1.0))
@@ -485,8 +515,7 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
         for op in edge["scales"]:
             pbs = [armature.pose.bones[_resolve_bone(b, bone_overrides)] for b in op["bones"]]
             if op["space"] == "local" and op["pivot"] == "individual":
-                for pb in pbs:
-                    apply_local_scale(pb, op["value"])
+                apply_local_scale_op(pbs, op["value"])
                 bpy.context.view_layer.update()
             else:
                 apply_framed_scale(armature, pbs, op["value"],

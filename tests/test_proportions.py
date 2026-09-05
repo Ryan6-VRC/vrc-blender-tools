@@ -522,6 +522,53 @@ def test_collateral_lengths():
           "an absent bone should be skipped, not faked")
 
 
+def test_local_scale_op_does_not_compound_down_a_chain():
+    """One op naming a whole chain lands its value once per bone, as Blender's resize on
+    a selected chain does — not compounded through inheritance. Measured on a hand-made
+    reference: every finger segment at 1.02, where the naive apply gave 1.02/1.04/1.06."""
+    from avatarprep.core import proportions as P, scene_utils
+    chain = (("Root", (0, 0, 0), (0, 0, 0.1)),
+             ("Mid", (0, 0, 0.1), (0, 0, 0.2)),
+             ("Tip", (0, 0, 0.2), (0, 0, 0.3)))
+    edge = {"source": "s0", "target": "s1", "source_base": "a",
+            "scales": [{"bones": ["Root", "Mid", "Tip"], "value": [1.0, 1.5, 1.0]}]}
+
+    def build(no_inherit_tip):
+        _clear_scene()
+        arm = _make_arm(bones=chain)
+        with scene_utils.edit_mode(arm) as ebs:
+            ebs["Mid"].parent = ebs["Root"]; ebs["Mid"].use_connect = True
+            ebs["Tip"].parent = ebs["Mid"]; ebs["Tip"].use_connect = True
+            if no_inherit_tip:
+                ebs["Tip"].inherit_scale = 'NONE'
+        mesh = _make_mesh(arm, groups=("Root", "Mid", "Tip"))
+        arm["avatarprep_base"] = "a"; arm["avatarprep_state"] = "s0"
+        return arm, mesh
+
+    arm, mesh = build(False)
+    P.apply_proportion_edge(arm, [mesh], dict(edge), skip_shapekeys=True)
+    lens = [arm.data.bones[n].length for n in ("Root", "Mid", "Tip")]
+    check(all(abs(l - 0.15) < 1e-5 for l in lens),
+          "every bone of an inheriting chain should be 1.5x once, got %s" % lens)
+
+    # A bone that does not inherit has nothing to divide out: its own 1.5 stands, and
+    # the chain above it is unchanged by that.
+    arm, mesh = build(True)
+    P.apply_proportion_edge(arm, [mesh], dict(edge), skip_shapekeys=True)
+    lens = [arm.data.bones[n].length for n in ("Root", "Mid", "Tip")]
+    check(all(abs(l - 0.15) < 1e-5 for l in lens),
+          "a non-inheriting tip still lands at 1.5x once, got %s" % lens)
+
+    # Separate ops compound, as separate manual resizes do.
+    arm, mesh = build(False)
+    two = dict(edge); two["scales"] = [{"bones": ["Root"], "value": [1.0, 1.5, 1.0]},
+                                       {"bones": ["Mid"], "value": [1.0, 1.5, 1.0]}]
+    P.apply_proportion_edge(arm, [mesh], two, skip_shapekeys=True)
+    check(abs(arm.data.bones["Mid"].length - 0.225) < 1e-5,
+          "a second op on the child should compound on the first, got %s"
+          % arm.data.bones["Mid"].length)
+
+
 def test_cli_whatif_writes_nothing_and_reports_geometry():
     """Drive the door. The byte-identity assertion is the guard that an in-memory trial
     can never become a write, however the code around it is refactored later."""
@@ -878,6 +925,7 @@ def main():
     test_stage_hook_order()
     test_whatif_geometry_equals_real_apply()
     test_collateral_lengths()
+    test_local_scale_op_does_not_compound_down_a_chain()
     test_cli_whatif_writes_nothing_and_reports_geometry()
     test_bbox_center_skips_empty_meshes()
     test_bbox_center_refuses_unevaluated_meshes()
