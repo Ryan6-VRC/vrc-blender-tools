@@ -533,34 +533,33 @@ def test_local_scale_op_does_not_compound_down_a_chain():
     edge = {"source": "s0", "target": "s1", "source_base": "a",
             "scales": [{"bones": ["Root", "Mid", "Tip"], "value": [1.0, 1.5, 1.0]}]}
 
-    def build(no_inherit_tip):
+    def build(tip_mode='FULL', mid_mode='FULL'):
         _clear_scene()
         arm = _make_arm(bones=chain)
         with scene_utils.edit_mode(arm) as ebs:
             ebs["Mid"].parent = ebs["Root"]; ebs["Mid"].use_connect = True
             ebs["Tip"].parent = ebs["Mid"]; ebs["Tip"].use_connect = True
-            if no_inherit_tip:
-                ebs["Tip"].inherit_scale = 'NONE'
+            ebs["Mid"].inherit_scale = mid_mode
+            ebs["Tip"].inherit_scale = tip_mode
         mesh = _make_mesh(arm, groups=("Root", "Mid", "Tip"))
         arm["avatarprep_base"] = "a"; arm["avatarprep_state"] = "s0"
         return arm, mesh
 
-    arm, mesh = build(False)
-    P.apply_proportion_edge(arm, [mesh], dict(edge), skip_shapekeys=True)
-    lens = [arm.data.bones[n].length for n in ("Root", "Mid", "Tip")]
-    check(all(abs(l - 0.15) < 1e-5 for l in lens),
-          "every bone of an inheriting chain should be 1.5x once, got %s" % lens)
-
-    # A bone that does not inherit has nothing to divide out: its own 1.5 stands, and
-    # the chain above it is unchanged by that.
-    arm, mesh = build(True)
-    P.apply_proportion_edge(arm, [mesh], dict(edge), skip_shapekeys=True)
-    lens = [arm.data.bones[n].length for n in ("Root", "Mid", "Tip")]
-    check(all(abs(l - 0.15) < 1e-5 for l in lens),
-          "a non-inheriting tip still lands at 1.5x once, got %s" % lens)
+    # Every inherit mode Blender offers, on the tip and on the middle link: the vector
+    # modes carry the parent's scale, AVERAGE carries only its uniform volume-equivalent,
+    # and the two NONE modes carry nothing. In all of them each bone must land at 1.5x once.
+    modes = ('FULL', 'FIX_SHEAR', 'ALIGNED', 'AVERAGE', 'NONE', 'NONE_LEGACY')
+    for tip_mode in modes:
+        for mid_mode in ('FULL', 'AVERAGE', 'NONE_LEGACY'):
+            arm, mesh = build(tip_mode, mid_mode)
+            P.apply_proportion_edge(arm, [mesh], dict(edge), skip_shapekeys=True)
+            lens = [arm.data.bones[n].length for n in ("Root", "Mid", "Tip")]
+            check(all(abs(l - 0.15) < 1e-5 for l in lens),
+                  "tip=%s mid=%s: every bone should be 1.5x once, got %s"
+                  % (tip_mode, mid_mode, lens))
 
     # Separate ops compound, as separate manual resizes do.
-    arm, mesh = build(False)
+    arm, mesh = build()
     two = dict(edge); two["scales"] = [{"bones": ["Root"], "value": [1.0, 1.5, 1.0]},
                                        {"bones": ["Mid"], "value": [1.0, 1.5, 1.0]}]
     P.apply_proportion_edge(arm, [mesh], two, skip_shapekeys=True)

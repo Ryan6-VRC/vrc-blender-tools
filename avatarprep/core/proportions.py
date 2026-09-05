@@ -276,6 +276,9 @@ def apply_local_scale(pose_bone, value) -> None:
     pose_bone.scale = mathutils.Vector((value[0], value[1], value[2]))
 
 
+_NO_INHERIT_MODES = ('NONE', 'NONE_LEGACY')
+
+
 def apply_local_scale_op(pose_bones, value) -> None:
     """One local/individual op over a set of bones, with Blender's interactive semantics:
     every named bone ends at ``value`` relative to what it was, once, however many of its
@@ -287,23 +290,34 @@ def apply_local_scale_op(pose_bones, value) -> None:
     (Blender's resize on a selected chain compensates the selected parent), so the record's
     language and the reference disagree with the naive apply by up to 0.4 mm at a
     fingertip. Here a bone divides out the scale it inherits from same-op ancestors,
-    walking up until a bone that does not inherit (``inherit_scale == 'NONE'``) breaks the
-    chain. Component-wise division is exact where the chain's axes align (finger and
+    walking up until a bone that does not inherit (``NONE`` or ``NONE_LEGACY``) breaks the
+    chain; an ``AVERAGE`` link passes only Blender's uniform volume-equivalent factor. Component-wise division is exact where the chain's axes align (finger and
     breast chains); a bent chain under a non-uniform value is an approximation, as it is
     in Blender. Only ancestors in *this* op compensate: separate ops compound, as separate
     manual resizes do."""
     named = {pb.name for pb in pose_bones}
     for pb in pose_bones:
-        inherits_named = False
+        # Links from this bone up to its nearest same-op ancestor, each carrying the mode
+        # by which the lower bone inherits from the upper one.
+        links = []
         cur = pb
-        while cur.parent is not None and cur.bone.inherit_scale != 'NONE':
+        while cur.parent is not None and cur.bone.inherit_scale not in _NO_INHERIT_MODES:
+            links.append(cur.bone.inherit_scale)
             cur = cur.parent
             if cur.name in named:
-                inherits_named = True
                 break
-        # The nearest same-op ancestor's world scale is ``value`` once — it compensated
-        # too — so the divisor is ``value``, not a product down the chain.
-        pb.scale = mathutils.Vector((1.0, 1.0, 1.0)) if inherits_named             else mathutils.Vector((value[0], value[1], value[2]))
+        else:
+            pb.scale = mathutils.Vector((value[0], value[1], value[2]))
+            continue
+        # That ancestor's world scale is ``value`` once (it compensated too). Compose what
+        # reaches this bone down the links: FULL / FIX_SHEAR / ALIGNED carry the vector,
+        # AVERAGE flattens it to the uniform volume-equivalent Blender defines.
+        w = [value[0], value[1], value[2]]
+        for mode in reversed(links):
+            if mode == 'AVERAGE':
+                u = (w[0] * w[1] * w[2]) ** (1.0 / 3.0)
+                w = [u, u, u]
+        pb.scale = mathutils.Vector(tuple(value[i] / w[i] for i in range(3)))
 
 
 def world_scale_matrix(pivot, frame3, value) -> mathutils.Matrix:
