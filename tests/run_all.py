@@ -29,6 +29,7 @@ SUITES = {
     "test_fbx_export.py": "FBXEXPORT_TEST",
     "test_fbx_orientation.py": "FBXORIENT_TEST",
     "test_import_fbx.py": "IMPORT_TEST",
+    "test_linked_data.py": "LINKED_TEST",
     "test_merge_armatures.py": "MERGE_TEST",
     "test_open_blend.py": "OPENBLEND_TEST",
     "test_profiles_library.py": "PROFILES_TEST",

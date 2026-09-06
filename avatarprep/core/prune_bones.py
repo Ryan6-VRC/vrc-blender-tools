@@ -32,6 +32,27 @@ class PruneRefused(ValueError):
                ", ".join("%r on bone %r" % (o["object"], o["bone"]) for o in offenders)))
 
 
+class PruneTargetNotEditable(ValueError):
+    """Raised when the target armature is library data — a linked reference, or an
+    override whose armature data is still linked. Nothing here can edit it: the
+    Edit Mode entry fails Blender's own poll (measured as a traceback and exit 2
+    with no verdict before this gate existed), and ``force`` cannot change that, so
+    there is no bypass. Distinct from :class:`PruneRefused`, whose catch sites
+    iterate bone-parented offenders and print a re-weight / force remedy that is
+    wrong on every count here. ``whatif`` never raises it; it reports
+    ``would_refuse`` plus ``refusal`` instead.
+    """
+
+    def __init__(self, armature):
+        self.armature = armature.name
+        self.library = (scene_utils.library_path(armature)
+                        or scene_utils.library_path(armature.data))
+        super().__init__(
+            "refusing to prune %r: it is library data (%s) and cannot be edited — "
+            "a linked reference is never pruned; target the local rig "
+            "(--armature <name>)" % (armature.name, self.library))
+
+
 def _weighted_bone_names(armature, meshes):
     names = set()
     for m in meshes:
@@ -155,13 +176,18 @@ def prune_zero_weight_bones(armature,
     Raises:
         PruneRefused: an object rides a bone the plan would delete, without
             ``force``. Nothing is mutated.
+        PruneTargetNotEditable: ``armature`` is library data (linked, or an
+            override over linked armature data). Nothing is mutated; ``force``
+            does not bypass it.
 
     Returns:
         Execute: ``{"kept", "deleted", "deleted_bones", "bone_parented_objects"}``.
 
         ``whatif`` adds ``whatif=True``, ``would_refuse`` (the gate verdict, so a
         preview answers "will this go through?" and not only "what would it take?"),
-        ``kept_tips`` (the rule-(b) keeps), and ``chains``:
+        ``refusal`` (the not-editable reason, or None — a plan for a rig that
+        cannot be edited is still reported, so the reader sees what a local copy
+        would lose), ``kept_tips`` (the rule-(b) keeps), and ``chains``:
 
         - ``chains`` groups the removals as rooted chains — the unit you spare or
           cut, since sparing one bone of a doomed chain is rarely what you mean.
@@ -197,6 +223,7 @@ def prune_zero_weight_bones(armature,
 
     bone_parented = _bone_parented_objects(armature, set(delete))
     orphaned = [o for o in bone_parented if o["bone_pruned"]]
+    not_editable = not scene_utils.is_editable(armature)
 
     if whatif:
         return {
@@ -207,10 +234,14 @@ def prune_zero_weight_bones(armature,
             "chains": _group_chains(bones, set(delete), weighted),
             "kept_tips": tips,
             "bone_parented_objects": bone_parented,
-            "would_refuse": bool(orphaned) and not force,
+            "would_refuse": (bool(orphaned) and not force) or not_editable,
+            "refusal": str(PruneTargetNotEditable(armature)) if not_editable else None,
         }
 
-    # Last point at which declining is still free.
+    # Last point at which declining is still free. Library data first: no flag
+    # reaches past it, so it outranks the forceable gate.
+    if not_editable:
+        raise PruneTargetNotEditable(armature)
     if orphaned and not force:
         raise PruneRefused(orphaned)
 

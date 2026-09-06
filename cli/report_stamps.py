@@ -47,19 +47,29 @@ def main():
 
     report = scene_utils.report_stamps(bpy.context.scene)
 
+    def _linked(e):
+        # A linked reference reads ``linked=//path``; an override object over
+        # linked data reads ``data-linked=//path`` (local object, read-only data).
+        if e.get("library"):
+            return " linked=%s" % e["library"]
+        if e.get("data_library"):
+            return " data-linked=%s" % e["data_library"]
+        return ""
+
     def _print_mesh(owner, m):
         # A corrupt (non-map) stamp is the one genuine fault → WARNING (greppable,
         # matching the Slice-E CLI family); a clean baked map prints a plain line.
         if m.get("corrupt") is not None:
-            print("AVATARPREP: WARNING mesh %s baked=CORRUPT %s (%s)"
-                  % (m["name"], m["corrupt"], owner))
+            print("AVATARPREP: WARNING mesh %s baked=CORRUPT %s (%s)%s"
+                  % (m["name"], m["corrupt"], owner, _linked(m)))
         else:
-            print("AVATARPREP: mesh %s baked=%s (%s)" % (m["name"], m["baked"], owner))
+            print("AVATARPREP: mesh %s baked=%s (%s)%s"
+                  % (m["name"], m["baked"], owner, _linked(m)))
 
     for a in report["armatures"]:
         base = a["base"] if a["base"] is not None else "unknown"
-        print("AVATARPREP: armature %s base=%s state=%r (%s)"
-              % (a["name"], base, a["state"], a["state_kind"]))
+        print("AVATARPREP: armature %s base=%s state=%r (%s)%s"
+              % (a["name"], base, a["state"], a["state_kind"], _linked(a)))
         for m in a["meshes"]:
             _print_mesh("armature %s" % a["name"], m)
     for m in report["unbound"]:

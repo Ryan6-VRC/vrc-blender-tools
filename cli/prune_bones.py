@@ -78,18 +78,36 @@ def main():
                force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import scene_utils
-    from avatarprep.core.prune_bones import prune_zero_weight_bones, PruneRefused
+    from avatarprep.core.prune_bones import (prune_zero_weight_bones, PruneRefused,
+                                             PruneTargetNotEditable)
 
     if args.armature:
         armature = resolve_arm(args.armature, "armature")
     else:
         armature = scene_utils.find_armature()
         if armature is None:
-            print("AVATARPREP: ERROR no armature found")
+            linked = scene_utils.linked_armature_count()
+            print("AVATARPREP: ERROR no local armature found%s"
+                  % (" (%d linked reference rig(s) in scene; a linked rig is never "
+                     "pruned)" % linked if linked else ""))
             sys.exit(2)
 
     try:
         result = prune_zero_weight_bones(armature, whatif=args.whatif, force=args.force)
+    except PruneTargetNotEditable as refused:
+        # Same REFUSED shape as the gate below, but no --force remedy: nothing can
+        # edit library data, so offering one would route back to the crash.
+        print("AVATARPREP: prune REFUSED —", refused)
+        print("AVATARPREP: OFFENDER armature %r is library data from %s"
+              % (refused.armature, refused.library))
+        print("AVATARPREP: REMEDY target the local rig with --armature <name>; a "
+              "linked reference is read-only and --force cannot override this")
+        print("AVATARPREP: nothing was pruned; --out NOT written.")
+        if args.report:
+            write_report(args.report, {"refused": str(refused),
+                                       "armature": refused.armature,
+                                       "library": refused.library})
+        sys.exit(1)
     except PruneRefused as refused:
         # merge_armatures' FAIL shape: --out unwritten, --report still landed so the
         # refusal is triageable without a re-run.
@@ -123,6 +141,10 @@ def main():
         if args.report:
             write_report(args.report, result)
         # Gate verdict in the exit code, so a caller need not parse stdout.
+        if result.get("refusal"):
+            print("AVATARPREP: whatif — a real run would REFUSE: %s (--force cannot "
+                  "override this)" % result["refusal"])
+            sys.exit(1)
         if result["would_refuse"]:
             print("AVATARPREP: whatif — a real run would REFUSE (pass --force to override)")
             sys.exit(1)
