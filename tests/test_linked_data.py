@@ -162,7 +162,7 @@ def main():
     check(S.find_armature("RefArm") is ref_arm, "explicit name still resolves a linked rig")
     picked, err = S.resolve_target_armature(bpy.context.scene, None)
     check(picked is own and err is None, "resolve_target_armature picks the sole LOCAL rig")
-    check(S.linked_armature_count() == 1, "linked_armature_count reads 1")
+    check(S.library_armature_count() == 1, "library_armature_count reads 1")
 
     # report_stamps marks the reference
     rep = S.report_stamps(bpy.context.scene)
@@ -212,7 +212,7 @@ def main():
     inst = _link_collection_instance(lib)
     check(not S.is_linked(inst) and S.instances_linked(inst),
           "a collection instance is local but instances_linked")
-    check(S.find_armature() is own and S.linked_armature_count() == 0,
+    check(S.find_armature() is own and S.library_armature_count() == 0,
           "an instance holds no scene armature; the local rig is the pick")
     exc, written = _export(None, tmp, "whole_with_instance")
     check(isinstance(exc, ValueError) and "RefInstance" in str(exc) and "UNRIGGED" in str(exc),
@@ -252,6 +252,17 @@ def main():
     ov_arm = ref_arm.override_create(remap_local_usages=True)
     check(ov_arm.library is None and not S.is_editable(ov_arm),
           "override armature: local object, not editable")
+    bpy.context.view_layer.objects.active = None
+    check(S.find_armature() is own, "default pick skips an override armature too")
+    check(S.library_armature_count() == 1, "an override armature counts as library data")
+    # A FULLY overridden armature (data overridden too) reads ID.is_editable True
+    # yet Edit Mode entry fails on it — the predicate must still say no.
+    ov_arm.data.override_create(remap_local_usages=True)
+    check(ov_arm.data.override_library is not None and ov_arm.data.is_editable,
+          "fixture: fully overridden armature data reads ID.is_editable True")
+    check(not S.is_editable(ov_arm), "a fully overridden armature is still not editable here")
+    check(prune_zero_weight_bones(ov_arm, whatif=True)["would_refuse"],
+          "prune whatif refuses a fully overridden armature")
     pre = prune_zero_weight_bones(ov_arm, whatif=True)
     check(pre["would_refuse"] and pre.get("refusal"), "override armature: whatif would_refuse")
     try:

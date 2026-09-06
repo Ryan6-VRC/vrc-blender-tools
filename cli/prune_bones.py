@@ -86,10 +86,10 @@ def main():
     else:
         armature = scene_utils.find_armature()
         if armature is None:
-            linked = scene_utils.linked_armature_count()
-            print("AVATARPREP: ERROR no local armature found%s"
-                  % (" (%d linked reference rig(s) in scene; a linked rig is never "
-                     "pruned)" % linked if linked else ""))
+            linked = scene_utils.library_armature_count()
+            print("AVATARPREP: ERROR no editable armature found%s"
+                  % (" (%d library rig(s) in scene — linked, or an override; "
+                     "library data is never pruned)" % linked if linked else ""))
             sys.exit(2)
 
     try:
@@ -123,6 +123,12 @@ def main():
         sys.exit(1)
 
     if args.whatif:
+        # Library data outranks the plan: the per-bone listing below is what a
+        # LOCAL copy would lose, and on a bare linked rig (no bound meshes in
+        # scope) it names every bone — so the verdict leads, the plan follows.
+        if result.get("refusal"):
+            print("AVATARPREP: whatif — a real run would REFUSE: %s (--force cannot "
+                  "override this)" % result["refusal"])
         print("AVATARPREP: whatif — would prune (kept %d, deleted %d) in %d chain(s)"
               % (result["kept"], result["deleted"], len(result["chains"])))
         for ch in result["chains"]:
@@ -142,8 +148,6 @@ def main():
             write_report(args.report, result)
         # Gate verdict in the exit code, so a caller need not parse stdout.
         if result.get("refusal"):
-            print("AVATARPREP: whatif — a real run would REFUSE: %s (--force cannot "
-                  "override this)" % result["refusal"])
             sys.exit(1)
         if result["would_refuse"]:
             print("AVATARPREP: whatif — a real run would REFUSE (pass --force to override)")

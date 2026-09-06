@@ -229,19 +229,11 @@ def export_unity_fbx(filepath: str,
             "set scene.unit_settings.scale_length = 1.0 (rescale the content if it "
             "relied on it) and re-export" % us.scale_length)
 
-    # ``select_all`` (and the FBX exporter) poll for OBJECT mode; a caller that left
-    # the scene in POSE/EDIT — apply_proportion_edge exits in POSE on its object-only
-    # edge path — otherwise crashes ``select_all.poll() failed, context is incorrect``.
-    # Force OBJECT here so apply-then-export in one script is safe for every caller.
-    active = bpy.context.view_layer.objects.active
-    if active is not None and active.mode != 'OBJECT':
-        scene_utils.op_override(bpy.ops.object.mode_set,
-                                {'active_object': active, 'object': active},
-                                mode='OBJECT')
-
-    # --- Library data refusals (docstring, **Linked data**). Before selection and
-    # before every mutation; ordered above the multi-armature refusal below, whose
-    # "delete the extra armature" remedy is the measured wrong answer for a link.
+    # --- Library data refusals (docstring, **Linked data**). Above the mode
+    # normalisation below as well as above selection and every mutation — a refused
+    # export leaves the scene untouched, mode state included — and ordered above the
+    # multi-armature refusal, whose "delete the extra armature" remedy is the
+    # measured wrong answer for a link. These read data only; no operator, no mode.
     if armature_obj is not None and scene_utils.is_linked(armature_obj):
         raise ValueError(
             "armature_obj %r is a linked reference from %s; an owned re-export "
@@ -265,6 +257,16 @@ def export_unity_fbx(filepath: str,
                        or scene_utils.library_path(o.instance_collection))
                        for o in sorted(linked, key=lambda o: o.name)[:8])
                    + (", …" if len(linked) > 8 else "")))
+
+    # ``select_all`` (and the FBX exporter) poll for OBJECT mode; a caller that left
+    # the scene in POSE/EDIT — apply_proportion_edge exits in POSE on its object-only
+    # edge path — otherwise crashes ``select_all.poll() failed, context is incorrect``.
+    # Force OBJECT here so apply-then-export in one script is safe for every caller.
+    active = bpy.context.view_layer.objects.active
+    if active is not None and active.mode != 'OBJECT':
+        scene_utils.op_override(bpy.ops.object.mode_set,
+                                {'active_object': active, 'object': active},
+                                mode='OBJECT')
 
     if armature_obj is not None:
         bpy.ops.object.select_all(action='DESELECT')

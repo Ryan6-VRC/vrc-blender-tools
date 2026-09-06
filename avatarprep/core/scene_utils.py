@@ -158,8 +158,8 @@ def _baked_entry(ob) -> Dict[str, Any]:
 
 
 def _library_fields(ob) -> Dict[str, Any]:
-    """``library`` (the object's own) and ``data_library`` (its data's), each a
-    relative path or ``None``. A linked reference reads both set; an override
+    """``library`` (the object's own) and ``data_library`` (its data's), each the
+    library path as stored (``//``-relative when linked relative) or ``None``. A linked reference reads both set; an override
     object reads ``library=None`` over a set ``data_library`` — the one bit that
     tells a reader its data cannot be edited or baked. Always present, so a
     consumer never branches on key-absence."""
@@ -189,7 +189,8 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     No collapse / reconcile / divergence / tolerance — that coherence reasoning lives
     in compose-mergeable step 5, where the domain knowledge already is.
 
-    Every entry carries ``library`` / ``data_library`` (relative path or None).
+    Every entry carries ``library`` / ``data_library`` (the library path as
+    stored, or None).
     A linked fit-reference rig (own-mergeable) reports its stamps like any other
     armature — the grouping already keeps its morphs apart — and these two fields
     are how a reader tells the reference from the mergeable when names alone do
@@ -275,21 +276,26 @@ def instances_linked(obj) -> bool:
 
 
 def is_editable(obj) -> bool:
-    """Blender's own predicate behind the ``mode_set`` poll: false for a linked
-    object AND for an override whose data is still linked. A door about to edit
-    an object's data — a scale bake, a bone prune, an Edit Mode entry — gates on
-    this, not on ``is_linked``, which an override armature passes and then
-    crashes on (measured: ``Cannot edit library linked or non-editable override
-    object``, exit 2 through run_cli, no verdict)."""
-    if obj is None or not obj.is_editable:
+    """Can a door rewrite this object's data — a scale bake, a bone prune, an
+    Edit Mode entry? False for a linked object, for an override object, and for
+    any override data. Stricter than ``ID.is_editable`` on purpose: Blender's
+    flag reads True on a FULLY overridden armature (object and data), yet Edit
+    Mode entry on it still fails (measured 5.2.0: ``Unable to execute 'Edit
+    Mode', error changing modes``), so a gate on the flag alone would clear the
+    prune and crash it. Gate on this, not on ``is_linked``, which every override
+    passes (``library is None``) and then crashes on."""
+    if obj is None or not obj.is_editable or obj.override_library is not None:
         return False
     data = getattr(obj, "data", None)
-    return data is None or data.is_editable
+    if data is None:
+        return True
+    return data.is_editable and data.override_library is None
 
 
 def library_path(idblock) -> Optional[str]:
-    """The relative library path of a linked ID (``//...``), or ``None`` for
-    local data. The handle every linked-data diagnostic names."""
+    """The library path of a linked ID as stored — ``//``-relative when the link
+    was made relative (the sanctioned shape), otherwise absolute — or ``None``
+    for local data. The handle every linked-data diagnostic names."""
     if idblock is None or idblock.library is None:
         return None
     return idblock.library.filepath
@@ -1104,9 +1110,12 @@ def find_armature(name: Optional[str] = None,
                   scene: Optional[bpy.types.Scene] = None) -> Optional[bpy.types.Object]:
     """Return an armature object.
 
-    If ``name`` is given and matches an armature, that one is returned. Otherwise
-    the active object (if an armature) is preferred, then the first armature
-    found in the scene.
+    If ``name`` is given and matches an armature, that one is returned — even a
+    library one, since a read door may name it on purpose. Otherwise the default
+    branches pick the active object (if an armature), then the first armature in
+    the scene, **skipping library data** (``is_editable``: a linked rig, or an
+    override) — every caller of the default pick goes on to mutate, and library
+    data crashes the Edit/Pose Mode entry.
     """
     if scene is None:
         scene = bpy.context.scene
@@ -1117,28 +1126,30 @@ def find_armature(name: Optional[str] = None,
             if obj and obj.type == 'ARMATURE' and obj.name == name:
                 return obj
 
-    # The default branches never pick a LINKED rig: a linked fit reference is
-    # read-only and was measured being picked here (first in scene) and then
-    # crashing the prune. The explicit-name branch above is unconditional — a
-    # read door may name a linked rig on purpose.
+    # The default branches never pick library data: a linked fit reference was
+    # measured being picked here (first in scene) and then crashing the prune,
+    # and an override armature fails the same poll while reading
+    # ``library is None`` — so the gate is ``is_editable``, not ``is_linked``.
+    # The explicit-name branch above is unconditional.
     active = getattr(bpy.context, "active_object", None)
     if (active is not None and active.type == 'ARMATURE' and active in objects
-            and not is_linked(active)):
+            and is_editable(active)):
         return active
 
     for obj in objects:
-        if obj and obj.type == 'ARMATURE' and not is_linked(obj):
+        if obj and obj.type == 'ARMATURE' and is_editable(obj):
             return obj
     return None
 
 
-def linked_armature_count(scene: Optional[bpy.types.Scene] = None) -> int:
-    """How many scene armatures are linked references — for a "no armature"
-    message on a file that visibly has a rig."""
+def library_armature_count(scene: Optional[bpy.types.Scene] = None) -> int:
+    """How many scene armatures are library data (linked, or an override) — for
+    a "no armature" message on a file that visibly has a rig."""
     if scene is None:
         scene = bpy.context.scene
     objects = list(scene.objects) if scene else list(bpy.data.objects)
-    return sum(1 for o in objects if o is not None and o.type == 'ARMATURE' and is_linked(o))
+    return sum(1 for o in objects
+               if o is not None and o.type == 'ARMATURE' and not is_editable(o))
 
 
 def resolve_target_armature(scene=None, active=None):
@@ -1146,22 +1157,24 @@ def resolve_target_armature(scene=None, active=None):
 
     Safe pick: the active object if it is an armature; else the sole armature; else an
     error on 0 or >=2 (NEVER silently grab 'the first' — in a two-armature scene that
-    could be the disposable reference body own-mergeable appends). A LINKED
-    armature is never a candidate — it is the reference, read-only — and the
-    messages name how many were skipped so an all-linked file does not read as
-    empty."""
+    could be the disposable reference body own-mergeable appends). Library data
+    (``is_editable`` false: a linked rig, or an override) is never a candidate —
+    the edge apply writes the applying sentinel before it enters Pose Mode, so a
+    crash there would leave a false corruption mark on an asset nothing touched —
+    and the messages name how many were skipped so an all-library file does not
+    read as empty."""
     if scene is None:
         scene = bpy.context.scene
     if active is None:
         active = getattr(bpy.context, "active_object", None)
     objs = list(scene.objects) if scene else list(bpy.data.objects)
     all_arms = [o for o in objs if o is not None and o.type == 'ARMATURE']
-    arms = [o for o in all_arms if not is_linked(o)]
+    arms = [o for o in all_arms if is_editable(o)]
     linked = len(all_arms) - len(arms)
-    note = (" (%d linked reference rig(s) present; a linked rig is never a "
-            "mutation target)" % linked) if linked else ""
+    note = (" (%d library rig(s) present — linked, or an override; library data "
+            "is never a mutation target)" % linked) if linked else ""
     if (active is not None and active.type == 'ARMATURE' and active in objs
-            and not is_linked(active)):
+            and is_editable(active)):
         return active, None
     if len(arms) == 1:
         return arms[0], None
