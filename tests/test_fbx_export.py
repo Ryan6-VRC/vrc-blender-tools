@@ -920,6 +920,151 @@ def main():
     check(any(n == body.name for n, _ in applied),
           "an authored 0.9 scale must still be baked; got %r" % (applied,))
 
+    # --- Visibility: the scope is caller-named, so visibility never filters it. ----
+    # The defect: select_set on a view-layer-hidden object is a silent no-op, so the
+    # exporter ran with an EMPTY selection and wrote a ~4 KB geometry-free FBX at
+    # exit 0. Every case below asserts the written file actually carries the mesh,
+    # and that the caller's visibility flags come back exactly as authored.
+    def _vis(obj):
+        return (obj.hide_get(), obj.hide_viewport, obj.hide_select)
+
+    def _collect(arm, mesh, name):
+        """Move the rig into its own collection; return that LayerCollection."""
+        col = bpy.data.collections.new(name)
+        bpy.context.scene.collection.children.link(col)
+        for o in (arm, mesh):
+            # _make_rig links into the ACTIVE collection, which is not always the
+            # scene root once an earlier case has added one — unlink from wherever
+            # the object actually is.
+            for c in list(o.users_collection):
+                c.objects.unlink(o)
+            col.objects.link(o)
+        return bpy.context.view_layer.layer_collection.children[name]
+
+    def _exports_with_geometry(arm, mesh, tag):
+        """Export scoped, assert the mesh actually shipped, assert visibility restored."""
+        bpy.context.view_layer.update()
+        before = {o.name: _vis(o) for o in (arm, mesh)}
+        out = os.path.join(tempfile.gettempdir(), "avatarprep_vis_%s.fbx" % tag)
+        if os.path.exists(out):
+            os.remove(out)
+        try:
+            fbx_export.export_unity_fbx(out, armature_obj=arm, embed_textures=False)
+        except Exception as e:
+            check(False, "%s: export raised %r; a caller-named scope must export "
+                         "regardless of visibility" % (tag, e))
+            return
+        # Assert the GEOMETRY shipped, not merely that a file exists — the defect
+        # wrote a well-formed 4 KB file with zero Model and Geometry nodes.
+        data = open(out, "rb").read()
+        check(mesh.name.encode() in data,
+              "%s: wrote %d bytes with no %r node — the empty-export defect" %
+              (tag, len(data), mesh.name))
+        after = {o.name: _vis(o) for o in (arm, mesh)}
+        check(before == after,
+              "%s: visibility not restored: %r -> %r" % (tag, before, after))
+        os.remove(out)
+
+    def _refuses(arm, mesh, tag, needle):
+        """Export scoped, assert an in-grammar ValueError and an untouched scene."""
+        bpy.context.view_layer.update()
+        in_vl = [o for o in (arm, mesh) if o.name in bpy.context.view_layer.objects]
+        before = {o.name: _vis(o) for o in in_vl}
+        out = os.path.join(tempfile.gettempdir(), "avatarprep_vis_%s.fbx" % tag)
+        if os.path.exists(out):
+            os.remove(out)
+        try:
+            fbx_export.export_unity_fbx(out, armature_obj=arm, embed_textures=False)
+            check(False, "%s: expected a refusal, but the export succeeded" % tag)
+        except ValueError as e:
+            check(needle in str(e),
+                  "%s: refusal must name %r; got %s" % (tag, needle, e))
+        except Exception as e:
+            # An excluded collection makes select_set RAISE RuntimeError. That is
+            # loud but out-of-grammar: run_cli turns it into exit 2 "crashed before
+            # reaching a verdict" rather than a named refusal at exit 1.
+            check(False, "%s: refusal must be a ValueError, got %r" % (tag, e))
+        check(not os.path.exists(out),
+              "%s: a refused export must not leave an --out file" % tag)
+        after = {o.name: _vis(o) for o in in_vl}
+        check(before == after,
+              "%s: a refused export must leave the scene untouched: %r -> %r" %
+              (tag, before, after))
+
+    # 1. Each of the three object-level flags, separately: all three silently
+    #    no-op select_set, and each alone is enough to produce the empty file.
+    for flag in ("hide_set", "hide_viewport", "hide_select"):
+        arm = _make_rig(); mesh = bpy.data.objects["Body"]
+        for o in (arm, mesh):
+            if flag == "hide_set":
+                o.hide_set(True)
+            else:
+                setattr(o, flag, True)
+        _exports_with_geometry(arm, mesh, flag)
+
+    # 2. The PARTIAL case: only the mesh is hidden. The armature still selects, so
+    #    the export writes a plausible, non-empty, rig-only file — which the
+    #    file-size comparison callers used instead of this check cannot catch.
+    arm = _make_rig(); mesh = bpy.data.objects["Body"]
+    mesh.hide_set(True)
+    _exports_with_geometry(arm, mesh, "partial_mesh_hidden")
+
+    # 3. Collection-level hiding is NOT repairable from the object flags (measured:
+    #    clearing all three still leaves context.selected_objects empty), and this
+    #    door will not clear a collection's — that reaches objects the caller never
+    #    named. It must refuse, naming them.
+    #    This also pins the select_get() trap: under a collection hide, select_set
+    #    DOES set the base flag and select_get() reads True while selected_objects
+    #    stays empty, so an implementation reading select_get() would pass here.
+    for tag, apply in (
+            ("layercol_hide_viewport", lambda lc: setattr(lc, "hide_viewport", True)),
+            ("col_hide_viewport", lambda lc: setattr(lc.collection, "hide_viewport", True)),
+            ("col_hide_select", lambda lc: setattr(lc.collection, "hide_select", True))):
+        arm = _make_rig(); mesh = bpy.data.objects["Body"]
+        apply(_collect(arm, mesh, "Hidden_" + tag))
+        _refuses(arm, mesh, tag, "could not be selected")
+
+    # 4. An EXCLUDED collection makes select_set raise instead of no-op, and
+    #    hide_get() on an object outside the view layer lies — so the membership
+    #    test must run BEFORE the snapshot, and after a view_layer.update() (the
+    #    flag does not reach view_layer.objects until the depsgraph rebuilds).
+    arm = _make_rig(); mesh = bpy.data.objects["Body"]
+    _collect(arm, mesh, "Excluded").exclude = True
+    _refuses(arm, mesh, "excluded", "not in view layer")
+
+    # 5. Whole-scene: hide flags never filtered this path (it exports
+    #    view_layer.objects, which includes hidden objects), but an excluded
+    #    collection drops out of that set and ships a plausible PARTIAL file at
+    #    exit 0 — strictly worse than the empty one, since no size check sees it.
+    arm = _make_rig(); mesh = bpy.data.objects["Body"]
+    bpy.ops.mesh.primitive_uv_sphere_add(location=(3, 0, 0))
+    _collect(arm, mesh, "ExcludedWhole").exclude = True
+    out = os.path.join(tempfile.gettempdir(), "avatarprep_vis_whole.fbx")
+    if os.path.exists(out):
+        os.remove(out)
+    try:
+        fbx_export.export_unity_fbx(out, embed_textures=False)
+        check(False, "whole-scene: an excluded collection must refuse, not ship a "
+                     "partial file at exit 0")
+    except ValueError as e:
+        check("not in view layer" in str(e),
+              "whole-scene: refusal must name the view layer; got %s" % e)
+    check(not os.path.exists(out),
+          "whole-scene: a refused export must not leave an --out file")
+
+    # 6. A view layer with no objects at all would write an empty FBX and report
+    #    success — the same defect with no offender to name.
+    _clear_scene()
+    out = os.path.join(tempfile.gettempdir(), "avatarprep_vis_empty.fbx")
+    if os.path.exists(out):
+        os.remove(out)
+    try:
+        fbx_export.export_unity_fbx(out, embed_textures=False)
+        check(False, "an empty view layer must refuse, not write an empty FBX")
+    except ValueError as e:
+        check("no objects" in str(e),
+              "empty-scene refusal must say so plainly; got %s" % e)
+
     # Which checkout actually ran. An editable install records one absolute path,
     # so a second worktree can import the FIRST one's modules and report green on
     # changes it never loaded. Print the path, do not infer it from the cwd.

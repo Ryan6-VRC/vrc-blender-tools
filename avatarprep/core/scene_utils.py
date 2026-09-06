@@ -1053,6 +1053,57 @@ def restore_transforms(undo) -> None:
             obj.matrix_basis = val
 
 
+def in_view_layer(obj, view_layer=None) -> bool:
+    """Is ``obj`` reachable in ``view_layer`` (default ``context.view_layer``)?
+
+    Identity-safe: ``bpy.data`` is keyed ``(name, library)``, so a name-only test can
+    match a *different* object of the same name from a linked library. The caller
+    must have run ``view_layer.update()`` first — a just-set ``LayerCollection.exclude``
+    does not reach ``view_layer.objects`` until the depsgraph is rebuilt, and the stale
+    read says ``True`` right up until ``select_set`` raises.
+    """
+    vl = view_layer or bpy.context.view_layer
+    return vl.objects.get(obj.name) is obj
+
+
+def snapshot_visibility(objs, view_layer=None) -> list:
+    """Snapshot the three object-level hide flags, then clear them, so a caller-named
+    object can actually be selected. Returns an undo list for ``restore_visibility``.
+
+    ``hide_get``/``hide_set`` are per-view-layer and default to ``context.view_layer``
+    — the same one ``select_set``, ``context.selected_objects`` and the FBX exporter
+    read — so snapshot and restore are symmetric as long as no view-layer switch
+    happens between them. ``hide_viewport``/``hide_select`` are object-level (every
+    view layer, every scene): globally visible mid-call, globally restored.
+
+    Every object must already be ``in_view_layer``; ``hide_get()`` on one that is not
+    silently returns ``False`` regardless of what was authored, so a snapshot taken
+    there would restore a fabricated value.
+    """
+    vl = view_layer or bpy.context.view_layer
+    undo = []
+    for o in objs:
+        undo.append((o, o.hide_get(view_layer=vl), o.hide_viewport, o.hide_select))
+        o.hide_set(False, view_layer=vl)
+        o.hide_viewport = False
+        o.hide_select = False
+    return undo
+
+
+def restore_visibility(undo, view_layer=None) -> None:
+    """Replay a :func:`snapshot_visibility` undo list. Never raises: it runs in a
+    ``finally`` beside other restores, and one dead object reference must not strand
+    the rest of the caller's file in a state it never authored."""
+    vl = view_layer or bpy.context.view_layer
+    for obj, hidden, hide_viewport, hide_select in undo:
+        try:
+            obj.hide_set(hidden, view_layer=vl)
+            obj.hide_viewport = hide_viewport
+            obj.hide_select = hide_select
+        except (ReferenceError, RuntimeError):
+            pass
+
+
 @contextmanager
 def edit_mode(arm: bpy.types.Object):
     """Enter EDIT mode on ``arm`` and yield its ``edit_bones``, guaranteeing a
