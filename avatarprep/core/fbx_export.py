@@ -351,8 +351,12 @@ def export_unity_fbx(filepath: str,
                 "collection is EXCLUDED from it, so a whole-scene export would "
                 "silently ship WITHOUT them (a partial file at exit 0, which no "
                 "size check catches) while the permanent scale bake still rewrote "
-                "them. Include the collection in the view layer, or scope the "
-                "export to one rig (--armature / armature_obj=...)"
+                "them. If they are parked there deliberately (a reference body, a "
+                "backup variant), UNLINK the collection from this scene or scope the "
+                "export to one rig (--armature / armature_obj=...) — those are the "
+                "remedies that keep them out. Including the collection in the view "
+                "layer instead makes them SHIP, and where one holds a second "
+                "armature the multi-armature refusal below takes over"
                 % (len(missing), ", ".join(sorted(repr(o.name) for o in missing)[:8])
                    + (", …" if len(missing) > 8 else ""),
                    bpy.context.view_layer.name))
@@ -362,20 +366,24 @@ def export_unity_fbx(filepath: str,
                 "write an empty FBX and report success. Nothing to export"
                 % bpy.context.view_layer.name)
 
-    if armature_obj is not None:
-        # Clear the three object-level hide flags on the caller-NAMED scope only, so
-        # a view-layer hide cannot act as a second silent filter over it (docstring,
-        # **Visibility**). Restored in the ``finally`` below on every path.
-        vis_undo = scene_utils.snapshot_visibility(scope)
-        # The unhide changes what the depsgraph evaluates: a ``hide_viewport`` object
-        # is absent from it entirely, so its ``matrix_world`` is stale until this
-        # runs. Unconditional — ``keep_object_rotation`` with ``bake_object_scale``
-        # off skips both later ``update()`` calls, and the exporter would then write
-        # node transforms read off the stale matrices.
-        bpy.context.view_layer.update()
-
+    # Everything from here is inside the try: the visibility snapshot MUTATES, so the
+    # restoring ``finally`` must already be armed when it starts. ``snapshot_visibility``
+    # appends to ``vis_undo`` as it goes for the same reason — a raise partway through
+    # leaves the records for what it already cleared in this list, not in a local one
+    # it never got to return.
     try:
         if armature_obj is not None:
+            # Clear the three object-level hide flags on the caller-NAMED scope only,
+            # so a view-layer hide cannot act as a second silent filter over it
+            # (docstring, **Visibility**).
+            scene_utils.snapshot_visibility(scope, vis_undo)
+            # The unhide changes what the depsgraph evaluates: a ``hide_viewport``
+            # object is absent from it entirely, so its ``matrix_world`` is stale
+            # until this runs. Unconditional — ``keep_object_rotation`` with
+            # ``bake_object_scale`` off skips both later ``update()`` calls, and the
+            # exporter would then write node transforms read off stale matrices.
+            bpy.context.view_layer.update()
+
             bpy.ops.object.select_all(action='DESELECT')
             armature_obj.select_set(True)
             for m in scene_utils.get_bound_meshes(armature_obj):
@@ -593,8 +601,9 @@ def export_unity_fbx(filepath: str,
         finally:
             scene_utils.restore_transforms(undo)
     finally:
-        # Visibility restore FIRST: if restore_transforms raises, the caller's file
-        # must not also be left in a visibility state it never authored.
+        # OUTERMOST of the two restores, so it runs even if restore_transforms
+        # raises — Python runs the inner finally first, and the caller's file must
+        # not be left in a visibility state it never authored either way.
         scene_utils.restore_visibility(vis_undo)
     return filepath
 

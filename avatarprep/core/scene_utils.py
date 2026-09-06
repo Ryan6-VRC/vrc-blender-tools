@@ -1056,19 +1056,34 @@ def restore_transforms(undo) -> None:
 def in_view_layer(obj, view_layer=None) -> bool:
     """Is ``obj`` reachable in ``view_layer`` (default ``context.view_layer``)?
 
-    Identity-safe: ``bpy.data`` is keyed ``(name, library)``, so a name-only test can
-    match a *different* object of the same name from a linked library. The caller
-    must have run ``view_layer.update()`` first — a just-set ``LayerCollection.exclude``
-    does not reach ``view_layer.objects`` until the depsgraph is rebuilt, and the stale
-    read says ``True`` right up until ``select_set`` raises.
+    The caller must have run ``view_layer.update()`` first — a just-set
+    ``LayerCollection.exclude`` does not reach ``view_layer.objects`` until the
+    depsgraph is rebuilt, and the stale read says ``True`` right up until
+    ``select_set`` raises.
+
+    Both directions are identity-checked, and the second one is why the fallback
+    exists. ``bpy.data`` is keyed ``(name, library)``, so a local ``Body`` and a
+    LINKED ``Body`` coexist happily in one view layer — an *appended* one is renamed
+    ``.001``, so only a genuine link collides. A name-only lookup can then return the
+    other one, which would report a legitimately present object as absent and refuse
+    an export that should run. The keyed lookup stays first because it is O(1) and
+    right in every non-colliding case; the scan only pays on a miss.
     """
     vl = view_layer or bpy.context.view_layer
-    return vl.objects.get(obj.name) is obj
+    if vl.objects.get(obj.name) is obj:
+        return True
+    return any(o is obj for o in vl.objects)
 
 
-def snapshot_visibility(objs, view_layer=None) -> list:
+def snapshot_visibility(objs, undo, view_layer=None) -> None:
     """Snapshot the three object-level hide flags, then clear them, so a caller-named
-    object can actually be selected. Returns an undo list for ``restore_visibility``.
+    object can actually be selected.
+
+    **Appends to the caller's ``undo`` list rather than returning one**, which is what
+    makes this transactional: if an RNA write raises partway through, the records for
+    the objects already cleared are in the caller's list and its ``finally`` restores
+    them. A version that built the list locally and returned it at the end would
+    discard exactly the records needed to undo the damage it had just done.
 
     ``hide_get``/``hide_set`` are per-view-layer and default to ``context.view_layer``
     — the same one ``select_set``, ``context.selected_objects`` and the FBX exporter
@@ -1081,27 +1096,33 @@ def snapshot_visibility(objs, view_layer=None) -> list:
     there would restore a fabricated value.
     """
     vl = view_layer or bpy.context.view_layer
-    undo = []
     for o in objs:
+        # Record BEFORE the first write, so a raise on any of the three still leaves
+        # this object's original state recoverable.
         undo.append((o, o.hide_get(view_layer=vl), o.hide_viewport, o.hide_select))
         o.hide_set(False, view_layer=vl)
         o.hide_viewport = False
         o.hide_select = False
-    return undo
 
 
 def restore_visibility(undo, view_layer=None) -> None:
     """Replay a :func:`snapshot_visibility` undo list. Never raises: it runs in a
-    ``finally`` beside other restores, and one dead object reference must not strand
-    the rest of the caller's file in a state it never authored."""
+    ``finally`` beside other restores, so anything escaping here would mask the
+    original exception, and one dead object reference must not strand the rest of the
+    caller's file in a state it never authored.
+
+    One ``try`` per flag, not one per object: they are three independent RNA writes,
+    and a failure on the first must not leave the other two cleared — that is the
+    permanently-visible-everywhere state this function exists to undo."""
     vl = view_layer or bpy.context.view_layer
     for obj, hidden, hide_viewport, hide_select in undo:
-        try:
-            obj.hide_set(hidden, view_layer=vl)
-            obj.hide_viewport = hide_viewport
-            obj.hide_select = hide_select
-        except (ReferenceError, RuntimeError):
-            pass
+        for write in (lambda: obj.hide_set(hidden, view_layer=vl),
+                      lambda: setattr(obj, 'hide_viewport', hide_viewport),
+                      lambda: setattr(obj, 'hide_select', hide_select)):
+            try:
+                write()
+            except Exception:
+                pass
 
 
 @contextmanager

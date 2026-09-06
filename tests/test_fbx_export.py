@@ -955,11 +955,15 @@ def main():
                          "regardless of visibility" % (tag, e))
             return
         # Assert the GEOMETRY shipped, not merely that a file exists — the defect
-        # wrote a well-formed 4 KB file with zero Model and Geometry nodes.
-        data = open(out, "rb").read()
-        check(mesh.name.encode() in data,
-              "%s: wrote %d bytes with no %r node — the empty-export defect" %
-              (tag, len(data), mesh.name))
+        # wrote a well-formed 4 KB file with zero Model and Geometry nodes. Read the
+        # Model node names rather than grepping the bytes: the mesh object is "Body"
+        # and its datablock "BodyData", so a substring test cannot tell a shipped
+        # Model node from an incidental mention of the mesh data.
+        nodes = [n for n, _ in _all_node_scales(out)]
+        check(mesh.name in nodes,
+              "%s: wrote %d bytes with no %r Model node (nodes=%r) — the "
+              "empty-export defect" %
+              (tag, os.path.getsize(out), mesh.name, nodes))
         after = {o.name: _vis(o) for o in (arm, mesh)}
         check(before == after,
               "%s: visibility not restored: %r -> %r" % (tag, before, after))
@@ -968,8 +972,12 @@ def main():
     def _refuses(arm, mesh, tag, needle):
         """Export scoped, assert an in-grammar ValueError and an untouched scene."""
         bpy.context.view_layer.update()
+        # hide_get() is only meaningful for an object the view layer holds; the two
+        # object-level flags are readable regardless, and are what makes this
+        # assertion non-vacuous for the excluded case (where in_vl is empty).
         in_vl = [o for o in (arm, mesh) if o.name in bpy.context.view_layer.objects]
-        before = {o.name: _vis(o) for o in in_vl}
+        before = ({o.name: _vis(o) for o in in_vl},
+                  {o.name: (o.hide_viewport, o.hide_select) for o in (arm, mesh)})
         out = os.path.join(tempfile.gettempdir(), "avatarprep_vis_%s.fbx" % tag)
         if os.path.exists(out):
             os.remove(out)
@@ -986,7 +994,8 @@ def main():
             check(False, "%s: refusal must be a ValueError, got %r" % (tag, e))
         check(not os.path.exists(out),
               "%s: a refused export must not leave an --out file" % tag)
-        after = {o.name: _vis(o) for o in in_vl}
+        after = ({o.name: _vis(o) for o in in_vl},
+                 {o.name: (o.hide_viewport, o.hide_select) for o in (arm, mesh)})
         check(before == after,
               "%s: a refused export must leave the scene untouched: %r -> %r" %
               (tag, before, after))
@@ -1021,8 +1030,46 @@ def main():
             ("col_hide_viewport", lambda lc: setattr(lc.collection, "hide_viewport", True)),
             ("col_hide_select", lambda lc: setattr(lc.collection, "hide_select", True))):
         arm = _make_rig(); mesh = bpy.data.objects["Body"]
+        # Author a hide the door WILL clear before it refuses, so the restore
+        # assertion has something to prove: a fixture with every flag already False
+        # compares all-False to all-False and passes even against a no-op restore.
+        mesh.hide_set(True)
+        arm.hide_select = True
         apply(_collect(arm, mesh, "Hidden_" + tag))
         _refuses(arm, mesh, tag, "could not be selected")
+
+    # 3b. The unhide must stay INSIDE the named scope. Every other case hides only
+    #     objects that are in scope, so a regression that unhid the whole file — or a
+    #     get_bound_meshes that widened — would pass all of them. This is the change's
+    #     central promise, so assert it directly: a second hidden rig stays hidden and
+    #     stays out of the file.
+    arm = _make_rig(); mesh = bpy.data.objects["Body"]
+    other_arm = bpy.data.objects.new("Armature_Other", bpy.data.armatures.new("OtherData"))
+    other_mesh_data = bpy.data.meshes.new("OtherData_M")
+    other_mesh_data.from_pydata([(1, 0, 0), (1.1, 0, 0), (1, 0.1, 0)], [], [(0, 1, 2)])
+    other_mesh_data.update()
+    other_mesh = bpy.data.objects.new("Other_Body", other_mesh_data)
+    for o in (other_arm, other_mesh):
+        bpy.context.collection.objects.link(o)
+    other_mesh.parent = other_arm
+    for o in (other_arm, other_mesh):
+        o.hide_set(True)
+        o.hide_viewport = True
+    out = os.path.join(tempfile.gettempdir(), "avatarprep_vis_scope.fbx")
+    if os.path.exists(out):
+        os.remove(out)
+    fbx_export.export_unity_fbx(out, armature_obj=arm, embed_textures=False,
+                                keep_object_rotation=True)
+    for o in (other_arm, other_mesh):
+        check(o.hide_get() and o.hide_viewport,
+              "out-of-scope %r was unhidden: the unhide must touch only the named "
+              "scope" % o.name)
+    nodes = [n for n, _ in _all_node_scales(out)]
+    check("Body" in nodes, "scope containment: the named mesh must still ship "
+                           "(nodes=%r)" % nodes)
+    check("Other_Body" not in nodes,
+          "scope containment: an out-of-scope mesh shipped (nodes=%r)" % nodes)
+    os.remove(out)
 
     # 4. An EXCLUDED collection makes select_set raise instead of no-op, and
     #    hide_get() on an object outside the view layer lies — so the membership
