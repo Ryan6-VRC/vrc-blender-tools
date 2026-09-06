@@ -266,14 +266,20 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
         return scene_utils.find_armature() is not None
 
     def execute(self, context):
-        from .core.prune_bones import prune_zero_weight_bones, PruneRefused
+        from .core.prune_bones import (prune_zero_weight_bones, PruneRefused,
+                                       PruneTargetNotEditable)
         armature = scene_utils.find_armature()
         if armature is None:
-            self.report({'ERROR'}, "No armature found")
+            self.report({'ERROR'}, "No local armature found")
             return {'CANCELLED'}
         try:
             result = prune_zero_weight_bones(armature, whatif=self.whatif,
                                              force=self.force)
+        except PruneTargetNotEditable as refused:
+            self.report({'ERROR'}, "Prune REFUSED — '%s' is library data (%s) and "
+                                   "cannot be edited; nothing was pruned. Select the "
+                                   "local rig." % (refused.armature, refused.library))
+            return {'CANCELLED'}
         except PruneRefused as refused:
             # CANCELLED, not FINISHED: a red line above a finished op reads as advisory.
             for o in refused.offenders:
@@ -286,7 +292,9 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             chains = result["chains"]
             # The gate verdict, not just the plan: "will this go through?" — the
             # question would_refuse exists to answer (core docstring).
-            if result["would_refuse"]:
+            if result.get("refusal"):
+                verdict = " — WOULD REFUSE: %s" % result["refusal"]
+            elif result["would_refuse"]:
                 verdict = " — WOULD REFUSE (enable Force to orphan the rider)"
             elif any(o["bone_pruned"] for o in result["bone_parented_objects"]):
                 verdict = " — would proceed under Force, orphaning the rider"

@@ -76,8 +76,8 @@ def export_unity_fbx(filepath: str,
     exactly why they are correct today, the same fact this rule encodes. A
     whole-scene export of a multi-armature scene REFUSES up front: the gate
     decides one clear for one rig, no sanctioned workflow exports a multi-rig
-    scene whole (own-mergeable exports scoped precisely so an appended
-    disposable reference body never ships; own-base merges to one rig first),
+    scene whole (own-mergeable exports scoped precisely so an appended or
+    linked disposable reference body never ships; own-base merges to one rig first),
     and no surveyed vendor file imports more than one armature. Merge the rigs
     first (``merge_armatures``), scope to one (``armature_obj``), or pass
     ``keep_object_rotation=True`` to export every object ROTATION as-is —
@@ -89,6 +89,21 @@ def export_unity_fbx(filepath: str,
     downstream rather than merely wrong. ``**extra`` lets a caller override
     ``axis_up``/``axis_forward``; the up-axis reasoning above is hardwired to the
     default -90 X conversion and does not follow an override.
+
+    **Linked data — two shapes, three predicates (``scene_utils``).** A LINKED
+    object (``is_linked``) is a fit reference: the scoped door never selects it
+    (a linked object cannot be bound to a local rig), and the whole-scene door
+    REFUSES on it by name rather than ship it — above the multi-armature
+    refusal, whose "delete the extra armature" remedy is wrong for a link. A
+    local EMPTY instancing a linked collection (``instances_linked``) is refused
+    the same way: the exporter would expand it into unrigged geometry with the
+    armature dropped, and no other door can see inside it. An OVERRIDE object
+    over linked data (a base body whose head is a library override of the
+    authoritative head) is local and exports like any other object; its data is
+    read-only, so the scale bake refuses it only when a bake would actually
+    reach it (``check_scale_normalizable``, ``is_editable``). Measured: a
+    linked-reference hair and an override-head base both export at 0.0 mm
+    against their appended / local twins.
 
     That 180° has a second switch on the consumer side, covered below.
 
@@ -214,6 +229,35 @@ def export_unity_fbx(filepath: str,
             "set scene.unit_settings.scale_length = 1.0 (rescale the content if it "
             "relied on it) and re-export" % us.scale_length)
 
+    # --- Library data refusals (docstring, **Linked data**). Above the mode
+    # normalisation below as well as above selection and every mutation — a refused
+    # export leaves the scene untouched, mode state included — and ordered above the
+    # multi-armature refusal, whose "delete the extra armature" remedy is the
+    # measured wrong answer for a link. These read data only; no operator, no mode.
+    if armature_obj is not None and scene_utils.is_linked(armature_obj):
+        raise ValueError(
+            "armature_obj %r is a linked reference from %s; an owned re-export "
+            "never exports a reference. Scope the export to the local rig "
+            "(--armature <local armature>)"
+            % (armature_obj.name, scene_utils.library_path(armature_obj)))
+    if armature_obj is None:
+        linked = [o for o in bpy.context.scene.objects
+                  if scene_utils.is_linked(o) or scene_utils.instances_linked(o)]
+        if linked:
+            raise ValueError(
+                "%d linked object(s) are in this whole-scene export's scope (%s) "
+                "and would ship as geometry — a linked collection instance ships "
+                "as UNRIGGED geometry, its armature dropped by the exporter. A "
+                "linked reference never ships: scope the export to the local rig "
+                "(--armature / armature_obj=...)"
+                % (len(linked),
+                   ", ".join("%r from %s" % (
+                       o.name,
+                       scene_utils.library_path(o)
+                       or scene_utils.library_path(o.instance_collection))
+                       for o in sorted(linked, key=lambda o: o.name)[:8])
+                   + (", …" if len(linked) > 8 else "")))
+
     # ``select_all`` (and the FBX exporter) poll for OBJECT mode; a caller that left
     # the scene in POSE/EDIT — apply_proportion_edge exits in POSE on its object-only
     # edge path — otherwise crashes ``select_all.poll() failed, context is incorrect``.
@@ -250,7 +294,8 @@ def export_unity_fbx(filepath: str,
     # mesh moves, whether a parented rig's world rotation is its own) exists
     # only on a path no sanctioned workflow takes, and refusing is also the
     # honest fix for the real accident that path enabled: a whole-scene export
-    # silently shipping an appended disposable reference body.
+    # silently shipping an appended disposable reference body (a linked one is
+    # refused by name above, before this can fire).
     if len(candidates) > 1:
         raise ValueError(
             "%d armatures are in this export's scope (%s), and this export "

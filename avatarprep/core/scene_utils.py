@@ -150,8 +150,21 @@ def _baked_entry(ob) -> Dict[str, Any]:
     raised). Only its *placement* — under an owning armature vs. ``unbound`` — is new."""
     raw = ob.get(STAMP_BAKED)
     if isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
-        return {"name": ob.name, "baked": dict(raw)}
-    return {"name": ob.name, "baked": None, "corrupt": repr(raw)}
+        entry = {"name": ob.name, "baked": dict(raw)}
+    else:
+        entry = {"name": ob.name, "baked": None, "corrupt": repr(raw)}
+    entry.update(_library_fields(ob))
+    return entry
+
+
+def _library_fields(ob) -> Dict[str, Any]:
+    """``library`` (the object's own) and ``data_library`` (its data's), each the
+    library path as stored (``//``-relative when linked relative) or ``None``. A linked reference reads both set; an override
+    object reads ``library=None`` over a set ``data_library`` — the one bit that
+    tells a reader its data cannot be edited or baked. Always present, so a
+    consumer never branches on key-absence."""
+    return {"library": library_path(ob),
+            "data_library": library_path(getattr(ob, "data", None))}
 
 
 def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
@@ -175,6 +188,14 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     ``avatarprep_baked`` is flagged (``baked=None`` + ``corrupt=<repr>``), not raised.
     No collapse / reconcile / divergence / tolerance — that coherence reasoning lives
     in compose-mergeable step 5, where the domain knowledge already is.
+
+    Every entry carries ``library`` / ``data_library`` (the library path as
+    stored, or None).
+    A linked fit-reference rig (own-mergeable) reports its stamps like any other
+    armature — the grouping already keeps its morphs apart — and these two fields
+    are how a reader tells the reference from the mergeable when names alone do
+    not settle it. A collection INSTANCE of a linked base is invisible here (its
+    objects are not scene objects); ``fbx_export`` refuses that shape by name.
 
     **True partition — every baked mesh appears exactly once.** Owner resolution
     reuses ``get_bound_meshes``' union ("bound" = parent OR armature-modifier target):
@@ -213,13 +234,71 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     armatures: List[Dict[str, Any]] = []
     for arm in armature_objs:
         state_raw = read_stamp(arm, STAMP_STATE)
-        armatures.append({"name": arm.name,
-                          "base": read_stamp(arm, STAMP_BASE),
-                          "state": state_raw,
-                          "state_kind": stamp_kind(state_raw),
-                          "meshes": arm_meshes[arm.name]})
+        entry = {"name": arm.name,
+                 "base": read_stamp(arm, STAMP_BASE),
+                 "state": state_raw,
+                 "state_kind": stamp_kind(state_raw),
+                 "meshes": arm_meshes[arm.name]}
+        entry.update(_library_fields(arm))
+        armatures.append(entry)
 
     return {"armatures": armatures, "unbound": unbound}
+
+
+# --- Library data --------------------------------------------------------------
+# Three predicates, one home. Every door that could mutate, default-target, or
+# whole-scene-export reads library status through these, never through a raw
+# ``.library`` test of its own. Two shapes are sanctioned: a LINKED reference
+# (own-mergeable's fit-reference base body: read-only, excluded from every
+# export) and an OVERRIDE object over linked data (a base body whose head mesh
+# is a library override of the authoritative head: local, exported like any
+# other object, but its data cannot take a bake or an edit).
+
+def is_linked(obj) -> bool:
+    """``obj`` is a linked library object — a pure reference. Never a default
+    target, never mutated, never in a bake scope, never written by the
+    whole-scene export. An override object is NOT linked (``obj.library`` is
+    None): it is local over linked data — see ``is_editable``."""
+    return obj is not None and obj.library is not None
+
+
+def instances_linked(obj) -> bool:
+    """``obj`` is a local EMPTY instancing a LINKED collection — File > Link's
+    UI default shape. Its objects are not in ``scene.objects``, so no per-object
+    walk here can see them, ``report_stamps`` cannot mark them, and the FBX
+    exporter expands the instance into UNRIGGED geometry (``export_fbx_bin``
+    iterates ``dupli_list_gen`` with ARMATURE removed from the object types).
+    The whole-scene export refuses on it by name; link objects, not a
+    collection instance."""
+    return (obj is not None and obj.instance_type == 'COLLECTION'
+            and obj.instance_collection is not None
+            and obj.instance_collection.library is not None)
+
+
+def is_editable(obj) -> bool:
+    """Can a door rewrite this object's data — a scale bake, a bone prune, an
+    Edit Mode entry? False for a linked object, for an override object, and for
+    any override data. Stricter than ``ID.is_editable`` on purpose: Blender's
+    flag reads True on a FULLY overridden armature (object and data), yet Edit
+    Mode entry on it still fails (measured 5.2.0: ``Unable to execute 'Edit
+    Mode', error changing modes``), so a gate on the flag alone would clear the
+    prune and crash it. Gate on this, not on ``is_linked``, which every override
+    passes (``library is None``) and then crashes on."""
+    if obj is None or not obj.is_editable or obj.override_library is not None:
+        return False
+    data = getattr(obj, "data", None)
+    if data is None:
+        return True
+    return data.is_editable and data.override_library is None
+
+
+def library_path(idblock) -> Optional[str]:
+    """The library path of a linked ID as stored — ``//``-relative when the link
+    was made relative (the sanctioned shape), otherwise absolute — or ``None``
+    for local data. The handle every linked-data diagnostic names."""
+    if idblock is None or idblock.library is None:
+        return None
+    return idblock.library.filepath
 
 
 def _is_descendant(obj, ancestor) -> bool:
@@ -628,12 +707,34 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
                 "scale; the constraint would restore the scale after the bake. "
                 "Apply or remove the constraint before exporting" % (name, bad))
 
-        if o.data is not None and getattr(o.data, 'users', 1) > 1:
+        # A bake REACHES ``o`` only when its own authored scale is non-unit or an
+        # in-scope ancestor's is (the apply pushes scale down; ``_has_baked_ancestor``
+        # walks that chain on ``o.scale``, the same predicate the live loop
+        # re-reads — never ``matrix_world.to_scale()``, which over-refuses under a
+        # Keep-Transform parent). Data the bake never reaches is exported as-is,
+        # so shared or library data at unit scale is not a refusal: a library
+        # override of the authoritative head at unit scale is the sanctioned
+        # body-swap shape, and it was measured refusing here at "1 other user"
+        # (the override's own reference object) before this narrowing.
+        reached = not _is_unit_scale(scale) or _has_baked_ancestor(o, in_scope)
+        if reached and not is_editable(o):
             raise ValueError(
-                "%r shares its object data with %d other user(s), so "
-                "``transform_apply`` refuses it and the export would ship a mixed "
-                "unit layout. Make the data single-user, or exclude the object"
-                % (name, o.data.users - 1))
+                "%r is library data (%s) that this bake would rewrite — its scale "
+                "%r or an in-scope ancestor's is non-unit — and library data cannot "
+                "take a transform_apply. Scope the export so the reference is out "
+                "of it (--armature / armature_obj=...), or make the object's data "
+                "local before exporting"
+                % (name, library_path(o) or library_path(o.data) or "linked",
+                   tuple(round(c, 6) for c in scale)))
+        # Independent of the condition above: linked data can have one user.
+        if reached and o.data is not None and getattr(o.data, 'users', 1) > 1:
+            raise ValueError(
+                "%r shares its object data with %d other user(s) and this bake "
+                "would reach it (its scale %r or an in-scope ancestor's is "
+                "non-unit), so ``transform_apply`` refuses it and the export "
+                "would ship a mixed unit layout. Make the data single-user, or "
+                "exclude the object"
+                % (name, o.data.users - 1, tuple(round(c, 6) for c in scale)))
 
         # The bake rescales an armature's REST bones but does not touch pose-bone
         # location channels, so a translation keeps its old number under a new
@@ -1009,9 +1110,12 @@ def find_armature(name: Optional[str] = None,
                   scene: Optional[bpy.types.Scene] = None) -> Optional[bpy.types.Object]:
     """Return an armature object.
 
-    If ``name`` is given and matches an armature, that one is returned. Otherwise
-    the active object (if an armature) is preferred, then the first armature
-    found in the scene.
+    If ``name`` is given and matches an armature, that one is returned — even a
+    library one, since a read door may name it on purpose. Otherwise the default
+    branches pick the active object (if an armature), then the first armature in
+    the scene, **skipping library data** (``is_editable``: a linked rig, or an
+    override) — every caller of the default pick goes on to mutate, and library
+    data crashes the Edit/Pose Mode entry.
     """
     if scene is None:
         scene = bpy.context.scene
@@ -1022,14 +1126,30 @@ def find_armature(name: Optional[str] = None,
             if obj and obj.type == 'ARMATURE' and obj.name == name:
                 return obj
 
+    # The default branches never pick library data: a linked fit reference was
+    # measured being picked here (first in scene) and then crashing the prune,
+    # and an override armature fails the same poll while reading
+    # ``library is None`` — so the gate is ``is_editable``, not ``is_linked``.
+    # The explicit-name branch above is unconditional.
     active = getattr(bpy.context, "active_object", None)
-    if active is not None and active.type == 'ARMATURE' and active in objects:
+    if (active is not None and active.type == 'ARMATURE' and active in objects
+            and is_editable(active)):
         return active
 
     for obj in objects:
-        if obj and obj.type == 'ARMATURE':
+        if obj and obj.type == 'ARMATURE' and is_editable(obj):
             return obj
     return None
+
+
+def library_armature_count(scene: Optional[bpy.types.Scene] = None) -> int:
+    """How many scene armatures are library data (linked, or an override) — for
+    a "no armature" message on a file that visibly has a rig."""
+    if scene is None:
+        scene = bpy.context.scene
+    objects = list(scene.objects) if scene else list(bpy.data.objects)
+    return sum(1 for o in objects
+               if o is not None and o.type == 'ARMATURE' and not is_editable(o))
 
 
 def resolve_target_armature(scene=None, active=None):
@@ -1037,21 +1157,31 @@ def resolve_target_armature(scene=None, active=None):
 
     Safe pick: the active object if it is an armature; else the sole armature; else an
     error on 0 or >=2 (NEVER silently grab 'the first' — in a two-armature scene that
-    could be the disposable reference body own-mergeable appends)."""
+    could be the disposable reference body own-mergeable appends). Library data
+    (``is_editable`` false: a linked rig, or an override) is never a candidate —
+    the edge apply writes the applying sentinel before it enters Pose Mode, so a
+    crash there would leave a false corruption mark on an asset nothing touched —
+    and the messages name how many were skipped so an all-library file does not
+    read as empty."""
     if scene is None:
         scene = bpy.context.scene
     if active is None:
         active = getattr(bpy.context, "active_object", None)
     objs = list(scene.objects) if scene else list(bpy.data.objects)
-    arms = [o for o in objs if o is not None and o.type == 'ARMATURE']
-    if active is not None and active.type == 'ARMATURE' and active in objs:
+    all_arms = [o for o in objs if o is not None and o.type == 'ARMATURE']
+    arms = [o for o in all_arms if is_editable(o)]
+    linked = len(all_arms) - len(arms)
+    note = (" (%d library rig(s) present — linked, or an override; library data "
+            "is never a mutation target)" % linked) if linked else ""
+    if (active is not None and active.type == 'ARMATURE' and active in objs
+            and is_editable(active)):
         return active, None
     if len(arms) == 1:
         return arms[0], None
     if not arms:
-        return None, "no armature in the scene"
-    return None, ("%d armatures in scene — activate the target armature; "
-                  "apply_proportion_edge won't guess" % len(arms))
+        return None, "no local armature in the scene" + note
+    return None, ("%d local armatures in scene%s — activate the target armature; "
+                  "apply_proportion_edge won't guess" % (len(arms), note))
 
 
 def get_bound_meshes(armature: bpy.types.Object,

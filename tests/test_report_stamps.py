@@ -130,9 +130,11 @@ def test_partition():
     check(_by_name(b["meshes"], "DressBody") is None,
           "Base.meshes must NOT contain Dress's mesh")
 
-    # (2) Per-mesh entry shape unchanged — exactly {name, baked}.
-    check(dm is not None and set(dm.keys()) == {"name", "baked"},
-          "clean baked entry must be exactly {name, baked}, got keys %r"
+    # (2) Per-mesh entry shape — exactly {name, baked} plus the two always-present
+    # library fields (None on local data; test_linked_data pins the linked values).
+    check(dm is not None and set(dm.keys()) == {"name", "baked", "library", "data_library"}
+          and dm["library"] is None and dm["data_library"] is None,
+          "clean baked entry must be exactly {name, baked, library, data_library}, got keys %r"
           % (None if dm is None else sorted(dm.keys())))
 
     # (8) Modifier binding — BaseBody bound only by modifier appears under Base (asserted above).
