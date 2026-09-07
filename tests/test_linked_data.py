@@ -23,6 +23,7 @@ case pins one measured defect or one branch of the three predicates in
   * ``report_stamps`` carries ``library`` / ``data_library`` on every entry.
 """
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -238,6 +239,19 @@ def main():
     ent = next((m for a in rep["armatures"] for m in a["meshes"] if m["name"] == ov.name), None)
     check(ent is not None and ent["library"] is None and ent["data_library"],
           "override entry: library=None, data_library set, got %r" % ent)
+    # The door's --shapekeys listing carries the same marker: a real override HEAD
+    # has no baked stamp, so the shapekeys line is the only one naming its library.
+    saved = os.path.join(tmp, "override_scene.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=saved, copy=True)
+    door = os.path.join(_repo_root(), "cli", "report_stamps.py")
+    proc = subprocess.run([bpy.app.binary_path, "--background", "--factory-startup",
+                           "--python", door, "--", "--in", saved, "--shapekeys"],
+                          capture_output=True, text=True, timeout=300)
+    out = (proc.stdout or "") + (proc.stderr or "")
+    line = next((l for l in out.splitlines()
+                 if l.startswith("AVATARPREP: mesh %s shapekeys[" % ov.name)), None)
+    check(line is not None and "data-linked=" in line and "lib.blend" in line,
+          "--shapekeys line for an unstamped override head must carry data-linked=, got %r" % line)
     exc, written = _export(own, tmp, "override_unit")
     check(exc is None and written,
           "unit-scale override head must export (the narrowed refusal): %r" % exc)
