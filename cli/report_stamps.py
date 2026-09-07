@@ -12,6 +12,8 @@ Opens the blend read-only; never saves. A report never "fails" — exit 0 always
 ``--shapekeys`` additionally lists shape-key NAMES per mesh (every scene mesh,
 basis excluded), optionally narrowed by a case-insensitive substring — the
 enumeration door for "which key is the blink" that otherwise forces ad-hoc bpy.
+Each mesh line (and its JSON entry) carries ``library`` / ``data_library`` like the
+stamp lines, so an override head with no baked stamp still reads as linked.
 """
 import os
 import sys
@@ -84,9 +86,15 @@ def main():
             sk = ob.data.shape_keys
             all_keys = [k.name for k in sk.key_blocks[1:]] if sk else []
             names = [n for n in all_keys if needle in n.casefold()]
-            listing[ob.name] = names
-            print("AVATARPREP: mesh %s shapekeys[%d/%d]: %s"
-                  % (ob.name, len(names), len(all_keys), ", ".join(names)))
+            # Same linked / data-linked marker as the stamp lines. A head that is a
+            # library override of a sibling base carries no baked stamp, so this is
+            # the only line that tells a reader whose head the base is wearing.
+            entry = {"names": names,
+                     "library": scene_utils.library_path(ob),
+                     "data_library": scene_utils.library_path(ob.data)}
+            listing[ob.name] = entry
+            print("AVATARPREP: mesh %s shapekeys[%d/%d]: %s%s"
+                  % (ob.name, len(names), len(all_keys), ", ".join(names), _linked(entry)))
         report["shapekeys"] = listing
 
     print("AVATARPREP: report_stamps =", json.dumps(report))
