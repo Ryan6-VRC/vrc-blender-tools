@@ -1,11 +1,12 @@
 """Co-moving coverage: mark body triangles a garment set hides, as a Delete carrier.
 
 A body triangle is *covered* when every vertex of it sits just behind a named garment
-surface whose skin weights agree with the body's, because co-weighted geometry deforms
-together, so a rest-pose distance holds under any pose. Nothing here casts a ray or
-renders to decide; a garment normal is read only as one of two side branches, never
-alone — the prototype that read it alone declared a double-walled sleeve's arm "outside"
-because the nearest point was the lining.
+surface that rides the body's own bones, because geometry skinned to the same skeleton
+deforms together, so a rest-pose distance holds under pose; a garment surface skinned to
+cloth, physbone or helper bones the body never uses swings away from the skin and covers
+nothing. Nothing here casts a ray or renders to decide; a garment normal is read only as
+one of two side branches, never alone — the prototype that read it alone declared a
+double-walled sleeve's arm "outside" because the nearest point was the lining.
 
 Per body vertex, a garment passes when ALL hold (the first failure is the decline reason):
 
@@ -17,18 +18,18 @@ Per body vertex, a garment passes when ALL hold (the first failure is the declin
            first, which is why neither branch alone would do
   hem      the nearest point lies within ``hem_margin`` of a garment boundary edge (an
            edge with exactly one face) — pure topology, so it holds on zero-thickness and
-           unculled meshes; blind to two coincident duplicate sheets
+           unculled meshes; blind to two coincident duplicate sheets. This is the
+           peek-under-a-cuff guard and the one number worth care
   angle    the skin-to-point direction is more than ``angle`` off the body normal (skipped
            when the skin sits behind the garment face — that branch already says enclosed)
   unweighted  the body vertex's raw weight sum is under ``min_raw_weight``
-  weight   total-variation distance between the body vertex's weights and the nearest
-           face's weights (the mean of its corners) exceeds ``weight_tol``; both sides
-           truncated to the top ``max_bones`` groups and renormalised first (what ships),
-           matched by group NAME. Same bones at a different blend ratio is a small
-           distance; a bone on one side only is a large one — the tolerance separates
-           those, and a vendor body against its own vendor costume sits near 0.1–0.2
+  cloth    the nearest face's weight mass (mean of its corners, top ``max_bones`` groups,
+           renormalised) on bone names the BODY mesh has a vertex group for is under
+           ``body_bone_share`` — the face rides skirt/ribbon/helper bones, not the body's
 
-A vertex is covered when ANY listed garment passes.
+A vertex is covered when ANY listed garment passes. A pants leg skinned to the leg bones
+at a different blend ratio than the skin still covers: that mismatch clips in game and is
+not a reason to keep the triangle.
 
 The consumer is a Modular Avatar ShapeChanger Delete: a triangle is removed when ANY of
 its vertices moves more than the component's threshold under the shape. So the carrier
@@ -47,7 +48,7 @@ import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-REASONS = ("far", "side", "hem", "angle", "unweighted", "weight")
+REASONS = ("far", "side", "hem", "angle", "unweighted", "cloth")
 
 
 class CoverageError(Exception):
@@ -180,7 +181,7 @@ def moved_vertices(me, shape_names: Sequence[str], threshold: float):
 
 # --- the measurement -----------------------------------------------------------------
 
-def measure(body, garments, *, distance: float, weight_tol: float, angle_deg: float,
+def measure(body, garments, *, distance: float, body_bone_share: float, angle_deg: float,
             hem_margin: float, cut_threshold: float, cut_shapes: Sequence[str] = (),
             max_bones: int = 4, min_raw_weight: float = 0.5, depsgraph=None) -> Dict:
     """Measure coverage of ``body`` by ``garments`` (mesh objects). Returns per-vertex
@@ -267,8 +268,9 @@ def measure(body, garments, *, distance: float, weight_tol: float, angle_deg: fl
             if raw_sum < min_raw_weight:
                 reasons["unweighted"] += 1
                 continue
-            if tv_distance(bw, _face_weights(g_w, polys[idx])) > weight_tol:
-                reasons["weight"] += 1
+            fw = _face_weights(g_w, polys[idx])
+            if sum(w for k, w in fw.items() if k in body_groups) < body_bone_share:
+                reasons["cloth"] += 1
                 continue
             passed += 1
             if not covered[i]:
@@ -314,7 +316,7 @@ def measure(body, garments, *, distance: float, weight_tol: float, angle_deg: fl
         "cut": cut,
         "near": near,
         "per_garment": per_garment,
-        "settings": {"distance_m": distance, "weight_tol": weight_tol, "angle_deg": angle_deg,
+        "settings": {"distance_m": distance, "body_bone_share": body_bone_share, "angle_deg": angle_deg,
                      "hem_margin_m": hem_margin, "cut_threshold_m": cut_threshold,
                      "max_bones": max_bones, "min_raw_weight": min_raw_weight,
                      "cut_shapes": list(cut_shapes)},

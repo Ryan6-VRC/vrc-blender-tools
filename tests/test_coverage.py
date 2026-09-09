@@ -10,8 +10,8 @@ so every case pins one clause of the criterion or of the carrier rule:
   * a double-walled tube whose inner wall's normals face the body still covers — nothing
     reads a garment normal;
   * a short open tube leaves the ring beyond its hem uncovered (boundary-edge margin);
-  * a tube band weighted to another bone declines by weight, and a tube weighted to a
-    bone the body lacks reports a low weight share;
+  * a tube band weighted to a bone the body lacks declines as cloth and reports a low
+    weight share; a blend-ratio difference on the body's own bones still covers;
   * a one-triangle-wide covered strip is residue: covered, carrier empty there;
   * --cut-shape excludes what a shape already moves, and an unknown cut shape refuses;
   * write_carrier lands the key on a local body, refuses a moved Basis and a same-named
@@ -78,7 +78,7 @@ def _cylinder(name, radius, z0, z1, segs=24, rings=8, weights=None, flip=False, 
 
 def _measure(body, garments, **kw):
     from avatarprep.core import coverage
-    args = dict(distance=0.015, weight_tol=0.35, angle_deg=60.0, hem_margin=0.015,
+    args = dict(distance=0.015, body_bone_share=0.7, angle_deg=60.0, hem_margin=0.015,
                 cut_threshold=0.01)
     args.update(kw)
     return coverage.measure(body, garments, **args)
@@ -128,17 +128,27 @@ def test_hem_leaves_ring_beyond_edge():
     check(not above, "vertices beyond the hem were marked covered: %d" % len(above))
 
 
-def test_weight_mismatch_declines():
+def test_cloth_bones_decline_and_ratio_does_not():
     _clear()
     body = _cylinder("Body", 0.10, 0.0, 1.0, rings=20)
     tube = _cylinder("Tube", 0.11, -0.2, 1.2, rings=8,
                      weights=lambda r: {"Spine": 1.0} if r < 4 else {"Skirt": 1.0})
     r = _measure(body, [tube])
     d = r["per_garment"]["Tube"]["declined"]
-    check(d.get("weight", 0) > 0, "re-weighted band should decline by weight, declined=%s" % d)
-    check(0 < r["covered_triangles"] < r["triangles"], "weight case should cover part only")
+    check(d.get("cloth", 0) > 0, "skirt-weighted band should decline as cloth, declined=%s" % d)
+    check(0 < r["covered_triangles"] < r["triangles"], "cloth case should cover part only")
     share = r["per_garment"]["Tube"]["weight_share_on_body_groups"]
     check(0.3 < share < 0.7, "weight share should be about half, got %r" % share)
+    # a pants leg at a different blend ratio on the body's own bones still covers
+    _clear()
+    body = _cylinder("Body", 0.10, 0.0, 1.0, rings=20,
+                     weights=lambda r: {"Spine": 0.9, "Hips": 0.1})
+    tube = _cylinder("Tube", 0.11, -0.2, 1.2, rings=8,
+                     weights=lambda r: {"Spine": 0.4, "Hips": 0.6})
+    r = _measure(body, [tube])
+    check(r["covered_triangles"] == r["triangles"],
+          "a blend-ratio difference on body bones must not decline, got %d/%d (declined %s)"
+          % (r["covered_triangles"], r["triangles"], r["per_garment"]["Tube"]["declined"]))
 
 
 def test_any_garment_may_cover():
@@ -153,22 +163,14 @@ def test_any_garment_may_cover():
 
 
 def test_residue_strip():
-    """A body whose covered region is a single ring of triangles: every covered vertex has
-    an uncovered incident triangle, so the carrier is empty and residue = covered."""
+    """A body whose covered region is a single ring of quads: every covered vertex has an
+    uncovered incident triangle, so the carrier is empty and residue = covered. A short
+    tube reaches exactly two body rings (z 0.50 and 0.55) at distance 20 mm with the hem
+    margin off."""
     _clear()
     body = _cylinder("Body", 0.10, 0.0, 1.0, rings=20, segs=24)
-    # a tube covering only z in [0.47, 0.53] with overhang far beyond the hem margin is
-    # impossible (it IS the hem), so build the strip by weights: only ring 10's vertices
-    # and ring 11's share the tube's bone
-    tube = _cylinder("Tube", 0.11, -0.2, 1.2, rings=8)
-    for g in body.vertex_groups:
-        body.vertex_groups.remove(g)
-    spine = body.vertex_groups.new(name="Spine")
-    other = body.vertex_groups.new(name="Other")
-    for i, v in enumerate(body.data.vertices):
-        ring = i // 24
-        (spine if ring in (10, 11) else other).add([i], 1.0, 'REPLACE')
-    r = _measure(body, [tube])
+    tube = _cylinder("Tube", 0.11, 0.49, 0.56, rings=1)
+    r = _measure(body, [tube], distance=0.02, hem_margin=0.0)
     check(r["covered_triangles"] == 24 * 2, "strip should cover one ring of quads (48 tris), got %d"
           % r["covered_triangles"])
     check(r["realised_triangles"] == 0 and r["residue_triangles"] == r["covered_triangles"],
@@ -305,7 +307,7 @@ def main():
     test_closed_tube_covers()
     test_double_wall_ignores_garment_normals()
     test_hem_leaves_ring_beyond_edge()
-    test_weight_mismatch_declines()
+    test_cloth_bones_decline_and_ratio_does_not()
     test_any_garment_may_cover()
     test_residue_strip()
     test_cut_shape_exclusion_and_unknown()
