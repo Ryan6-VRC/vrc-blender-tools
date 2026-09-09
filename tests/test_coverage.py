@@ -78,7 +78,7 @@ def _cylinder(name, radius, z0, z1, segs=24, rings=8, weights=None, flip=False, 
 
 def _measure(body, garments, **kw):
     from avatarprep.core import coverage
-    args = dict(distance=0.015, weight_tol=0.1, angle_deg=60.0, hem_margin=0.015,
+    args = dict(distance=0.015, weight_tol=0.35, angle_deg=60.0, hem_margin=0.015,
                 cut_threshold=0.01)
     args.update(kw)
     return coverage.measure(body, garments, **args)

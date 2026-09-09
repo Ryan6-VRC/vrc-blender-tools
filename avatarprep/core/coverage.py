@@ -15,10 +15,12 @@ Per body vertex, a garment passes when ALL hold (the first failure is the declin
            unculled meshes; blind to two coincident duplicate sheets
   angle    the skin-to-point direction is more than ``angle`` off the body normal
   unweighted  the body vertex's raw weight sum is under ``min_raw_weight``
-  weight   total-variation distance between the body vertex's weights and SOME corner of
-           the nearest face (max over corners, no barycentric blend) exceeds
-           ``weight_tol``; both sides truncated to the top ``max_bones`` groups and
-           renormalised first (what ships), matched by group NAME
+  weight   total-variation distance between the body vertex's weights and the nearest
+           face's weights (the mean of its corners) exceeds ``weight_tol``; both sides
+           truncated to the top ``max_bones`` groups and renormalised first (what ships),
+           matched by group NAME. Same bones at a different blend ratio is a small
+           distance; a bone on one side only is a large one — the tolerance separates
+           those, and a vendor body against its own vendor costume sits near 0.1–0.2
 
 A vertex is covered when ANY listed garment passes.
 
@@ -93,6 +95,16 @@ def tv_distance(a: Dict[str, float], b: Dict[str, float]) -> float:
     """Total-variation distance between two normalised weight vectors: 0 identical,
     1 disjoint bone sets."""
     return 0.5 * sum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in set(a) | set(b))
+
+
+def _face_weights(g_w, corners):
+    """Mean of the corners' normalised weight vectors — the garment's weights over the
+    face the body vertex is nearest to."""
+    out = defaultdict(float)
+    for vi in corners:
+        for k, w in g_w[vi][1].items():
+            out[k] += w / len(corners)
+    return out
 
 
 def boundary_edges_world(me, mw):
@@ -246,7 +258,7 @@ def measure(body, garments, *, distance: float, weight_tol: float, angle_deg: fl
             if raw_sum < min_raw_weight:
                 reasons["unweighted"] += 1
                 continue
-            if max(tv_distance(bw, g_w[vi][1]) for vi in polys[idx]) > weight_tol:
+            if tv_distance(bw, _face_weights(g_w, polys[idx])) > weight_tol:
                 reasons["weight"] += 1
                 continue
             passed += 1
