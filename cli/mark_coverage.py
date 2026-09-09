@@ -3,7 +3,7 @@
 Run:
   blender --background --factory-startup --python cli/mark_coverage.py -- \
       --in <costume.blend> --body Body_Base --garments Dress,Socks --shape-name Cover_X \
-      [--distance-mm 15] [--weight-tol 0.35] [--angle-deg 60] [--hem-margin-mm 5] \
+      [--distance-mm 30] [--weight-tol 0.35] [--angle-deg 80] [--hem-margin-mm 5] \
       [--cut-threshold-m 0.01] [--delta-m 0.02] [--cut-shape NAME]... \
       [--report <json>] [--render <dir>] [--whatif | --out <base-copy.blend> | --in-place] \
       [--replace] [--force-load-repair]
@@ -48,10 +48,11 @@ def _parse_args():
                         "no default — a garment behind a Clothing toggle never covers")
     p.add_argument("--shape-name", dest="shape_name", required=True,
                    help="carrier shape key name, one per run")
-    p.add_argument("--distance-mm", dest="distance_mm", type=float, default=15.0)
+    p.add_argument("--distance-mm", dest="distance_mm", type=float, default=30.0,
+                   help="how far above the skin a garment may sit and still cover")
     p.add_argument("--weight-tol", dest="weight_tol", type=float, default=0.35,
                    help="max total-variation distance between body and garment weights (0..1)")
-    p.add_argument("--angle-deg", dest="angle_deg", type=float, default=60.0,
+    p.add_argument("--angle-deg", dest="angle_deg", type=float, default=80.0,
                    help="max angle between the body normal and the direction to the garment")
     p.add_argument("--hem-margin-mm", dest="hem_margin_mm", type=float, default=5.0,
                    help="decline within this distance of a garment boundary edge")

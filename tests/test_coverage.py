@@ -238,7 +238,7 @@ def test_marked_copy_and_removed():
     coverage.remove_marked_copy(ob)
     ob2 = coverage.marked_copy(body, r, name="R", garment_order=["Tube"], remove_carrier=True)
     n_faces = len(ob2.data.polygons)
-    # quads: realised triangles / 2 quads removed
+    # quads: realised triangles / 2 quads removed (no cut shapes in this fixture)
     check(n_faces == len(body.data.polygons) - r["realised_triangles"] // 2,
           "removed copy should drop the realised quads: %d vs %d - %d/2"
           % (n_faces, len(body.data.polygons), r["realised_triangles"]))

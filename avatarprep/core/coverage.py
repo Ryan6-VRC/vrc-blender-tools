@@ -2,18 +2,24 @@
 
 A body triangle is *covered* when every vertex of it sits just behind a named garment
 surface whose skin weights agree with the body's, because co-weighted geometry deforms
-together, so a rest-pose distance holds under any pose. Nothing here reads a garment
-normal, casts a ray, or renders: the prototype that read garment normals declared a
-double-walled sleeve's arm "outside" because the nearest point was the lining.
+together, so a rest-pose distance holds under any pose. Nothing here casts a ray or
+renders to decide; a garment normal is read only as one of two side branches, never
+alone — the prototype that read it alone declared a double-walled sleeve's arm "outside"
+because the nearest point was the lining.
 
 Per body vertex, a garment passes when ALL hold (the first failure is the decline reason):
 
   far      no point on the garment within ``distance``
-  side     the nearest point is not on the skin's outward side by the BODY normal
+  side     the nearest point is neither on the skin's outward side by the BODY normal
+           nor in front of the garment face the skin sits behind — the second branch is
+           what a loose panel standing off a concave region (the side torso under the
+           arm) passes by; a lining whose normals face the skin fails it and passes the
+           first, which is why neither branch alone would do
   hem      the nearest point lies within ``hem_margin`` of a garment boundary edge (an
            edge with exactly one face) — pure topology, so it holds on zero-thickness and
            unculled meshes; blind to two coincident duplicate sheets
-  angle    the skin-to-point direction is more than ``angle`` off the body normal
+  angle    the skin-to-point direction is more than ``angle`` off the body normal (skipped
+           when the skin sits behind the garment face — that branch already says enclosed)
   unweighted  the body vertex's raw weight sum is under ``min_raw_weight``
   weight   total-variation distance between the body vertex's weights and the nearest
            face's weights (the mean of its corners) exceeds ``weight_tol``; both sides
@@ -245,13 +251,16 @@ def measure(body, garments, *, distance: float, weight_tol: float, angle_deg: fl
                 continue
             near[i] = True
             d = loc - p
-            if d.dot(b_norms[i]) <= 0.0:
+            outward = d.dot(b_norms[i]) > 0.0          # garment above the skin
+            enclosed = _nor is not None and d.dot(_nor) > 0.0   # skin behind the garment face
+            if not (outward or enclosed):
                 reasons["side"] += 1
                 continue
             if hem_tree is not None and hem_tree.find_nearest(loc, hem_margin)[0] is not None:
                 reasons["hem"] += 1
                 continue
-            if dist > 1e-9 and d.normalized().dot(b_norms[i]) < cos_angle:
+            if (not enclosed and dist > 1e-9
+                    and d.normalized().dot(b_norms[i]) < cos_angle):
                 reasons["angle"] += 1
                 continue
             raw_sum, bw = b_w[i]
@@ -335,9 +344,9 @@ def marked_copy(body, result: Dict, *, name: str, garment_order: Sequence[str],
                 remove_carrier: bool = False):
     """A LOCAL copy of the body mesh (geometry, vertex groups, no library data) linked
     into the scene collection as ``name``, carrying a ``coverage`` colour attribute:
-    kept grey, already-cut dark, near-but-declined amber, covered coloured by claiming
-    garment. With ``remove_carrier`` the triangles the carrier would delete are gone,
-    the closest proxy to the built result. The caller removes it; nothing is saved."""
+    kept grey, near-but-declined amber, covered coloured by claiming garment. Already-cut
+    triangles are removed in every copy; with ``remove_carrier`` the triangles the carrier
+    would delete are gone too, the closest proxy to the built result. The caller removes it; nothing is saved."""
     me = body.data.copy()
     me.name = name
     ob = bpy.data.objects.new(name, me)
@@ -357,15 +366,19 @@ def marked_copy(body, result: Dict, *, name: str, garment_order: Sequence[str],
         attr.data[i].color_srgb = [c / 255.0 for c in col]
     me.color_attributes.active_color = attr
     me.color_attributes.render_color_index = list(me.color_attributes).index(attr)
-    if remove_carrier:
-        import bmesh
-        carrier = set(result["carrier"])
-        bm = bmesh.new()
-        bm.from_mesh(me)
-        doomed = [f for f in bm.faces if any(v.index in carrier for v in f.verts)]
+    # already-cut triangles are gone in every sheet (they are gone in the build too), so
+    # the review reads the body as it ships; ``remove_carrier`` drops the carrier's as well
+    import bmesh
+    carrier = set(result["carrier"]) if remove_carrier else set()
+    cut = result["cut"]
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    doomed = [f for f in bm.faces
+              if any(cut[v.index] for v in f.verts) or any(v.index in carrier for v in f.verts)]
+    if doomed:
         bmesh.ops.delete(bm, geom=doomed, context='FACES')
-        bm.to_mesh(me)
-        bm.free()
+    bm.to_mesh(me)
+    bm.free()
     me.update()
     return ob
 
