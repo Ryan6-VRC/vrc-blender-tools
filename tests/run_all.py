@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # suite file -> the token its verdict line carries
 SUITES = {
     "test_cli_seam.py": "CLI_SEAM_TEST",
+    "test_coverage.py": "COVERAGE_TEST",
     "test_fbx_export.py": "FBXEXPORT_TEST",
     "test_fbx_orientation.py": "FBXORIENT_TEST",
     "test_import_fbx.py": "IMPORT_TEST",
