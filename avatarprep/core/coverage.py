@@ -1,54 +1,50 @@
 """Co-moving coverage: mark body triangles a garment set hides, as a Delete carrier.
 
-A body triangle is *covered* when every vertex of it sits behind a named garment surface
-that rides the body's own bones and cannot be seen into from any angle, because geometry
-skinned to the same skeleton deforms together, so a rest-pose distance holds under pose; a
-garment surface skinned to cloth, physbone or helper bones the body never uses swings away
-from the skin and covers nothing.
+A body vertex is *covered* when no line of sight reaches it that a co-moving garment does
+not block. Rays leave the skin point in a cone around the skin normal; a ray is blocked
+only by a listed garment face that rides the same bones as the skin point, because
+geometry skinned to the same skeleton deforms together, so what hides the skin in rest
+pose hides it in every pose. A face on other bones (a skirt on its physbone chain over a
+thigh) swings away and is transparent to the ray, which marches on. The body never blocks
+its own rays: an intelligently authored body has no triangle that hides behind another
+part of itself in every pose.
 
-Per body vertex, a garment passes when ALL hold (the first failure is the decline reason):
+Per body vertex (the first failure is the decline reason):
 
-  far      no point on the garment within ``distance``
-  side     the nearest point is neither on the skin's outward side by the BODY normal
-           nor in front of the garment face the skin sits behind — the second branch is
-           what a loose panel standing off a concave region (the side torso under the
-           arm) passes by; a lining whose normals face the skin fails it and passes the
-           first, which is why neither branch alone would do
-  unweighted  the body vertex's raw weight sum is under ``min_raw_weight``
-  cloth    the nearest face's weight mass (mean of its corners, top ``max_bones`` groups,
-           renormalised) on bone names the BODY mesh has a vertex group for is under
-           ``body_bone_share`` — the face rides skirt/ribbon/helper bones, not the body's
+  unweighted  the vertex's raw weight sum is under ``min_raw_weight``
+  swings      some ray met only garment faces on bones the vertex does not ride
+  escaped     some ray reached ``reach`` without meeting any listed garment at all
 
-and then, over ALL listed garments together:
-
-  peek     some ray from the skin point, within ``peek_deg`` of the body normal, reaches
-           ``peek_reach`` without hitting any listed garment or the body itself. This is
-           the local visibility test: a cuff, a collar standing off the neck, a boot top
-           looked down into. It is not a camera and not a pose sample; a ray that hits
-           the body first counts as blocked (the inner thigh is hidden by the other thigh).
-
-A vertex is covered when ANY listed garment passes the per-garment tests and the peek test
-passes. A pants leg skinned to the leg bones at a different blend ratio than the skin still
-covers: that mismatch clips in game and is not a reason to keep the triangle.
+"Same bones" is bone-name membership with two allowances: ``kin`` parent-or-child steps
+of the armature count as the same bone (chest to breast bone through its root; hips to
+the skirt's first ring), and ``fold`` globs name bones that read as their nearest unfolded
+ancestor, for a physbone the operator knows is stiff. The hit face's weight share on the
+allowed set must reach ``share``; blend ratio is otherwise ignored, since a mismatch on
+shared bones clips in game and is not a reason to keep a triangle.
 
 The consumer is a Modular Avatar ShapeChanger Delete: a triangle is removed when ANY of
-its vertices moves more than the component's threshold under the shape. So the carrier
-vertex set is every vertex whose incident triangles are ALL covered or already cut; the
-carrier then removes exactly the triangles touching it, a subset of the covered set by
-construction. ``residue`` is what is covered but has no interior vertex to carry it.
+its vertices moves more than the component's threshold under the shape. The carrier is
+therefore every vertex whose every incident POLYGON is fully covered or already cut —
+polygons, not fan triangles, because neither the FBX exporter nor Unity promises Blender's
+split, and a quad with one uncovered corner must never go. The carrier removes exactly
+the polygons touching it; ``residue`` is covered but has no interior vertex to carry it.
+``rest_visible`` counts removed triangles a rest-pose ray can still reach from the
+centroid (to 5 degrees short of edge-on), with every listed garment blocking regardless
+of bones: the cost of a cone narrower than the hemisphere, reported so it is never silent.
 
 Pure ``bpy`` data access, no operators, no UI. Door: ``cli/mark_coverage.py``.
 """
+import fnmatch
 import hashlib
 import math
 from collections import defaultdict
-from typing import Dict, List, Sequence
+from typing import Dict, Iterable, Optional, Sequence
 
 import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-REASONS = ("far", "side", "unweighted", "cloth", "peek")
+REASONS = ("unweighted", "swings", "escaped")
 
 
 class CoverageError(Exception):
@@ -98,15 +94,9 @@ def normalized_weights(obj, me, max_bones: int, floor: float = 0.01):
     return out
 
 
-def tv_distance(a: Dict[str, float], b: Dict[str, float]) -> float:
-    """Total-variation distance between two normalised weight vectors: 0 identical,
-    1 disjoint bone sets."""
-    return 0.5 * sum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in set(a) | set(b))
-
-
 def _face_weights(g_w, corners):
     """Mean of the corners' normalised weight vectors — the garment's weights over the
-    face the body vertex is nearest to."""
+    face a ray hit."""
     out = defaultdict(float)
     for vi in corners:
         for k, w in g_w[vi][1].items():
@@ -114,17 +104,22 @@ def _face_weights(g_w, corners):
     return out
 
 
-def cone_directions(normal, cone_deg: float, rings: int = 2, azimuths: int = 8):
-    """The peek rays: the normal itself plus ``rings`` rings of ``azimuths`` directions
-    at even fractions of ``cone_deg`` off it. World-space unit vectors."""
+def cone_directions(normal, cone_deg: float, ring_deg: float = 15.0):
+    """The rays: the normal itself plus rings of directions at even fractions of
+    ``cone_deg`` off it, one ring per ``ring_deg``, with azimuth count growing with the
+    ring's circumference (8 to 24) so a wide cone is not sparser. World-space unit
+    vectors."""
     n = Vector(normal).normalized()
     up = Vector((0.0, 0.0, 1.0)) if abs(n.z) < 0.9 else Vector((1.0, 0.0, 0.0))
     u = n.cross(up).normalized()
     v = n.cross(u).normalized()
     out = [n]
+    rings = max(1, int(round(cone_deg / ring_deg)))
+    step = math.radians(cone_deg) / rings
     for r in range(1, rings + 1):
-        theta = math.radians(cone_deg) * r / rings
+        theta = step * r
         st, ct = math.sin(theta), math.cos(theta)
+        azimuths = min(24, max(8, int(round(8 * st / math.sin(step)))))
         for k in range(azimuths):
             phi = 2.0 * math.pi * k / azimuths
             out.append((n * ct + (u * math.cos(phi) + v * math.sin(phi)) * st).normalized())
@@ -140,16 +135,6 @@ def basis_hash(me) -> str:
     for d in src:
         h.update(("%.6f %.6f %.6f;" % tuple(d.co)).encode())
     return h.hexdigest()
-
-
-def triangles(me) -> List[tuple]:
-    """Fan-triangulated polygon vertex triples, the granularity the consumer removes at."""
-    tris = []
-    for p in me.polygons:
-        vs = p.vertices
-        for k in range(1, len(vs) - 1):
-            tris.append((vs[0], vs[k], vs[k + 1]))
-    return tris
 
 
 def moved_vertices(me, shape_names: Sequence[str], threshold: float):
@@ -171,15 +156,131 @@ def moved_vertices(me, shape_names: Sequence[str], threshold: float):
     return moved, unknown
 
 
+# --- bones ---------------------------------------------------------------------------
+
+def bone_parents(objects: Iterable) -> Dict[str, Optional[str]]:
+    """``{bone: parent}`` merged by name over every armature the objects' Armature
+    modifiers target — merging by name is what MA's zip does at build. Empty when no
+    object has one."""
+    out = {}
+    for ob in objects:
+        for m in getattr(ob, "modifiers", []):
+            if m.type == 'ARMATURE' and m.object is not None:
+                for b in m.object.data.bones:
+                    out.setdefault(b.name, b.parent.name if b.parent else None)
+    return out
+
+
+class BoneKin:
+    """The bone-name allowance: ``fold`` globs collapse a bone onto its nearest unfolded
+    ancestor, then ``kin`` parent-or-child steps count as the same bone."""
+
+    def __init__(self, parents: Dict[str, Optional[str]], kin: int, fold: Sequence[str] = ()):
+        self.parents = parents
+        self.kin = kin
+        self.fold = list(fold)
+        self.children = defaultdict(list)
+        for b, p in parents.items():
+            if p:
+                self.children[p].append(b)
+        self._fold_cache = {}
+        self._set_cache = {}
+
+    def folded(self, bone: str) -> Optional[str]:
+        if bone in self._fold_cache:
+            return self._fold_cache[bone]
+        b = bone
+        while b is not None and any(fnmatch.fnmatch(b, pat) for pat in self.fold):
+            b = self.parents.get(b)
+        self._fold_cache[bone] = b
+        return b
+
+    def allowed(self, bones: Iterable[str]) -> frozenset:
+        key = frozenset(bones)
+        if key in self._set_cache:
+            return self._set_cache[key]
+        seen = {self.folded(b) for b in key} - {None}
+        frontier = set(seen)
+        for _ in range(self.kin):
+            nxt = set()
+            for b in frontier:
+                p = self.parents.get(b)
+                if p:
+                    nxt.add(p)
+                nxt.update(self.children.get(b, ()))
+            nxt -= seen
+            seen |= nxt
+            frontier = nxt
+        out = frozenset(seen)
+        self._set_cache[key] = out
+        return out
+
+    def share(self, face_weights: Dict[str, float], allowed: frozenset) -> float:
+        return sum(w for k, w in face_weights.items() if self.folded(k) in allowed)
+
+
+# --- configuration shapes --------------------------------------------------------------
+
+def _stand_in(ob):
+    """A local, unlinked copy of ``ob`` (mesh data, vertex-group names, armature
+    modifiers, transform) so a shape value can be set without touching library data or
+    the scene's own objects. The caller removes it with ``_remove_stand_in``."""
+    me = ob.data.copy()
+    me.name = "__coverage_" + ob.name
+    twin = bpy.data.objects.new(me.name, me)
+    twin.matrix_world = ob.matrix_world.copy()
+    for g in ob.vertex_groups:
+        twin.vertex_groups.new(name=g.name)
+    for m in ob.modifiers:
+        if m.type == 'ARMATURE' and m.object is not None:
+            am = twin.modifiers.new(m.name, 'ARMATURE')
+            am.object = m.object
+    bpy.context.scene.collection.objects.link(twin)
+    return twin
+
+
+def _remove_stand_in(twin):
+    me = twin.data
+    bpy.data.objects.remove(twin, do_unlink=True)
+    bpy.data.meshes.remove(me)
+
+
+def apply_shapes(objects: Sequence, shapes: Dict[str, float]):
+    """Stand-ins for every object that carries one of ``shapes``, with the values set.
+    Returns ``(replacements, stand_ins)``: ``replacements`` maps each original to the
+    object to measure (itself when untouched). Refuses a shape no listed mesh has."""
+    replacements = {ob: ob for ob in objects}
+    stand_ins = []
+    for name, value in shapes.items():
+        hit = False
+        for ob in objects:
+            keys = ob.data.shape_keys
+            if keys is None or keys.key_blocks.get(name) is None:
+                continue
+            hit = True
+            twin = replacements[ob]
+            if twin is ob:
+                twin = _stand_in(ob)
+                replacements[ob] = twin
+                stand_ins.append(twin)
+            twin.data.shape_keys.key_blocks[name].value = value
+        if not hit:
+            for t in stand_ins:
+                _remove_stand_in(t)
+            raise CoverageError("shape %r is on none of %s" % (name, ", ".join(o.name for o in objects)))
+    return replacements, stand_ins
+
+
 # --- the measurement -----------------------------------------------------------------
 
-def measure(body, garments, *, distance: float, body_bone_share: float, peek_deg: float,
-            peek_reach: float, cut_threshold: float, cut_shapes: Sequence[str] = (),
-            max_bones: int = 4, min_raw_weight: float = 0.5, depsgraph=None) -> Dict:
+def measure(body, garments, *, cone_deg: float = 75.0, share: float = 0.5, reach: float = 1.0,
+            kin: int = 2, fold: Sequence[str] = (), shapes: Optional[Dict[str, float]] = None,
+            cut_threshold: float = 0.01, cut_shapes: Sequence[str] = (), ring_deg: float = 15.0,
+            max_bones: int = 4, min_raw_weight: float = 0.5) -> Dict:
     """Measure coverage of ``body`` by ``garments`` (mesh objects). Returns per-vertex
-    ``covered`` / ``claimed_by`` / ``cut`` / ``near`` lists, the carrier, triangle counts,
-    per-garment decline counts and the body's basis hash. Raises ``CoverageError`` on an
-    unresolvable input; never mutates the scene."""
+    ``covered`` / ``claimed_by`` / ``cut`` / ``near`` lists, the carrier, the removed
+    polygons, triangle counts, decline counts and the body's basis hash. Raises
+    ``CoverageError`` on an unresolvable input; leaves the scene as it found it."""
     if body is None or body.type != 'MESH':
         raise CoverageError("body is not a mesh object")
     if not garments:
@@ -190,121 +291,135 @@ def measure(body, garments, *, distance: float, body_bone_share: float, peek_deg
         if g == body:
             raise CoverageError("%s is both the body and a garment" % body.name)
 
-    dg = depsgraph or bpy.context.evaluated_depsgraph_get()
+    parents = bone_parents([body] + list(garments))
+    if kin > 0 and not parents:
+        raise CoverageError("kin=%d needs an Armature modifier on the body or a garment; none found "
+                            "(pass kin 0 for unrigged meshes)" % kin)
+    kinship = BoneKin(parents, kin, fold)
 
-    b_ev, b_me = evaluated_mesh(body, dg)
+    # the configuration's shapes go on stand-ins, so linked data and the scene stay untouched
+    replacements, stand_ins = apply_shapes([body] + list(garments), shapes or {})
     try:
-        b_verts, b_norms = world_verts_normals(body, b_me)
-        b_w = normalized_weights(body, b_me, max_bones)
-        tris = triangles(b_me)
-        body_tree = BVHTree.FromPolygons(b_verts, [tuple(p.vertices) for p in b_me.polygons])
+        dg = bpy.context.evaluated_depsgraph_get()
+        return _measure(body, garments, replacements[body], [replacements[g] for g in garments], dg,
+                        kinship, cone_deg, share, reach, ring_deg, cut_threshold, cut_shapes,
+                        max_bones, min_raw_weight, shapes or {})
+    finally:
+        for t in stand_ins:
+            _remove_stand_in(t)
+
+
+def _measure(body, garments, b_obj, g_objs, dg, kinship, cone_deg, share, reach, ring_deg,
+             cut_threshold, cut_shapes, max_bones, min_raw_weight, shapes):
+    b_ev, b_me = evaluated_mesh(b_obj, dg)
+    try:
+        b_verts, b_norms = world_verts_normals(b_obj, b_me)
+        b_w = normalized_weights(b_obj, b_me, max_bones)
+        polys = [tuple(p.vertices) for p in b_me.polygons]
+        rot = b_obj.matrix_world.to_3x3()
+        poly_normals = [(rot @ p.normal).normalized() for p in b_me.polygons]
     finally:
         b_ev.to_mesh_clear()
     b_hash = basis_hash(body.data)
     cut, unknown_cuts = moved_vertices(body.data, cut_shapes, cut_threshold)
     if unknown_cuts:
         raise CoverageError("cut shape(s) not on %s: %s" % (body.name, ", ".join(unknown_cuts)))
-    body_groups = set(g.name for g in body.vertex_groups)
+
+    trees = []   # (name, BVHTree, per-face weights)
+    for g, g_obj in zip(garments, g_objs):
+        g_ev, g_me = evaluated_mesh(g_obj, dg)
+        try:
+            gmw = g_obj.matrix_world
+            g_verts = [gmw @ v.co for v in g_me.vertices]
+            g_polys = [tuple(p.vertices) for p in g_me.polygons]
+            tree = BVHTree.FromPolygons(g_verts, g_polys)
+            g_w = normalized_weights(g_obj, g_me, max_bones)
+        finally:
+            g_ev.to_mesh_clear()
+        trees.append((g.name, tree, [_face_weights(g_w, p) for p in g_polys]))
 
     n = len(b_verts)
     covered = [False] * n
     near = [False] * n
     claimed_by = [None] * n
-    per_garment = {}
-    garment_trees = []
-
-    for g in garments:
-        g_ev, g_me = evaluated_mesh(g, dg)
-        try:
-            gmw = g.matrix_world
-            g_verts = [gmw @ v.co for v in g_me.vertices]
-            polys = [tuple(p.vertices) for p in g_me.polygons]
-            tree = BVHTree.FromPolygons(g_verts, polys)
-            g_w = normalized_weights(g, g_me, max_bones)
-        finally:
-            g_ev.to_mesh_clear()
-        garment_trees.append(tree)
-
-        # share of the garment's weight mass on names the body has: a low share is a
-        # rig-name mismatch, and the honest reading of "nothing covered"
-        mass_total = mass_known = 0.0
-        for _, w in g_w:
-            for k, v in w.items():
-                mass_total += v
-                if k in body_groups:
-                    mass_known += v
-
-        reasons = defaultdict(int)
-        passed = 0
-        for i in range(n):
-            p = b_verts[i]
-            loc, _nor, idx, dist = tree.find_nearest(p, distance)
-            if loc is None:
-                reasons["far"] += 1
-                continue
-            near[i] = True
-            d = loc - p
-            outward = d.dot(b_norms[i]) > 0.0          # garment above the skin
-            enclosed = _nor is not None and d.dot(_nor) > 0.0   # skin behind the garment face
-            if not (outward or enclosed):
-                reasons["side"] += 1
-                continue
-            raw_sum, bw = b_w[i]
-            if raw_sum < min_raw_weight:
-                reasons["unweighted"] += 1
-                continue
-            fw = _face_weights(g_w, polys[idx])
-            if sum(w for k, w in fw.items() if k in body_groups) < body_bone_share:
-                reasons["cloth"] += 1
-                continue
-            passed += 1
-            if not covered[i]:
-                covered[i] = True
-                claimed_by[i] = g.name
-        per_garment[g.name] = {
-            "passed_vertices": passed,
-            "declined": {r: reasons[r] for r in REASONS if reasons[r]},
-            "weight_share_on_body_groups": round(mass_known / mass_total, 3) if mass_total else 0.0,
-        }
-
-    # the peek test, over every garment at once: a covered point stays covered only when
-    # no ray in the cone escapes past every garment and the body itself
-    peeked = 0
+    reasons = defaultdict(int)
     eps = 1e-4
-    for i in range(n):
-        if not covered[i]:
-            continue
-        origin = b_verts[i] + b_norms[i] * eps
-        for dvec in cone_directions(b_norms[i], peek_deg):
-            blocked = False
-            for tree in garment_trees:
-                if tree.ray_cast(origin, dvec, peek_reach)[0] is not None:
-                    blocked = True
-                    break
-            if not blocked and body_tree.ray_cast(origin, dvec, peek_reach)[0] is not None:
-                blocked = True
-            if not blocked:
-                covered[i] = False
-                claimed_by[i] = None
-                peeked += 1
-                break
-    per_garment["_all"] = {"declined": {"peek": peeked}} if peeked else {"declined": {}}
 
-    # triangle granularity against the any-vertex rule
-    incident = defaultdict(list)
-    for ti, t in enumerate(tris):
-        for v in t:
-            incident[v].append(ti)
-    tri_covered = [all(covered[v] for v in t) for t in tris]
-    tri_cut = [any(cut[v] for v in t) for t in tris]
+    def march(origin, direction, allowed):
+        """Follow one ray past transparent faces: (blocking garment or None, met anything)."""
+        o, left, hit_any = origin, reach, False
+        for _ in range(8):
+            best = None
+            for name, tree, fw in trees:
+                loc, _nor, idx, dist = tree.ray_cast(o, direction, left)
+                if loc is not None and (best is None or dist < best[3]):
+                    best = (name, fw[idx], loc, dist)
+            if best is None:
+                return None, hit_any
+            hit_any = True
+            name, fw, loc, dist = best
+            if kinship.share(fw, allowed) >= share:
+                return name, True
+            o = loc + direction * eps
+            left -= dist + eps
+            if left <= 0:
+                return None, hit_any
+        return None, hit_any
+
+    for i in range(n):
+        raw_sum, bw = b_w[i]
+        if raw_sum < min_raw_weight:
+            reasons["unweighted"] += 1
+            continue
+        allowed = kinship.allowed(bw.keys())
+        origin = b_verts[i] + b_norms[i] * eps
+        ok = True
+        for d in cone_directions(b_norms[i], cone_deg, ring_deg):
+            blocker, hit_any = march(origin, d, allowed)
+            if hit_any:
+                near[i] = True
+            if blocker is None:
+                reasons["swings" if hit_any else "escaped"] += 1
+                ok = False
+                break
+            if claimed_by[i] is None:
+                claimed_by[i] = blocker
+        covered[i] = ok
+        if not ok:
+            claimed_by[i] = None
+
+    # the carrier, at polygon granularity against the consumer's any-vertex rule
+    vpolys = defaultdict(list)
+    for pi, p in enumerate(polys):
+        for v in p:
+            vpolys[v].append(pi)
+    poly_covered = [all(covered[v] for v in p) for p in polys]
+    poly_cut = [any(cut[v] for v in p) for p in polys]
     carrier = [i for i in range(n)
-               if covered[i] and not cut[i] and incident[i]
-               and all(tri_covered[ti] or tri_cut[ti] for ti in incident[i])]
+               if covered[i] and not cut[i] and vpolys[i]
+               and all(poly_covered[pi] or poly_cut[pi] for pi in vpolys[i])]
     carrier_set = set(carrier)
-    n_cut = sum(tri_cut)
-    n_covered = sum(1 for ti, t in enumerate(tris) if tri_covered[ti] and not tri_cut[ti])
-    n_realised = sum(1 for ti, t in enumerate(tris)
-                     if not tri_cut[ti] and any(v in carrier_set for v in t))
+    removed = [pi for pi, p in enumerate(polys) if not poly_cut[pi] and any(v in carrier_set for v in p)]
+
+    def tri_count(indices):
+        return sum(len(polys[pi]) - 2 for pi in indices)
+
+    n_cut = tri_count(pi for pi in range(len(polys)) if poly_cut[pi])
+    n_covered = tri_count(pi for pi in range(len(polys)) if poly_covered[pi] and not poly_cut[pi])
+    n_realised = tri_count(removed)
+
+    # rest-pose visibility of what goes: every listed garment blocks, bones ignored; the
+    # sweep stops 5 degrees short of the tangent, where a face is edge-on and a ray runs
+    # along an open tube without ever meeting it
+    rest_visible = []
+    for pi in removed:
+        p = polys[pi]
+        c = sum((b_verts[v] for v in p), Vector()) / len(p)
+        o = c + poly_normals[pi] * eps
+        for d in cone_directions(poly_normals[pi], 85.0, 10.0):
+            if all(tree.ray_cast(o, d, reach)[0] is None for _, tree, _ in trees):
+                rest_visible.append(pi)
+                break
 
     return {
         "body": body.name,
@@ -312,31 +427,26 @@ def measure(body, garments, *, distance: float, body_bone_share: float, peek_deg
         "body_library": body.data.library.filepath if body.data.library else None,
         "vertex_count": n,
         "basis_hash": b_hash,
-        "triangles": len(tris),
+        "triangles": tri_count(range(len(polys))),
         "already_cut_triangles": n_cut,
         "covered_triangles": n_covered,
         "realised_triangles": n_realised,
         "residue_triangles": n_covered - n_realised,
+        "rest_visible_triangles": tri_count(rest_visible),
         "carrier": carrier,
+        "removed_polygons": removed,
         "covered": covered,
         "claimed_by": claimed_by,
         "cut": cut,
         "near": near,
-        "per_garment": per_garment,
-        "settings": {"distance_m": distance, "body_bone_share": body_bone_share, "peek_deg": peek_deg,
-                     "peek_reach_m": peek_reach, "cut_threshold_m": cut_threshold,
+        "declined": {r: reasons[r] for r in REASONS if reasons[r]},
+        "by_garment": {g.name: sum(1 for c in claimed_by if c == g.name) for g in garments},
+        "settings": {"cone_deg": cone_deg, "share": share, "reach_m": reach, "kin": kinship.kin,
+                     "fold": list(kinship.fold), "shapes": dict(shapes), "ring_deg": ring_deg,
+                     "cut_threshold_m": cut_threshold, "cut_shapes": list(cut_shapes),
                      "max_bones": max_bones, "min_raw_weight": min_raw_weight,
-                     "cut_shapes": list(cut_shapes)},
+                     "bone_graph": len(kinship.parents)},
     }
-
-
-def declined_summary(result: Dict) -> Dict[str, int]:
-    """Decline reasons summed over garments, in ``REASONS`` order, zeros dropped."""
-    out = defaultdict(int)
-    for g in result["per_garment"].values():
-        for r, c in g["declined"].items():
-            out[r] += c
-    return {r: out[r] for r in REASONS if out[r]}
 
 
 # --- outputs -------------------------------------------------------------------------
@@ -344,23 +454,29 @@ def declined_summary(result: Dict) -> Dict[str, int]:
 # vertex colours (sRGB bytes) for the review sheet; garments cycle through the palette
 COLOR_KEPT = (190, 190, 190, 255)
 COLOR_CUT = (40, 40, 40, 255)
-COLOR_DECLINED = (245, 170, 40, 255)      # near a garment, not covered
+COLOR_DECLINED = (245, 170, 40, 255)      # a garment was met, none co-moving on every ray
 COLOR_GARMENT = [(230, 40, 40, 255), (40, 100, 230, 255), (40, 180, 80, 255),
                  (200, 40, 200, 255), (40, 200, 200, 255), (230, 120, 40, 255)]
 
 
 def marked_copy(body, result: Dict, *, name: str, garment_order: Sequence[str],
-                remove_carrier: bool = False):
+                remove_carrier: bool = False, shapes: Optional[Dict[str, float]] = None):
     """A LOCAL copy of the body mesh (geometry, vertex groups, no library data) linked
     into the scene collection as ``name``, carrying a ``coverage`` colour attribute:
     kept grey, near-but-declined amber, covered coloured by claiming garment. Already-cut
-    triangles are removed in every copy; with ``remove_carrier`` the triangles the carrier
-    would delete are gone too, the closest proxy to the built result. The caller removes it; nothing is saved."""
+    polygons are removed in every copy; with ``remove_carrier`` the polygons the carrier
+    deletes are gone too, the built result. ``shapes`` are set on the copy so it shows the
+    configuration that was measured. The caller removes it; nothing is saved."""
     me = body.data.copy()
     me.name = name
     ob = bpy.data.objects.new(name, me)
     ob.matrix_world = body.matrix_world.copy()
     bpy.context.scene.collection.objects.link(ob)
+    if shapes and me.shape_keys:
+        for k, v in shapes.items():
+            kb = me.shape_keys.key_blocks.get(k)
+            if kb is not None:
+                kb.value = v
     palette = {g: COLOR_GARMENT[k % len(COLOR_GARMENT)] for k, g in enumerate(garment_order)}
     attr = me.color_attributes.new("coverage", 'BYTE_COLOR', 'POINT')
     for i in range(len(me.vertices)):
@@ -375,15 +491,13 @@ def marked_copy(body, result: Dict, *, name: str, garment_order: Sequence[str],
         attr.data[i].color_srgb = [c / 255.0 for c in col]
     me.color_attributes.active_color = attr
     me.color_attributes.render_color_index = list(me.color_attributes).index(attr)
-    # already-cut triangles are gone in every sheet (they are gone in the build too), so
-    # the review reads the body as it ships; ``remove_carrier`` drops the carrier's as well
     import bmesh
-    carrier = set(result["carrier"]) if remove_carrier else set()
+    doomed_idx = set(result["removed_polygons"]) if remove_carrier else set()
     cut = result["cut"]
     bm = bmesh.new()
     bm.from_mesh(me)
-    doomed = [f for f in bm.faces
-              if any(cut[v.index] for v in f.verts) or any(v.index in carrier for v in f.verts)]
+    bm.faces.ensure_lookup_table()
+    doomed = [f for f in bm.faces if f.index in doomed_idx or any(cut[v.index] for v in f.verts)]
     if doomed:
         bmesh.ops.delete(bm, geom=doomed, context='FACES')
     bm.to_mesh(me)
@@ -396,6 +510,39 @@ def remove_marked_copy(ob):
     me = ob.data
     bpy.data.objects.remove(ob, do_unlink=True)
     bpy.data.meshes.remove(me)
+
+
+def save_marked(path: str, body, result: Dict, garments: Sequence, *, label: str,
+                shapes: Optional[Dict[str, float]] = None) -> str:
+    """Save a COPY of the open file to ``path`` holding the marked body and the
+    carrier-removed body beside the garments, everything else hidden, the removed body
+    visible and the viewport in plain solid shading so hems read at the cut. The open
+    file's own path and contents are untouched."""
+    names = [g.name for g in garments]
+    marked = marked_copy(body, result, name=label + "_marked", garment_order=names, shapes=shapes)
+    removed = marked_copy(body, result, name=label + "_removed", garment_order=names,
+                          remove_carrier=True, shapes=shapes)
+    keep = {marked.name, removed.name} | set(names)
+    hidden = []
+    for ob in bpy.context.scene.objects:
+        if ob.name not in keep and not ob.hide_get():
+            ob.hide_set(True)
+            hidden.append(ob)
+    marked.hide_set(True)
+    try:
+        for area in (bpy.context.screen.areas if bpy.context.screen else ()):
+            if area.type == 'VIEW_3D':
+                for sp in area.spaces:
+                    if sp.type == 'VIEW_3D':
+                        sp.shading.type = 'SOLID'
+                        sp.shading.color_type = 'SINGLE'
+        bpy.ops.wm.save_as_mainfile(filepath=path, copy=True, relative_remap=True)
+    finally:
+        for ob in hidden:
+            ob.hide_set(False)
+        remove_marked_copy(marked)
+        remove_marked_copy(removed)
+    return path
 
 
 def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: bool = False):

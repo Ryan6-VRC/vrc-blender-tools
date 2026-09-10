@@ -3,25 +3,29 @@
 Run:
   blender --background --factory-startup --python cli/mark_coverage.py -- \
       --in <costume.blend> --body Body_Base --garments Dress,Socks --shape-name Cover_X \
-      [--distance-mm 30] [--body-bone-share 0.7] [--peek-deg 60] [--peek-reach-m 0.5] \
-      [--cut-threshold-m 0.01] [--delta-m 0.02] [--cut-shape NAME]... \
-      [--report <json>] [--render <dir>] [--whatif | --out <base-copy.blend> | --in-place] \
-      [--replace] [--force-load-repair]
+      [--shape NAME=VALUE]... [--cut-shape NAME]... \
+      [--cone-deg 75] [--share 0.5] [--reach-m 1.0] [--kin 2] [--fold-bones GLOB]... \
+      [--cut-threshold-m 0.01] [--delta-m 0.02] \
+      [--report <json>] [--render <dir>] [--out-marked <blend>] \
+      [--whatif | --out <base-copy.blend> | --in-place] [--replace] [--force-load-repair]
 
-Measures on the costume blend, where the body is normally a library link. ``--whatif``
-measures, reports and renders and writes no blend. Without it the door opens the base
-blend the body's mesh links from, checks the body there against what it measured (vertex
-count and Basis hash), writes the carrier shape key on it, and saves to ``--out`` (or over
-the base with ``--in-place``). A local body needs no second file and is written in
-``--in`` itself, saved to ``--out``.
+Measures on the costume blend, where the body is normally a library link. A coverage
+measurement is of a CONFIGURATION: the shapes that configuration sets on the body and the
+garments (a waist slimmer, a heel lift, a collar removed) go on with ``--shape`` first, or
+the skin is measured where it does not sit in game. ``--whatif`` measures, reports and
+renders and writes no blend. Without it the door opens the base blend the body's mesh
+links from, checks the body there against what it measured (vertex count and Basis
+hash), writes the carrier shape key on it, and saves to ``--out`` (or over the base with
+``--in-place``). A local body needs no second file and is written in ``--in`` itself,
+saved to ``--out``. ``--out-marked`` saves a copy of the costume scene with the marked and
+carrier-removed bodies beside the garments, for inspecting hems at the cut.
 
 Exit 0 on ``=> OK``; 1 on ``=> FAIL:`` (ran, refused: nothing covered, changed body, key
-exists); 2 on unresolvable input (missing body/garment, bad args) or a crash. Criterion
-and carrier rule: ``avatarprep/core/coverage.py``.
+exists); 2 on unresolvable input (missing body/garment/shape, bad args) or a crash.
+Criterion and carrier rule: ``avatarprep/core/coverage.py``.
 """
 import os
 import sys
-import json
 import argparse
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,6 +42,19 @@ class _Parser(argparse.ArgumentParser):
         sys.exit(2)
 
 
+def _parse_shapes(items, p):
+    out = {}
+    for item in items:
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            p.error("--shape wants NAME=VALUE, got %r" % item)
+        try:
+            out[name] = float(value)
+        except ValueError:
+            p.error("--shape %s: %r is not a number" % (name, value))
+    return out
+
+
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = _Parser(prog="mark_coverage")
@@ -48,27 +65,34 @@ def _parse_args():
                         "no default — a garment behind a Clothing toggle never covers")
     p.add_argument("--shape-name", dest="shape_name", required=True,
                    help="carrier shape key name, one per run")
-    p.add_argument("--distance-mm", dest="distance_mm", type=float, default=30.0,
-                   help="how far above the skin a garment may sit and still cover")
-    p.add_argument("--body-bone-share", dest="body_bone_share", type=float, default=0.7,
-                   help="min share of a garment face's skin weight that must sit on bones the "
-                        "body mesh is weighted to; below it the face rides cloth/helper bones "
-                        "and covers nothing")
-    p.add_argument("--peek-deg", dest="peek_deg", type=float, default=60.0,
-                   help="half-angle of the ray cone around the skin normal; a ray escaping "
-                        "past every garment and the body means the point can be seen into")
-    p.add_argument("--peek-reach-m", dest="peek_reach", type=float, default=0.5,
-                   help="how far a peek ray travels before it counts as escaped")
+    p.add_argument("--shape", dest="shapes", action="append", default=[],
+                   help="NAME=VALUE the configuration sets on the body or a garment "
+                        "(repeatable; 0..1; refused when no listed mesh has the key)")
+    p.add_argument("--cut-shape", dest="cut_shapes", action="append", default=[],
+                   help="a shape the row's existing Deletes already remove (repeatable)")
+    p.add_argument("--cone-deg", dest="cone_deg", type=float, default=75.0,
+                   help="half-angle of the ray cone around the skin normal; 90 is the hemisphere")
+    p.add_argument("--share", type=float, default=0.5,
+                   help="min share of a hit face's skin weight on bones the skin point rides "
+                        "(kin and fold applied) for the face to block the ray")
+    p.add_argument("--reach-m", dest="reach", type=float, default=1.0,
+                   help="how far a ray travels before it counts as escaped")
+    p.add_argument("--kin", type=int, default=2,
+                   help="parent-or-child steps of the armature that count as the same bone")
+    p.add_argument("--fold-bones", dest="fold", action="append", default=[],
+                   help="glob of bones that read as their nearest unfolded ancestor "
+                        "(repeatable; a physbone chain known to be stiff)")
     p.add_argument("--cut-threshold-m", dest="cut_threshold", type=float, default=0.01,
                    help="the consumer's Delete threshold: what --cut-shape already removes, "
                         "and what --delta-m must clear")
     p.add_argument("--delta-m", dest="delta", type=float, default=0.02,
                    help="carrier displacement along the inverted normal")
-    p.add_argument("--cut-shape", dest="cut_shapes", action="append", default=[],
-                   help="a shape the row's existing Deletes already remove (repeatable)")
     p.add_argument("--report", dest="report", default=None, help="JSON report path")
     p.add_argument("--render", dest="render_dir", default=None,
                    help="directory for the review contact sheets")
+    p.add_argument("--out-marked", dest="out_marked", default=None,
+                   help="save a copy of the costume scene with the marked and carrier-removed "
+                        "bodies beside the garments, for inspection")
     p.add_argument("--whatif", action="store_true", help="measure only; write no blend")
     p.add_argument("--out", dest="out_path", default=None,
                    help="where to save the body's blend with the carrier key added")
@@ -77,9 +101,14 @@ def _parse_args():
     p.add_argument("--replace", action="store_true", help="overwrite a same-named shape key")
     add_force_load_repair(p)
     a = p.parse_args(argv)
+    a.shape_values = _parse_shapes(a.shapes, p)
     if a.delta <= a.cut_threshold:
         p.error("--delta-m %g must exceed --cut-threshold-m %g or the carrier never triggers"
                 % (a.delta, a.cut_threshold))
+    if not (0.0 < a.cone_deg <= 90.0):
+        p.error("--cone-deg %g must be in (0, 90]" % a.cone_deg)
+    if a.kin < 0:
+        p.error("--kin must be >= 0")
     if not a.whatif and not a.out_path and not a.in_place:
         p.error("pass --whatif, --out, or --in-place")
     if a.out_path and a.in_place:
@@ -101,14 +130,14 @@ def _resolve_mesh(name, role):
     return ob
 
 
-def _render_sheets(body, result, garments, label, out_dir):
+def _render_sheets(body, result, garments, label, out_dir, shapes):
     """Three sheets through render_mesh: the marked body alone; the marked body beside the
-    garments (solid, so silhouettes read); the body with the carrier triangles removed."""
+    garments (solid, so silhouettes read); the body with the carrier polygons removed."""
     from avatarprep.core import coverage
     from avatarprep.core.render_mesh import render
     names = [g.name for g in garments]
     pngs = []
-    marked = coverage.marked_copy(body, result, name="__cover_marked", garment_order=names)
+    marked = coverage.marked_copy(body, result, name="__cover_marked", garment_order=names, shapes=shapes)
     removed = None
     try:
         line = render(label=label + "_marked", only=[marked.name], angles=["front", "back", "left", "right"],
@@ -122,7 +151,7 @@ def _render_sheets(body, result, garments, label, out_dir):
             raise RuntimeError(line)
         pngs.append(line.split("png=")[-1].strip())
         removed = coverage.marked_copy(body, result, name="__cover_removed", garment_order=names,
-                                       remove_carrier=True)
+                                       remove_carrier=True, shapes=shapes)
         line = render(label=label + "_removed", only=[removed.name], angles=["front", "back", "left", "right"],
                       shading="vertexcolor", out_dir=out_dir)
         if "=> FAIL:" in line:
@@ -149,10 +178,9 @@ def main():
         sys.exit(2)
     label = args.shape_name
 
-    distance = args.distance_mm / 1000.0
     try:
-        result = coverage.measure(body, garments, distance=distance, body_bone_share=args.body_bone_share,
-                                  peek_deg=args.peek_deg, peek_reach=args.peek_reach,
+        result = coverage.measure(body, garments, cone_deg=args.cone_deg, share=args.share, reach=args.reach,
+                                  kin=args.kin, fold=args.fold, shapes=args.shape_values,
                                   cut_threshold=args.cut_threshold, cut_shapes=args.cut_shapes)
     except coverage.CoverageError as e:
         print("AVATARPREP: ERROR", e)
@@ -161,25 +189,32 @@ def main():
     pngs = []
     if args.render_dir:
         try:
-            pngs = _render_sheets(body, result, garments, label, os.path.abspath(args.render_dir))
+            pngs = _render_sheets(body, result, garments, label, os.path.abspath(args.render_dir), args.shape_values)
         except Exception as e:
             _fail(label, "render failed: %s" % e)
+    marked_path = None
+    if args.out_marked:
+        marked_path = os.path.abspath(args.out_marked)
+        os.makedirs(os.path.dirname(marked_path) or ".", exist_ok=True)
+        try:
+            coverage.save_marked(marked_path, body, result, garments, label=label, shapes=args.shape_values)
+        except Exception as e:
+            _fail(label, "marked save failed: %s" % e)
 
-    declined = coverage.declined_summary(result)
+    declined = result["declined"]
+    declined_txt = ",".join("%s:%d" % kv for kv in declined.items()) or "-"
     if args.report:
         rep = {k: v for k, v in result.items() if k not in ("covered", "claimed_by", "cut", "near")}
         rep["shape_name"] = args.shape_name
         rep["delta_m"] = args.delta
-        rep["declined"] = declined
         rep["renders"] = pngs
+        rep["marked_blend"] = marked_path
         rep["measured_in"] = os.path.abspath(args.in_path)
         write_report(args.report, rep)
 
     if result["realised_triangles"] == 0:
-        _fail(label, "no triangle is covered by %s at distance=%gmm body_bone_share=%g "
-                     "(declined %s)" % (",".join(g.name for g in garments), args.distance_mm,
-                                        args.body_bone_share,
-                                        " ".join("%s:%d" % kv for kv in declined.items())))
+        _fail(label, "no triangle is covered by %s at cone=%g share=%g kin=%d (declined %s)"
+              % (",".join(g.name for g in garments), args.cone_deg, args.share, args.kin, declined_txt))
 
     saved = None
     if not args.whatif:
@@ -206,12 +241,15 @@ def main():
         trailer += " | report=%s" % os.path.abspath(args.report)
     if pngs:
         trailer += " | png=%s" % ",".join(pngs)
+    if marked_path:
+        trailer += " | marked=%s" % marked_path
     if saved:
         trailer += " | saved=%s" % saved
-    print("AVATARPREP: %s %s body=%s garments=%d cut=%d covered=%d realised=%d residue=%d declined=%s => OK%s"
+    print("AVATARPREP: %s %s body=%s garments=%d cut=%d covered=%d realised=%d residue=%d restvisible=%d "
+          "declined=%s => OK%s"
           % (TOOL, label, result["body"], len(garments), result["already_cut_triangles"],
              result["covered_triangles"], result["realised_triangles"], result["residue_triangles"],
-             ",".join("%s:%d" % kv for kv in declined.items()) or "-", trailer))
+             result["rest_visible_triangles"], declined_txt, trailer))
 
 
 if __name__ == "__main__":
