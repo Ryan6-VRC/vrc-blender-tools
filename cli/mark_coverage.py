@@ -12,13 +12,14 @@ Run:
 Measures on the costume blend, where the body is normally a library link. A coverage
 measurement is of a CONFIGURATION: the shapes that configuration sets on the body and the
 garments (a waist slimmer, a heel lift, a collar removed) go on with ``--shape`` first, or
-the skin is measured where it does not sit in game. ``--whatif`` measures, reports and
-renders and writes no blend. Without it the door opens the base blend the body's mesh
-links from, checks the body there against what it measured (vertex count and Basis
-hash), writes the carrier shape key on it, and saves to ``--out`` (or over the base with
-``--in-place``). A local body needs no second file and is written in ``--in`` itself,
-saved to ``--out``. ``--out-marked`` saves a copy of the costume scene with the marked and
-carrier-removed bodies beside the garments, for inspecting hems at the cut.
+the skin is measured where it does not sit in game. ``--whatif`` measures and reports,
+renders the three sheets when ``--render`` names a directory, and writes no body blend.
+Without it the door opens the base blend the body's mesh links from, checks the body there
+against what it measured (vertex count and Basis hash), writes the carrier shape key on
+it, and saves to ``--out`` (or over the base with ``--in-place``). A local body needs no
+second file and is written in ``--in`` itself, saved to ``--out``. ``--out-marked`` saves
+a copy of the costume scene with the marked and carrier-removed bodies beside the
+garments, in the measured configuration, for inspecting hems at the cut.
 
 Exit 0 on ``=> OK``; 1 on ``=> FAIL:`` (ran, refused: nothing covered, changed body, key
 exists); 2 on unresolvable input (missing body/garment/shape, bad args) or a crash.
@@ -93,11 +94,12 @@ def _parse_args():
     p.add_argument("--out-marked", dest="out_marked", default=None,
                    help="save a copy of the costume scene with the marked and carrier-removed "
                         "bodies beside the garments, for inspection")
-    p.add_argument("--whatif", action="store_true", help="measure only; write no blend")
-    p.add_argument("--out", dest="out_path", default=None,
-                   help="where to save the body's blend with the carrier key added")
-    p.add_argument("--in-place", dest="in_place", action="store_true",
-                   help="save over the body's own blend instead of --out")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--whatif", action="store_true", help="measure only; write no body blend")
+    mode.add_argument("--out", dest="out_path", default=None,
+                      help="where to save the body's blend with the carrier key added")
+    mode.add_argument("--in-place", dest="in_place", action="store_true",
+                      help="save over the body's own blend instead of --out")
     p.add_argument("--replace", action="store_true", help="overwrite a same-named shape key")
     add_force_load_repair(p)
     a = p.parse_args(argv)
@@ -107,12 +109,13 @@ def _parse_args():
                 % (a.delta, a.cut_threshold))
     if not (0.0 < a.cone_deg <= 90.0):
         p.error("--cone-deg %g must be in (0, 90]" % a.cone_deg)
+    if not (0.0 < a.share <= 1.0):
+        p.error("--share %g must be in (0, 1]; at 0 every face blocks and the whole body goes" % a.share)
     if a.kin < 0:
         p.error("--kin must be >= 0")
-    if not a.whatif and not a.out_path and not a.in_place:
-        p.error("pass --whatif, --out, or --in-place")
-    if a.out_path and a.in_place:
-        p.error("--out and --in-place are exclusive")
+    if a.out_path and os.path.abspath(a.out_path) == os.path.abspath(a.in_path):
+        p.error("--out is the costume blend itself; the body's blend is what gets saved there "
+                "(pass --in-place to write over the body's own file)")
     return a
 
 
@@ -132,11 +135,17 @@ def _resolve_mesh(name, role):
 
 def _render_sheets(body, result, garments, label, out_dir, shapes):
     """Three sheets through render_mesh: the marked body alone; the marked body beside the
-    garments (solid, so silhouettes read); the body with the carrier polygons removed."""
+    garments (solid, so silhouettes read); the body with the carrier polygons removed. The
+    garments render in the measured configuration."""
     from avatarprep.core import coverage
     from avatarprep.core.render_mesh import render
     names = [g.name for g in garments]
     pngs = []
+    with coverage.shaped([body] + list(garments), shapes):
+        return _render_sheets_shaped(body, result, names, label, out_dir, shapes, coverage, render, pngs)
+
+
+def _render_sheets_shaped(body, result, names, label, out_dir, shapes, coverage, render, pngs):
     marked = coverage.marked_copy(body, result, name="__cover_marked", garment_order=names, shapes=shapes)
     removed = None
     try:
@@ -167,7 +176,8 @@ def _render_sheets(body, result, garments, label, out_dir, shapes):
 def main():
     args = _parse_args()
     import bpy
-    open_blend(args.in_path, writes=not args.whatif, force_load_repair=args.force_load_repair)
+    open_blend(args.in_path, writes=not args.whatif or bool(args.out_marked),
+               force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import coverage
 
@@ -203,16 +213,25 @@ def main():
 
     declined = result["declined"]
     declined_txt = ",".join("%s:%d" % kv for kv in declined.items()) or "-"
-    if args.report:
+
+    def report(saved):
+        if not args.report:
+            return
         rep = {k: v for k, v in result.items() if k not in ("covered", "claimed_by", "cut", "near")}
         rep["shape_name"] = args.shape_name
         rep["delta_m"] = args.delta
         rep["renders"] = pngs
         rep["marked_blend"] = marked_path
         rep["measured_in"] = os.path.abspath(args.in_path)
+        rep["saved"] = saved
         write_report(args.report, rep)
 
     if result["realised_triangles"] == 0:
+        report(None)
+        if result["covered_triangles"]:
+            _fail(label, "%d triangles are covered but none has a vertex with every surrounding polygon "
+                         "covered, so the carrier is empty (residue %d): the cover is too thin to carry"
+                  % (result["covered_triangles"], result["residue_triangles"]))
         _fail(label, "no triangle is covered by %s at cone=%g share=%g kin=%d (declined %s)"
               % (",".join(g.name for g in garments), args.cone_deg, args.share, args.kin, declined_txt))
 
@@ -235,6 +254,7 @@ def main():
         saved = base_path if args.in_place else os.path.abspath(args.out_path)
         os.makedirs(os.path.dirname(saved) or ".", exist_ok=True)
         bpy.ops.wm.save_as_mainfile(filepath=saved)
+    report(saved)
 
     trailer = ""
     if args.report:

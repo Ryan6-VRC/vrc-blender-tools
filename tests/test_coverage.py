@@ -20,7 +20,9 @@ carrier rule:
   * kin: a band on a child bone declines at kin 0 and covers at kin 1; fold: a band on a
     'Breast_*' bone covers at kin 0 once folded onto its parent;
   * shapes: a body key that swells the top half out past the tube uncovers it when set,
-    on a stand-in — the body's own key value is untouched; an unknown shape refuses;
+    and the key's value is restored after; a non-armature modifier still deforms under a
+    shape; a modifier that rewrites polygons refuses; an unknown shape refuses;
+  * a vertex group that is not a bone (a shared Mask) never counts as skinning;
   * the carrier is polygon-level: one uncovered corner keeps its whole quad;
   * a one-quad-wide covered strip is residue: covered, carrier empty there;
   * --cut-shape excludes what a shape already moves, and an unknown cut shape refuses;
@@ -217,6 +219,14 @@ def test_farther_comoving_garment_covers():
           "the co-moving garment claims, the transparent one never does: %s" % r["by_garment"])
 
 
+def test_non_bone_groups_do_not_skin():
+    body, tube = _scene(body_weights=lambda r: {"Mask": 1.0}, tube_kw=dict(weights=lambda r: {"Mask": 1.0}))
+    r = _measure(body, [tube])
+    check(r["covered_triangles"] == 0 and r["declined"].get("unweighted") == r["vertex_count"],
+          "a shared non-bone group must read as unweighted, got covered %d declined %s"
+          % (r["covered_triangles"], r["declined"]))
+
+
 def test_kin_and_fold():
     from avatarprep.core import coverage
     body, tube = _scene(body_weights=lambda r: {"Chest": 1.0},
@@ -256,9 +266,22 @@ def test_shapes_on_stand_in():
     check(r_swell["covered_triangles"] < r_plain["covered_triangles"] * 0.6,
           "with the swell set the top half stands outside the tube and must uncover: %d vs %d"
           % (r_swell["covered_triangles"], r_plain["covered_triangles"]))
-    check(body.data.shape_keys.key_blocks["Swell"].value == 0.0, "the body's own key value must be untouched")
-    check(not any(o.name.startswith("__coverage_") for o in bpy.data.objects), "stand-ins must be removed")
+    check(body.data.shape_keys.key_blocks["Swell"].value == 0.0, "the body's own key value must be restored")
     check(r_swell["settings"]["shapes"] == {"Swell": 1.0}, "shapes echo in settings")
+    # a deformer that is not an armature must still be in play under a shape
+    disp = body.modifiers.new("Push", 'DISPLACE')
+    disp.strength = 0.05                          # the whole body out past the tube
+    r_disp = _measure(body, [tube], shapes={"Swell": 0.0})
+    check(r_disp["covered_triangles"] == 0, "a displace modifier must shape the measured body under --shape too, got %d"
+          % r_disp["covered_triangles"])
+    body.modifiers.remove(disp)
+    tri = body.modifiers.new("Tri", 'TRIANGULATE')
+    try:
+        _measure(body, [tube])
+        check(False, "a polygon-count change should refuse")
+    except coverage.CoverageError as e:
+        check("polygon" in str(e), "triangulate refusal should say polygon, got %s" % e)
+    body.modifiers.remove(tri)
     try:
         _measure(body, [tube], shapes={"Nope": 1.0})
         check(False, "a shape on no listed mesh should refuse")
@@ -351,6 +374,12 @@ def test_write_carrier_and_gates():
         check(False, "moved Basis should refuse")
     except coverage.CoverageError as e:
         check("Basis" in str(e), "moved-Basis refusal should say so, got %s" % e)
+    basis.data[0].co = basis.data[0].co - Vector((0.001, 0, 0))
+    try:
+        coverage.write_carrier(body.data, r, shape_name="Basis", delta=0.02, replace=True)
+        check(False, "naming the Basis as the carrier should refuse")
+    except coverage.CoverageError as e:
+        check("Basis" in str(e), "Basis-as-carrier refusal should say so, got %s" % e)
 
 
 def test_marked_copy_and_save(tmp):
@@ -425,8 +454,10 @@ def test_cli(tmp):
     check("png=" not in out, "no render requested, no png= trailer")
     check("restvisible=0" in out, "closed tube: restvisible=0 on the result line, got\n%s" % out)
     full = [l for l in out.splitlines() if "=> OK" in l][0]
-    rc, out = run(base_args + ["--whatif", "--shape", "Swell=1"])
-    check(rc == 0 and "=> OK" in out, "shape on a linked body should measure on a stand-in: %d\n%s" % (rc, out))
+    marked2 = os.path.join(tmp, "marked", "m2.blend")
+    rc, out = run(base_args + ["--whatif", "--shape", "Swell=1", "--out-marked", marked2])
+    check(rc == 0 and "=> OK" in out and os.path.exists(marked2),
+          "a body-only shape must measure in place and still save the inspect blend: %d\n%s" % (rc, out))
     swelled = [l for l in out.splitlines() if "=> OK" in l][0]
     def realised(line):
         return int(line.split("realised=")[1].split()[0])
@@ -448,6 +479,12 @@ def test_cli(tmp):
     check(rc == 2 and "Nope" in out, "unknown shape should ERROR exit 2 naming it: %d\n%s" % (rc, out))
     rc, out = run(base_args)
     check(rc == 2 and "=> FAIL: bad args" in out, "no mode flag should be a bad-args FAIL exit 2: %d\n%s" % (rc, out))
+    rc, out = run(base_args + ["--whatif", "--out", out_blend])
+    check(rc == 2 and "not allowed with" in out, "--whatif with --out should refuse: %d\n%s" % (rc, out))
+    rc, out = run(base_args + ["--out", costume])
+    check(rc == 2 and "costume blend itself" in out, "--out onto --in should refuse: %d\n%s" % (rc, out))
+    rc, out = run(base_args + ["--whatif", "--share", "0"])
+    check(rc == 2 and "--share" in out, "--share 0 should refuse: %d\n%s" % (rc, out))
     rc, out = run(base_args + ["--whatif", "--delta-m", "0.005"])
     check(rc == 2 and "must exceed" in out, "delta under threshold should refuse: %d\n%s" % (rc, out))
     rc, out = run(base_args + ["--whatif", "--shape", "Swell"])
@@ -463,6 +500,7 @@ def main():
     test_open_tube_and_loose_collar()
     test_swinging_bones_and_blend_ratio()
     test_farther_comoving_garment_covers()
+    test_non_bone_groups_do_not_skin()
     test_kin_and_fold()
     test_shapes_on_stand_in()
     test_polygon_carrier_keeps_uncovered_corner()

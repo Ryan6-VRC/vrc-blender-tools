@@ -20,7 +20,8 @@ of the armature count as the same bone (chest to breast bone through its root; h
 the skirt's first ring), and ``fold`` globs name bones that read as their nearest unfolded
 ancestor, for a physbone the operator knows is stiff. The hit face's weight share on the
 allowed set must reach ``share``; blend ratio is otherwise ignored, since a mismatch on
-shared bones clips in game and is not a reason to keep a triangle.
+shared bones clips in game and is not a reason to keep a triangle. Only vertex groups
+named for a bone of the armature count as skinning when there is one.
 
 The consumer is a Modular Avatar ShapeChanger Delete: a triangle is removed when ANY of
 its vertices moves more than the component's threshold under the shape. The carrier is
@@ -34,6 +35,7 @@ of bones: the cost of a cone narrower than the hemisphere, reported so it is nev
 
 Pure ``bpy`` data access, no operators, no UI. Door: ``cli/mark_coverage.py``.
 """
+import contextlib
 import fnmatch
 import hashlib
 import math
@@ -56,36 +58,45 @@ class CoverageError(Exception):
 def evaluated_mesh(obj, depsgraph):
     """The object's depsgraph-evaluated mesh (shape-key values applied, modifiers
     included) as ``(evaluated_object, mesh)``; the caller clears it with
-    ``evaluated_object.to_mesh_clear()``. Refuses a modifier that changes the vertex
-    count: weights and the carrier are indexed against the original mesh."""
+    ``evaluated_object.to_mesh_clear()``. Refuses a modifier that changes the vertex or
+    polygon count: weights, the carrier and the removed polygons are indexed against the
+    original mesh, and a Triangulate keeps every vertex while rewriting every face."""
     ev = obj.evaluated_get(depsgraph)
     me = ev.to_mesh()
-    if len(me.vertices) != len(obj.data.vertices):
-        n_ev, n_orig = len(me.vertices), len(obj.data.vertices)
-        ev.to_mesh_clear()
-        raise CoverageError("%s: a modifier changes the vertex count (%d -> %d); coverage "
-                            "is indexed against the original mesh, so disable it first"
-                            % (obj.name, n_orig, n_ev))
+    for what, n_ev, n_orig in (("vertex", len(me.vertices), len(obj.data.vertices)),
+                               ("polygon", len(me.polygons), len(obj.data.polygons))):
+        if n_ev != n_orig:
+            ev.to_mesh_clear()
+            raise CoverageError("%s: a modifier changes the %s count (%d -> %d); coverage "
+                                "is indexed against the original mesh, so disable it first"
+                                % (obj.name, what, n_orig, n_ev))
     return ev, me
+
+
+def normal_matrix(mw):
+    """The transform for normals under ``mw``: the inverse transpose, so non-uniform
+    scale keeps them perpendicular and a mirrored object keeps them pointing out."""
+    return mw.inverted_safe().transposed().to_3x3()
 
 
 def world_verts_normals(obj, me):
     mw = obj.matrix_world
-    rot = mw.to_3x3()
+    rot = normal_matrix(mw)
     return ([mw @ v.co for v in me.vertices],
             [(rot @ v.normal).normalized() for v in me.vertices])
 
 
-def normalized_weights(obj, me, max_bones: int, floor: float = 0.01):
+def normalized_weights(obj, me, max_bones: int, floor: float = 0.01, bones: Optional[set] = None):
     """Per vertex: ``(raw_sum, {group_name: w})`` with the top ``max_bones`` groups kept
     and renormalised to sum 1 — the vector Unity skins with. Groups under ``floor`` are
-    dropped before truncation."""
+    dropped before truncation. With ``bones`` given, only groups named for a bone count:
+    a mask or helper group two meshes happen to share is not skinning."""
     names = [g.name for g in obj.vertex_groups]
     out = []
     for v in me.vertices:
         raw = {}
         for g in v.groups:
-            if g.weight >= floor and g.group < len(names):
+            if g.weight >= floor and g.group < len(names) and (bones is None or names[g.group] in bones):
                 raw[names[g.group]] = raw.get(names[g.group], 0.0) + g.weight
         raw_sum = sum(raw.values())
         top = sorted(raw.items(), key=lambda kv: -kv[1])[:max_bones]
@@ -96,11 +107,13 @@ def normalized_weights(obj, me, max_bones: int, floor: float = 0.01):
 
 def _face_weights(g_w, corners):
     """Mean of the corners' normalised weight vectors — the garment's weights over the
-    face a ray hit."""
+    face a ray hit — over the corners that carry any weight, so an unweighted corner
+    does not thin the face's share."""
     out = defaultdict(float)
-    for vi in corners:
+    weighted = [vi for vi in corners if g_w[vi][1]]
+    for vi in weighted:
         for k, w in g_w[vi][1].items():
-            out[k] += w / len(corners)
+            out[k] += w / len(weighted)
     return out
 
 
@@ -190,7 +203,7 @@ class BoneKin:
         if bone in self._fold_cache:
             return self._fold_cache[bone]
         b = bone
-        while b is not None and any(fnmatch.fnmatch(b, pat) for pat in self.fold):
+        while b is not None and any(fnmatch.fnmatchcase(b, pat) for pat in self.fold):
             b = self.parents.get(b)
         self._fold_cache[bone] = b
         return b
@@ -221,54 +234,30 @@ class BoneKin:
 
 # --- configuration shapes --------------------------------------------------------------
 
-def _stand_in(ob):
-    """A local, unlinked copy of ``ob`` (mesh data, vertex-group names, armature
-    modifiers, transform) so a shape value can be set without touching library data or
-    the scene's own objects. The caller removes it with ``_remove_stand_in``."""
-    me = ob.data.copy()
-    me.name = "__coverage_" + ob.name
-    twin = bpy.data.objects.new(me.name, me)
-    twin.matrix_world = ob.matrix_world.copy()
-    for g in ob.vertex_groups:
-        twin.vertex_groups.new(name=g.name)
-    for m in ob.modifiers:
-        if m.type == 'ARMATURE' and m.object is not None:
-            am = twin.modifiers.new(m.name, 'ARMATURE')
-            am.object = m.object
-    bpy.context.scene.collection.objects.link(twin)
-    return twin
-
-
-def _remove_stand_in(twin):
-    me = twin.data
-    bpy.data.objects.remove(twin, do_unlink=True)
-    bpy.data.meshes.remove(me)
-
-
-def apply_shapes(objects: Sequence, shapes: Dict[str, float]):
-    """Stand-ins for every object that carries one of ``shapes``, with the values set.
-    Returns ``(replacements, stand_ins)``: ``replacements`` maps each original to the
-    object to measure (itself when untouched). Refuses a shape no listed mesh has."""
-    replacements = {ob: ob for ob in objects}
-    stand_ins = []
-    for name, value in shapes.items():
-        hit = False
-        for ob in objects:
-            keys = ob.data.shape_keys
-            if keys is None or keys.key_blocks.get(name) is None:
-                continue
-            hit = True
-            twin = replacements[ob]
-            if twin is ob:
-                twin = _stand_in(ob)
-                replacements[ob] = twin
-                stand_ins.append(twin)
-            twin.data.shape_keys.key_blocks[name].value = value
-        if not hit:
-            for t in stand_ins:
-                _remove_stand_in(t)
-            raise CoverageError("shape %r is on none of %s" % (name, ", ".join(o.name for o in objects)))
-    return replacements, stand_ins
+@contextlib.contextmanager
+def shaped(objects: Sequence, shapes: Dict[str, float]):
+    """Set each shape's value on every listed mesh that carries the key, for the block's
+    duration, then restore what was there. Library data takes the value in memory (it is
+    never saved), so the linked body measures, renders and saves in its configuration with
+    every modifier it really has. Refuses a shape no listed mesh has."""
+    saved = []
+    try:
+        for name, value in shapes.items():
+            hit = False
+            for ob in objects:
+                keys = ob.data.shape_keys
+                kb = keys.key_blocks.get(name) if keys else None
+                if kb is None:
+                    continue
+                hit = True
+                saved.append((kb, kb.value))
+                kb.value = value
+            if not hit:
+                raise CoverageError("shape %r is on none of %s" % (name, ", ".join(o.name for o in objects)))
+        yield
+    finally:
+        for kb, value in reversed(saved):
+            kb.value = value
 
 
 # --- the measurement -----------------------------------------------------------------
@@ -297,26 +286,21 @@ def measure(body, garments, *, cone_deg: float = 75.0, share: float = 0.5, reach
                             "(pass kin 0 for unrigged meshes)" % kin)
     kinship = BoneKin(parents, kin, fold)
 
-    # the configuration's shapes go on stand-ins, so linked data and the scene stay untouched
-    replacements, stand_ins = apply_shapes([body] + list(garments), shapes or {})
-    try:
+    with shaped([body] + list(garments), shapes or {}):
         dg = bpy.context.evaluated_depsgraph_get()
-        return _measure(body, garments, replacements[body], [replacements[g] for g in garments], dg,
-                        kinship, cone_deg, share, reach, ring_deg, cut_threshold, cut_shapes,
-                        max_bones, min_raw_weight, shapes or {})
-    finally:
-        for t in stand_ins:
-            _remove_stand_in(t)
+        return _measure(body, garments, dg, kinship, cone_deg, share, reach, ring_deg,
+                        cut_threshold, cut_shapes, max_bones, min_raw_weight, shapes or {})
 
 
-def _measure(body, garments, b_obj, g_objs, dg, kinship, cone_deg, share, reach, ring_deg,
+def _measure(body, garments, dg, kinship, cone_deg, share, reach, ring_deg,
              cut_threshold, cut_shapes, max_bones, min_raw_weight, shapes):
-    b_ev, b_me = evaluated_mesh(b_obj, dg)
+    bones = set(kinship.parents) if kinship.parents else None
+    b_ev, b_me = evaluated_mesh(body, dg)
     try:
-        b_verts, b_norms = world_verts_normals(b_obj, b_me)
-        b_w = normalized_weights(b_obj, b_me, max_bones)
+        b_verts, b_norms = world_verts_normals(body, b_me)
+        b_w = normalized_weights(body, b_me, max_bones, bones=bones)
         polys = [tuple(p.vertices) for p in b_me.polygons]
-        rot = b_obj.matrix_world.to_3x3()
+        rot = normal_matrix(body.matrix_world)
         poly_normals = [(rot @ p.normal).normalized() for p in b_me.polygons]
     finally:
         b_ev.to_mesh_clear()
@@ -326,14 +310,14 @@ def _measure(body, garments, b_obj, g_objs, dg, kinship, cone_deg, share, reach,
         raise CoverageError("cut shape(s) not on %s: %s" % (body.name, ", ".join(unknown_cuts)))
 
     trees = []   # (name, BVHTree, per-face weights)
-    for g, g_obj in zip(garments, g_objs):
-        g_ev, g_me = evaluated_mesh(g_obj, dg)
+    for g in garments:
+        g_ev, g_me = evaluated_mesh(g, dg)
         try:
-            gmw = g_obj.matrix_world
+            gmw = g.matrix_world
             g_verts = [gmw @ v.co for v in g_me.vertices]
             g_polys = [tuple(p.vertices) for p in g_me.polygons]
             tree = BVHTree.FromPolygons(g_verts, g_polys)
-            g_w = normalized_weights(g_obj, g_me, max_bones)
+            g_w = normalized_weights(g, g_me, max_bones, bones=bones)
         finally:
             g_ev.to_mesh_clear()
         trees.append((g.name, tree, [_face_weights(g_w, p) for p in g_polys]))
@@ -517,31 +501,33 @@ def save_marked(path: str, body, result: Dict, garments: Sequence, *, label: str
     """Save a COPY of the open file to ``path`` holding the marked body and the
     carrier-removed body beside the garments, everything else hidden, the removed body
     visible and the viewport in plain solid shading so hems read at the cut. The open
-    file's own path and contents are untouched."""
+    file's own path and contents are untouched. ``shapes`` are set on the garments too,
+    so the saved copy shows the configuration that was measured."""
     names = [g.name for g in garments]
-    marked = marked_copy(body, result, name=label + "_marked", garment_order=names, shapes=shapes)
-    removed = marked_copy(body, result, name=label + "_removed", garment_order=names,
-                          remove_carrier=True, shapes=shapes)
-    keep = {marked.name, removed.name} | set(names)
-    hidden = []
-    for ob in bpy.context.scene.objects:
-        if ob.name not in keep and not ob.hide_get():
-            ob.hide_set(True)
-            hidden.append(ob)
-    marked.hide_set(True)
-    try:
-        for area in (bpy.context.screen.areas if bpy.context.screen else ()):
-            if area.type == 'VIEW_3D':
-                for sp in area.spaces:
-                    if sp.type == 'VIEW_3D':
-                        sp.shading.type = 'SOLID'
-                        sp.shading.color_type = 'SINGLE'
-        bpy.ops.wm.save_as_mainfile(filepath=path, copy=True, relative_remap=True)
-    finally:
-        for ob in hidden:
-            ob.hide_set(False)
-        remove_marked_copy(marked)
-        remove_marked_copy(removed)
+    with shaped([body] + list(garments), shapes or {}):
+        marked = marked_copy(body, result, name=label + "_marked", garment_order=names, shapes=shapes)
+        removed = marked_copy(body, result, name=label + "_removed", garment_order=names,
+                              remove_carrier=True, shapes=shapes)
+        keep = {marked.name, removed.name} | set(names)
+        hidden = []
+        for ob in bpy.context.scene.objects:
+            if ob.name not in keep and not ob.hide_get():
+                ob.hide_set(True)
+                hidden.append(ob)
+        marked.hide_set(True)
+        try:
+            for area in (bpy.context.screen.areas if bpy.context.screen else ()):
+                if area.type == 'VIEW_3D':
+                    for sp in area.spaces:
+                        if sp.type == 'VIEW_3D':
+                            sp.shading.type = 'SOLID'
+                            sp.shading.color_type = 'SINGLE'
+            bpy.ops.wm.save_as_mainfile(filepath=path, copy=True, relative_remap=True)
+        finally:
+            for ob in hidden:
+                ob.hide_set(False)
+            remove_marked_copy(marked)
+            remove_marked_copy(removed)
     return path
 
 
@@ -563,6 +549,8 @@ def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: b
         raise CoverageError("no object uses mesh %s; a shape key needs one" % me.name)
     if me.shape_keys is None:
         ob.shape_key_add(name="Basis", from_mix=False)
+    if shape_name == me.shape_keys.key_blocks[0].name:
+        raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, me.name))
     existing = me.shape_keys.key_blocks.get(shape_name)
     if existing is not None:
         if not replace:
