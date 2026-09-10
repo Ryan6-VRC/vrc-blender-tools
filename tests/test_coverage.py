@@ -9,7 +9,8 @@ so every case pins one clause of the criterion or of the carrier rule:
   * a closed tube 10 mm out covers the cylinder band it wraps (the base case);
   * a double-walled tube whose inner wall's normals face the body still covers — nothing
     reads a garment normal;
-  * a short open tube leaves the ring beyond its hem uncovered (boundary-edge margin);
+  * a short open tube leaves the skin near and beyond its edge uncovered (the peek rays
+    escape through the opening), and a tube standing far off the skin is seen into;
   * a tube band weighted to a bone the body lacks declines as cloth and reports a low
     weight share; a blend-ratio difference on the body's own bones still covers;
   * a one-triangle-wide covered strip is residue: covered, carrier empty there;
@@ -78,7 +79,7 @@ def _cylinder(name, radius, z0, z1, segs=24, rings=8, weights=None, flip=False, 
 
 def _measure(body, garments, **kw):
     from avatarprep.core import coverage
-    args = dict(distance=0.015, body_bone_share=0.7, angle_deg=60.0, hem_margin=0.015,
+    args = dict(distance=0.015, body_bone_share=0.7, peek_deg=60.0, peek_reach=0.5,
                 cut_threshold=0.01)
     args.update(kw)
     return coverage.measure(body, garments, **args)
@@ -110,22 +111,29 @@ def test_double_wall_ignores_garment_normals():
           % (r["covered_triangles"], r["triangles"], r["per_garment"]["Outer"]["declined"]))
 
 
-def test_hem_leaves_ring_beyond_edge():
+def test_peek_declines_edges_and_gaps():
     _clear()
     body = _cylinder("Body", 0.10, 0.0, 1.0, rings=20)
-    tube = _cylinder("Tube", 0.11, -0.2, 0.5, rings=8)   # hem at z=0.5, mid-body
+    tube = _cylinder("Tube", 0.11, -0.2, 0.5, rings=8)   # open top at z=0.5, mid-body
     r = _measure(body, [tube])
-    # rings above the hem: far. The ring within 15 mm below the hem: hem. Below that: covered.
-    d = r["per_garment"]["Tube"]["declined"]
-    check(d.get("hem", 0) > 0, "hem margin should decline vertices near the edge, declined=%s" % d)
-    check(0 < r["covered_triangles"] < r["triangles"], "hem case should cover part, got %d/%d"
+    d = r["per_garment"]["_all"]["declined"]
+    check(d.get("peek", 0) > 0, "rays should escape through the opening, declined=%s" % d)
+    check(0 < r["covered_triangles"] < r["triangles"], "open tube should cover part, got %d/%d"
           % (r["covered_triangles"], r["triangles"]))
-    # no covered vertex within the margin below the hem edge (z in [0.485, 0.5])
-    leak = [i for i, c in enumerate(r["covered"]) if c and 0.485 <= body.data.vertices[i].co.z <= 0.5]
-    check(not leak, "vertices within the hem margin were marked covered: %d" % len(leak))
-    # and no vertex above the hem at all
     above = [i for i, c in enumerate(r["covered"]) if c and body.data.vertices[i].co.z > 0.5]
-    check(not above, "vertices beyond the hem were marked covered: %d" % len(above))
+    check(not above, "vertices beyond the opening were marked covered: %d" % len(above))
+    ring_below = [i for i, c in enumerate(r["covered"]) if c and abs(body.data.vertices[i].co.z - 0.5) < 1e-6]
+    check(not ring_below, "the ring at the opening is seen into and must not be covered: %d" % len(ring_below))
+    deep = [i for i, c in enumerate(r["covered"]) if c and body.data.vertices[i].co.z < 0.3]
+    check(len(deep) > 0, "skin well below the opening should still be covered")
+    # a collar standing 40 mm off the skin: within distance, but the gap is seen into
+    _clear()
+    body = _cylinder("Body", 0.10, 0.0, 1.0, rings=20)
+    collar = _cylinder("Collar", 0.14, 0.6, 0.9, rings=4)
+    r = _measure(body, [collar], distance=0.05)
+    check(r["covered_triangles"] < r["triangles"] * 0.2,
+          "a loose collar should leave most of the skin under it visible, covered %d/%d"
+          % (r["covered_triangles"], r["triangles"]))
 
 
 def test_cloth_bones_decline_and_ratio_does_not():
@@ -163,20 +171,24 @@ def test_any_garment_may_cover():
 
 
 def test_residue_strip():
-    """A body whose covered region is a single ring of quads: every covered vertex has an
-    uncovered incident triangle, so the carrier is empty and residue = covered. A short
-    tube reaches exactly two body rings (z 0.50 and 0.55) at distance 20 mm with the hem
-    margin off."""
+    """A thin covered band: the tube rides a bone the body lacks except over a narrow band
+    on the body's bone, so only a few rings of quads are covered and their border vertices
+    cannot carry. Residue must be non-zero and realised must fall short of covered."""
     _clear()
     body = _cylinder("Body", 0.10, 0.0, 1.0, rings=20, segs=24)
-    tube = _cylinder("Tube", 0.11, 0.49, 0.56, rings=1)
-    r = _measure(body, [tube], distance=0.02, hem_margin=0.0)
-    check(r["covered_triangles"] == 24 * 2, "strip should cover one ring of quads (48 tris), got %d"
+    tube = _cylinder("Tube", 0.11, -0.2, 1.2, rings=28)
+    for g in list(tube.vertex_groups):
+        tube.vertex_groups.remove(g)
+    tspine = tube.vertex_groups.new(name="Spine")
+    tskirt = tube.vertex_groups.new(name="Skirt")
+    for i, v in enumerate(tube.data.vertices):
+        (tspine if 0.44 < v.co.z < 0.61 else tskirt).add([i], 1.0, 'REPLACE')
+    r = _measure(body, [tube])
+    check(0 < r["covered_triangles"] <= 24 * 2 * 3, "band should cover at most three rings of quads, got %d"
           % r["covered_triangles"])
-    check(r["realised_triangles"] == 0 and r["residue_triangles"] == r["covered_triangles"],
-          "strip should be all residue, realised %d residue %d"
+    check(r["residue_triangles"] > 0 and r["realised_triangles"] < r["covered_triangles"],
+          "a thin band must leave residue, got realised %d residue %d"
           % (r["realised_triangles"], r["residue_triangles"]))
-    check(r["carrier"] == [], "carrier should be empty on a strip")
 
 
 def test_cut_shape_exclusion_and_unknown():
@@ -306,7 +318,7 @@ def main():
     print("COVERAGE_TEST module:", coverage.__file__)
     test_closed_tube_covers()
     test_double_wall_ignores_garment_normals()
-    test_hem_leaves_ring_beyond_edge()
+    test_peek_declines_edges_and_gaps()
     test_cloth_bones_decline_and_ratio_does_not()
     test_any_garment_may_cover()
     test_residue_strip()

@@ -3,7 +3,7 @@
 Run:
   blender --background --factory-startup --python cli/mark_coverage.py -- \
       --in <costume.blend> --body Body_Base --garments Dress,Socks --shape-name Cover_X \
-      [--distance-mm 30] [--body-bone-share 0.7] [--angle-deg 80] [--hem-margin-mm 10] \
+      [--distance-mm 30] [--body-bone-share 0.7] [--peek-deg 60] [--peek-reach-m 0.5] \
       [--cut-threshold-m 0.01] [--delta-m 0.02] [--cut-shape NAME]... \
       [--report <json>] [--render <dir>] [--whatif | --out <base-copy.blend> | --in-place] \
       [--replace] [--force-load-repair]
@@ -54,11 +54,11 @@ def _parse_args():
                    help="min share of a garment face's skin weight that must sit on bones the "
                         "body mesh is weighted to; below it the face rides cloth/helper bones "
                         "and covers nothing")
-    p.add_argument("--angle-deg", dest="angle_deg", type=float, default=80.0,
-                   help="max angle between the body normal and the direction to the garment")
-    p.add_argument("--hem-margin-mm", dest="hem_margin_mm", type=float, default=10.0,
-                   help="decline within this distance of a garment boundary edge: the "
-                        "peek-under-a-cuff guard")
+    p.add_argument("--peek-deg", dest="peek_deg", type=float, default=60.0,
+                   help="half-angle of the ray cone around the skin normal; a ray escaping "
+                        "past every garment and the body means the point can be seen into")
+    p.add_argument("--peek-reach-m", dest="peek_reach", type=float, default=0.5,
+                   help="how far a peek ray travels before it counts as escaped")
     p.add_argument("--cut-threshold-m", dest="cut_threshold", type=float, default=0.01,
                    help="the consumer's Delete threshold: what --cut-shape already removes, "
                         "and what --delta-m must clear")
@@ -150,10 +150,9 @@ def main():
     label = args.shape_name
 
     distance = args.distance_mm / 1000.0
-    hem = args.hem_margin_mm / 1000.0
     try:
         result = coverage.measure(body, garments, distance=distance, body_bone_share=args.body_bone_share,
-                                  angle_deg=args.angle_deg, hem_margin=hem,
+                                  peek_deg=args.peek_deg, peek_reach=args.peek_reach,
                                   cut_threshold=args.cut_threshold, cut_shapes=args.cut_shapes)
     except coverage.CoverageError as e:
         print("AVATARPREP: ERROR", e)

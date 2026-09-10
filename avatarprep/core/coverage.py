@@ -1,12 +1,10 @@
 """Co-moving coverage: mark body triangles a garment set hides, as a Delete carrier.
 
-A body triangle is *covered* when every vertex of it sits just behind a named garment
-surface that rides the body's own bones, because geometry skinned to the same skeleton
-deforms together, so a rest-pose distance holds under pose; a garment surface skinned to
-cloth, physbone or helper bones the body never uses swings away from the skin and covers
-nothing. Nothing here casts a ray or renders to decide; a garment normal is read only as
-one of two side branches, never alone — the prototype that read it alone declared a
-double-walled sleeve's arm "outside" because the nearest point was the lining.
+A body triangle is *covered* when every vertex of it sits behind a named garment surface
+that rides the body's own bones and cannot be seen into from any angle, because geometry
+skinned to the same skeleton deforms together, so a rest-pose distance holds under pose; a
+garment surface skinned to cloth, physbone or helper bones the body never uses swings away
+from the skin and covers nothing.
 
 Per body vertex, a garment passes when ALL hold (the first failure is the decline reason):
 
@@ -16,20 +14,22 @@ Per body vertex, a garment passes when ALL hold (the first failure is the declin
            what a loose panel standing off a concave region (the side torso under the
            arm) passes by; a lining whose normals face the skin fails it and passes the
            first, which is why neither branch alone would do
-  hem      the nearest point lies within ``hem_margin`` of a garment boundary edge (an
-           edge with exactly one face) — pure topology, so it holds on zero-thickness and
-           unculled meshes; blind to two coincident duplicate sheets. This is the
-           peek-under-a-cuff guard and the one number worth care
-  angle    the skin-to-point direction is more than ``angle`` off the body normal (skipped
-           when the skin sits behind the garment face — that branch already says enclosed)
   unweighted  the body vertex's raw weight sum is under ``min_raw_weight``
   cloth    the nearest face's weight mass (mean of its corners, top ``max_bones`` groups,
            renormalised) on bone names the BODY mesh has a vertex group for is under
            ``body_bone_share`` — the face rides skirt/ribbon/helper bones, not the body's
 
-A vertex is covered when ANY listed garment passes. A pants leg skinned to the leg bones
-at a different blend ratio than the skin still covers: that mismatch clips in game and is
-not a reason to keep the triangle.
+and then, over ALL listed garments together:
+
+  peek     some ray from the skin point, within ``peek_deg`` of the body normal, reaches
+           ``peek_reach`` without hitting any listed garment or the body itself. This is
+           the local visibility test: a cuff, a collar standing off the neck, a boot top
+           looked down into. It is not a camera and not a pose sample; a ray that hits
+           the body first counts as blocked (the inner thigh is hidden by the other thigh).
+
+A vertex is covered when ANY listed garment passes the per-garment tests and the peek test
+passes. A pants leg skinned to the leg bones at a different blend ratio than the skin still
+covers: that mismatch clips in game and is not a reason to keep the triangle.
 
 The consumer is a Modular Avatar ShapeChanger Delete: a triangle is removed when ANY of
 its vertices moves more than the component's threshold under the shape. So the carrier
@@ -48,7 +48,7 @@ import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-REASONS = ("far", "side", "hem", "angle", "unweighted", "cloth")
+REASONS = ("far", "side", "unweighted", "cloth", "peek")
 
 
 class CoverageError(Exception):
@@ -114,29 +114,21 @@ def _face_weights(g_w, corners):
     return out
 
 
-def boundary_edges_world(me, mw):
-    """World-space segments of every edge with exactly one face — the garment's hems,
-    cuffs and necklines, whatever its normals or culling say."""
-    count = defaultdict(int)
-    for p in me.polygons:
-        for ek in p.edge_keys:
-            count[ek] += 1
-    return [(mw @ me.vertices[a].co, mw @ me.vertices[b].co)
-            for (a, b), n in count.items() if n == 1]
-
-
-def _segment_bvh(segs):
-    """A BVH over slivers (each edge plus a point a hair off it) so nearest-edge queries
-    reuse ``find_nearest``. None for a closed mesh with no boundary."""
-    if not segs:
-        return None
-    verts, polys = [], []
-    for a, b in segs:
-        c = (a + b) * 0.5 + Vector((0.0, 0.0, 1e-7))
-        i = len(verts)
-        verts += [a, b, c]
-        polys.append((i, i + 1, i + 2))
-    return BVHTree.FromPolygons(verts, polys)
+def cone_directions(normal, cone_deg: float, rings: int = 2, azimuths: int = 8):
+    """The peek rays: the normal itself plus ``rings`` rings of ``azimuths`` directions
+    at even fractions of ``cone_deg`` off it. World-space unit vectors."""
+    n = Vector(normal).normalized()
+    up = Vector((0.0, 0.0, 1.0)) if abs(n.z) < 0.9 else Vector((1.0, 0.0, 0.0))
+    u = n.cross(up).normalized()
+    v = n.cross(u).normalized()
+    out = [n]
+    for r in range(1, rings + 1):
+        theta = math.radians(cone_deg) * r / rings
+        st, ct = math.sin(theta), math.cos(theta)
+        for k in range(azimuths):
+            phi = 2.0 * math.pi * k / azimuths
+            out.append((n * ct + (u * math.cos(phi) + v * math.sin(phi)) * st).normalized())
+    return out
 
 
 def basis_hash(me) -> str:
@@ -181,8 +173,8 @@ def moved_vertices(me, shape_names: Sequence[str], threshold: float):
 
 # --- the measurement -----------------------------------------------------------------
 
-def measure(body, garments, *, distance: float, body_bone_share: float, angle_deg: float,
-            hem_margin: float, cut_threshold: float, cut_shapes: Sequence[str] = (),
+def measure(body, garments, *, distance: float, body_bone_share: float, peek_deg: float,
+            peek_reach: float, cut_threshold: float, cut_shapes: Sequence[str] = (),
             max_bones: int = 4, min_raw_weight: float = 0.5, depsgraph=None) -> Dict:
     """Measure coverage of ``body`` by ``garments`` (mesh objects). Returns per-vertex
     ``covered`` / ``claimed_by`` / ``cut`` / ``near`` lists, the carrier, triangle counts,
@@ -199,13 +191,13 @@ def measure(body, garments, *, distance: float, body_bone_share: float, angle_de
             raise CoverageError("%s is both the body and a garment" % body.name)
 
     dg = depsgraph or bpy.context.evaluated_depsgraph_get()
-    cos_angle = math.cos(math.radians(angle_deg))
 
     b_ev, b_me = evaluated_mesh(body, dg)
     try:
         b_verts, b_norms = world_verts_normals(body, b_me)
         b_w = normalized_weights(body, b_me, max_bones)
         tris = triangles(b_me)
+        body_tree = BVHTree.FromPolygons(b_verts, [tuple(p.vertices) for p in b_me.polygons])
     finally:
         b_ev.to_mesh_clear()
     b_hash = basis_hash(body.data)
@@ -219,6 +211,7 @@ def measure(body, garments, *, distance: float, body_bone_share: float, angle_de
     near = [False] * n
     claimed_by = [None] * n
     per_garment = {}
+    garment_trees = []
 
     for g in garments:
         g_ev, g_me = evaluated_mesh(g, dg)
@@ -228,10 +221,9 @@ def measure(body, garments, *, distance: float, body_bone_share: float, angle_de
             polys = [tuple(p.vertices) for p in g_me.polygons]
             tree = BVHTree.FromPolygons(g_verts, polys)
             g_w = normalized_weights(g, g_me, max_bones)
-            hems = boundary_edges_world(g_me, gmw)
-            hem_tree = _segment_bvh(hems)
         finally:
             g_ev.to_mesh_clear()
+        garment_trees.append(tree)
 
         # share of the garment's weight mass on names the body has: a low share is a
         # rig-name mismatch, and the honest reading of "nothing covered"
@@ -257,13 +249,6 @@ def measure(body, garments, *, distance: float, body_bone_share: float, angle_de
             if not (outward or enclosed):
                 reasons["side"] += 1
                 continue
-            if hem_tree is not None and hem_tree.find_nearest(loc, hem_margin)[0] is not None:
-                reasons["hem"] += 1
-                continue
-            if (not enclosed and dist > 1e-9
-                    and d.normalized().dot(b_norms[i]) < cos_angle):
-                reasons["angle"] += 1
-                continue
             raw_sum, bw = b_w[i]
             if raw_sum < min_raw_weight:
                 reasons["unweighted"] += 1
@@ -279,9 +264,31 @@ def measure(body, garments, *, distance: float, body_bone_share: float, angle_de
         per_garment[g.name] = {
             "passed_vertices": passed,
             "declined": {r: reasons[r] for r in REASONS if reasons[r]},
-            "boundary_edges": len(hems),
             "weight_share_on_body_groups": round(mass_known / mass_total, 3) if mass_total else 0.0,
         }
+
+    # the peek test, over every garment at once: a covered point stays covered only when
+    # no ray in the cone escapes past every garment and the body itself
+    peeked = 0
+    eps = 1e-4
+    for i in range(n):
+        if not covered[i]:
+            continue
+        origin = b_verts[i] + b_norms[i] * eps
+        for dvec in cone_directions(b_norms[i], peek_deg):
+            blocked = False
+            for tree in garment_trees:
+                if tree.ray_cast(origin, dvec, peek_reach)[0] is not None:
+                    blocked = True
+                    break
+            if not blocked and body_tree.ray_cast(origin, dvec, peek_reach)[0] is not None:
+                blocked = True
+            if not blocked:
+                covered[i] = False
+                claimed_by[i] = None
+                peeked += 1
+                break
+    per_garment["_all"] = {"declined": {"peek": peeked}} if peeked else {"declined": {}}
 
     # triangle granularity against the any-vertex rule
     incident = defaultdict(list)
@@ -316,8 +323,8 @@ def measure(body, garments, *, distance: float, body_bone_share: float, angle_de
         "cut": cut,
         "near": near,
         "per_garment": per_garment,
-        "settings": {"distance_m": distance, "body_bone_share": body_bone_share, "angle_deg": angle_deg,
-                     "hem_margin_m": hem_margin, "cut_threshold_m": cut_threshold,
+        "settings": {"distance_m": distance, "body_bone_share": body_bone_share, "peek_deg": peek_deg,
+                     "peek_reach_m": peek_reach, "cut_threshold_m": cut_threshold,
                      "max_bones": max_bones, "min_raw_weight": min_raw_weight,
                      "cut_shapes": list(cut_shapes)},
     }
