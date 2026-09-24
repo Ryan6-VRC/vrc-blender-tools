@@ -15,7 +15,8 @@ from . import prune_bones  # noqa: F401
 from . import proportions  # noqa: F401
 from . import render_mesh  # noqa: F401
 from . import shapekey_bake  # noqa: F401
+from . import shapekey_transfer  # noqa: F401
 
 __all__ = ["scene_utils", "measure", "rest_pose", "fbx_export", "import_fbx",
            "merge_armatures", "prune_bones", "proportions", "render_mesh",
-           "shapekey_bake"]
+           "shapekey_bake", "shapekey_transfer"]
