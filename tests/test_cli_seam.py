@@ -409,6 +409,8 @@ def test_whatif_rejects_out(tmp):
          ["--in", prune_scene, "--edge", os.path.join(tmp, "edge.json")]),
         ("merge_armatures.py",
          ["--in", merge_scene, "--base", "Base", "--merge", "Merge"]),
+        ("transfer_shapekeys.py",
+         ["--in", merge_scene, "--source", "Body", "--targets", "Top", "--keys", "K"]),
     )
     for script, args in cases:
         ghost = os.path.join(tmp, "ghost_%s.blend" % script.split(".")[0])
