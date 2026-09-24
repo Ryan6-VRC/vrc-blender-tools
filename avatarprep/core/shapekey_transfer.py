@@ -33,6 +33,13 @@ Two effects, independently switchable by the caller:
 
 Movement is masked to each key's footprint — garment vertices whose nearest body point the
 key moves by more than ``footprint`` — so a ribbon or a strap far from the morph stays put.
+The body's disjoint islands no involved key moves — flush pasties, decals — are dropped from
+the binding surface and the mask, since a garment vertex nearest to one would otherwise
+freeze; the report names them. Where the mapping tears — a garment edge whose ends follow
+skin on either side of the underbust crease, or on two different breasts, and so move
+apart by more than the edge is long — the move within ``heal`` of the tear is re-solved as
+the smooth interpolation of its surroundings and held out of the skin, so a shell cup
+gathers instead of shearing into the band.
 
 Pure ``bpy``; headless-safe; never writes the source.
 """
@@ -57,6 +64,55 @@ def _tris(me) -> List[tuple]:
         for i in range(1, len(vs) - 1):
             out.append((vs[0], vs[i], vs[i + 1]))
     return out
+
+
+def _moving_islands(B, D, tris, keys, footprint):
+    """Keep only the source islands at least one of ``keys`` moves by more than ``footprint``.
+
+    A body carries flush overlays as disjoint islands — chest and hip pasties, decals — that
+    its morphs leave in place. A garment vertex over one has that overlay as its nearest
+    surface, so a nearest-triangle mask reads the key as not moving there and a Surface
+    Deform binding damps its move toward the static overlay. Both must see moving skin
+    only. Returns the compacted ``(B, D, tris, keep)`` over the kept vertices, ``keep``
+    mapping old index to new, and the dropped islands as ``[{verts, max_move_mm}]``."""
+    par = list(range(len(B)))
+
+    def find(a):
+        while par[a] != a:
+            par[a] = par[par[a]]; a = par[a]
+        return a
+
+    for a, b, c in tris:
+        for x, y in ((a, b), (b, c)):
+            ra, rb = find(x), find(y)
+            if ra != rb:
+                par[ra] = rb
+    move = {}
+    for k in keys:
+        for i, d in enumerate(D[k]):
+            r = find(i)
+            if d.length > move.get(r, 0.0):
+                move[r] = d.length
+    roots = set(find(i) for t in tris for i in t)
+    static = {r for r in roots if move.get(r, 0.0) <= footprint}
+    if not static:
+        return B, D, tris, None, []
+    if len(static) == len(roots):
+        return B, D, tris, None, []  # nothing moves anywhere: the masks already say so
+    size = {}
+    for i in range(len(B)):
+        r = find(i)
+        if r in static:
+            size[r] = size.get(r, 0) + 1
+    dropped = [{"verts": size[r], "max_move_mm": round(move.get(r, 0.0) * 1000, 2)}
+               for r in sorted(static, key=lambda r: -size[r])]
+    kept_tris = [t for t in tris if find(t[0]) not in static]
+    used = sorted(set(i for t in kept_tris for i in t))
+    keep = {old: new for new, old in enumerate(used)}
+    B2 = [B[i] for i in used]
+    D2 = {k: [D[k][i] for i in used] for k in D}
+    tris2 = [tuple(keep[i] for i in t) for t in kept_tris]
+    return B2, D2, tris2, keep, dropped
 
 
 def _baked_map(obj) -> Dict[str, float]:
@@ -111,6 +167,7 @@ def scan_authored(source, target, key, values=(0.0, 0.25, 0.5, 0.75, 1.0),
         if k not in D:
             raise TransferError("shape key %r not found on source %r" % (k, source.name))
     state = source_state(source)
+    B, D, tris, _, _ = _moving_islands(B, D, tris, [key], 0.001)
     VS = _body_now(B, D, source)
     G = [target.matrix_world @ v.co for v in target.data.vertices]
     core_tri = [max(D[key][j].length for j in t) > footprint for t in tris]
@@ -166,7 +223,7 @@ def _body_at(VS, D, state, cfg):
 def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                        authored: Optional[Dict[str, float]] = None, *,
                        seat=True, footprint=0.001, falloff=4.0, smooth=0,
-                       whatif=False) -> Dict[str, Any]:
+                       heal=0.020, tear=1.0, whatif=False) -> Dict[str, Any]:
     """Seat ``targets`` on ``source`` and add ``keys`` to them. See the module docstring.
 
     ``authored`` maps key name to the value the garment was cut against; a key absent from
@@ -228,6 +285,15 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
     cfg_authored = {k: authored.get(k, 0.0) for k in involved}
     VS = _body_now(B, D, source)
     VA = _body_at(VS, D, state, cfg_authored)
+    tree_full = BVHTree.FromPolygons([tuple(v) for v in VA], tris)
+    tris_full = tris
+    B, D, tris, keep, dropped = _moving_islands(B, D, tris, involved, footprint)
+    if keep is not None:
+        VS = [VS[i] for i in sorted(keep, key=keep.get)]
+        VA = [VA[i] for i in sorted(keep, key=keep.get)]
+        static_tri = set(i for i, t in enumerate(tris_full) if t[0] not in keep)
+    else:
+        static_tri = set()
     tree_auth = BVHTree.FromPolygons([tuple(v) for v in VA], tris)
     tree_now = BVHTree.FromPolygons([tuple(v) for v in VS], tris)
     foot_tri = {k: [max(D[k][j].length for j in t) > footprint for t in tris] for k in involved}
@@ -255,6 +321,7 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
     report = {"source": source.name, "keys_added": keys, "authored": cfg_authored,
               "state": {k: state.get(k, 0.0) for k in involved},
               "seat": {k: round(v, 6) for k, v in seat_amount.items()} if seat else {},
+              "static_islands_dropped": dropped,
               "targets": []}
     scratch = [TA]
     try:
@@ -275,6 +342,12 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
             for c in G:
                 loc, n, fi, dist = tree_auth.find_nearest(c)
                 near.append(None if loc is None or dist > 0.08 else fi)
+            over_static = 0
+            if static_tri:
+                for c in G:
+                    loc, n, fi, dist = tree_full.find_nearest(c)
+                    if loc is not None and dist <= 0.08 and fi in static_tri:
+                        over_static += 1
 
             def _evaluate():
                 bpy.context.view_layer.update()
@@ -283,12 +356,68 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                 W.evaluated_get(bpy.context.evaluated_depsgraph_get()).to_mesh_clear()
                 return out
 
-            adjacency = None
-            if smooth:
-                adjacency = [[] for _ in G]
-                for e in t.data.edges:
-                    a, b = e.vertices
-                    adjacency[a].append(b); adjacency[b].append(a)
+            adjacency = [[] for _ in G]
+            for e in t.data.edges:
+                a, b = e.vertices
+                adjacency[a].append(b); adjacency[b].append(a)
+            healed = [False] * len(G)
+
+            def _heal(field):
+                # Torn edges: the mapping moves the two ends apart by more than the edge is long.
+                torn = set()
+                for i, nbs in enumerate(adjacency):
+                    for j in nbs:
+                        if j > i:
+                            L = (G[i] - G[j]).length
+                            if L > 1e-9 and (field[i] - field[j]).length > tear * L:
+                                torn.add(i); torn.add(j)
+                if not torn:
+                    return field, 0
+                import heapq
+                dist = {i: 0.0 for i in torn}
+                heap = [(0.0, i) for i in torn]
+                while heap:
+                    d, i = heapq.heappop(heap)
+                    if d > dist.get(i, 1e9):
+                        continue
+                    for j in adjacency[i]:
+                        nd = d + (G[i] - G[j]).length
+                        if nd <= heal and nd < dist.get(j, 1e9):
+                            dist[j] = nd; heapq.heappush(heap, (nd, j))
+                free = sorted(dist)
+                field = list(field)
+                for _ in range(500):
+                    worst = 0.0
+                    for i in free:
+                        nbs = adjacency[i]
+                        if not nbs:
+                            continue
+                        acc = Vector((0, 0, 0)); wsum = 0.0
+                        for j in nbs:
+                            w = 1.0 / max((G[i] - G[j]).length, 1e-6)
+                            acc += w * field[j]; wsum += w
+                        new = acc / wsum
+                        worst = max(worst, (new - field[i]).length)
+                        field[i] = new
+                    if worst < 1e-6:
+                        break
+                # A healed vertex interpolates between skin that moved and skin that did not,
+                # so it can land inside the body; hold it at the gap it had before the move.
+                pushed = 0
+                for i in free:
+                    healed[i] = True
+                    loc0, n0, fi0, d0 = tree_auth.find_nearest(G[i])
+                    if loc0 is None or d0 > 0.08:
+                        continue
+                    gap0 = max((G[i] - loc0).dot(n0), 0.0)
+                    p = G[i] + field[i]
+                    loc, n, fi, d = tree_now.find_nearest(p)
+                    if loc is None or d > 0.08:
+                        continue
+                    gap = (p - loc).dot(n)
+                    if gap < gap0:
+                        field[i] = field[i] + n * (gap0 - gap); pushed += 1
+                return field, len(torn) // 2
 
             def _smooth(field, mask):
                 for _ in range(int(smooth)):
@@ -307,6 +436,9 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
             at_state = _evaluate()
             k_seat.value = 0.0
             T_seat = [(p - c) if m else Vector((0, 0, 0)) for p, c, m in zip(at_state, G, seat_mask)]
+            torn_total = 0
+            if heal and seat:
+                T_seat, torn = _heal(T_seat); torn_total += torn
             if smooth:
                 T_seat = _smooth(T_seat, seat_mask)
             T = {}
@@ -316,9 +448,12 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                 kfull[k].value = 0.0
                 mask = [fi is not None and foot_tri[k][fi] for fi in near]
                 T[k] = [(a - b) if m else Vector((0, 0, 0)) for a, b, m in zip(at_key, at_state, mask)]
+                if heal:
+                    T[k], torn = _heal(T[k]); torn_total += torn
                 if smooth:
                     T[k] = _smooth(T[k], mask)
-            union = [any(foot_tri[k][fi] for k in involved) if fi is not None else False for fi in near]
+            union = [(any(foot_tri[k][fi] for k in involved) if fi is not None else False) or h
+                     for fi, h in zip(near, healed)]
             # Seat: Basis move for keys not added; live value for keys added.
             # Seat per key: an added key carries the body's state as its live value, so only
             # the authored offset folds into Basis (-authored_k); a key not added folds the
@@ -359,6 +494,8 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                                                "max": round(fid[-1], 2)} if fid else {},
                    "leak_outside_footprint": sum(1 for m, u in zip(total_move, union)
                                                  if not u and m.length > 0.0005),
+                   "verts_over_static_island": over_static,
+                   "torn_edges": torn_total, "healed_verts": sum(healed),
                    "max_move_mm": round(max(m.length for m in total_move) * 1000, 2) if G else 0.0,
                    "live_values": live,
                    "baked_written": {}}

@@ -223,11 +223,84 @@ def test_scan_reads_authored_value():
     check(best == "1", "scan should read the authored value 1.0 off the gap table, got %r (%r)" % (best, rows))
 
 
+def test_static_island_is_dropped():
+    # A flush overlay the key leaves in place — a pasty — sits 0.5 mm above the full bump's
+    # apex as its own island, so it is the nearest surface to a garment cut at Bump=1.0.
+    # Garment vertices over it must still move with the skin under it.
+    from avatarprep.core import shapekey_transfer as T
+    import bmesh
+    body = _body(); top = _grid("Top", 24, lambda x, y: GAP + _bump(x, y))
+    me = body.data
+    base_n = len(me.vertices)
+    verts = [(0.5 + 0.02 * dx, 0.5 + 0.02 * dy, _bump(0.5 + 0.02 * dx, 0.5 + 0.02 * dy) + 0.0005)
+             for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+    faces = [(j * 3 + i, j * 3 + i + 1, (j + 1) * 3 + i + 1, (j + 1) * 3 + i) for j in range(2) for i in range(2)]
+    bm = bmesh.new(); bm.from_mesh(me)
+    nv = [bm.verts.new(co) for co in verts]
+    for f in faces:
+        bm.faces.new([nv[i] for i in f])
+    bm.to_mesh(me); bm.free(); me.update()
+    for kb in me.shape_keys.key_blocks:
+        for i, co in enumerate(verts):
+            kb.data[base_n + i].co = co  # the overlay is static under every key
+    rep = T.transfer_shapekeys(body, [top], keys=["Bump"], authored={"Bump": 1.0})
+    check([d["verts"] for d in rep["static_islands_dropped"]] == [9],
+          "the 9-vertex overlay is reported dropped, got %r" % rep["static_islands_dropped"])
+    row = rep["targets"][0]
+    check(row["verts_over_static_island"] > 0, "garment vertices over the overlay are counted")
+    kb = top.data.shape_keys.key_blocks
+    centre = min(range(len(top.data.vertices)), key=lambda i: (Vector(top.data.vertices[i].co).xy - Vector((0.5, 0.5))).length)
+    full = kb["Bump"].data[centre].co.z - kb["Basis"].data[centre].co.z
+    check(abs(full - BUMP) < 0.002, "the key still reaches the vertex over the overlay (%.1f mm vs %.1f)" % (full * 1000, BUMP * 1000))
+
+
+def test_tear_heals():
+    # A key that pulls the two halves of the body apart, sharply at x=0.5 — the cleavage,
+    # where each breast recedes toward its own side. A garment bridging the midline maps
+    # each vertex to whichever half is nearest and shears along the line unless the move
+    # is healed across it.
+    from avatarprep.core import shapekey_transfer as T
+    from avatarprep.core import scene_utils
+    import math
+    SPREAD = 0.015
+
+    def spread_body():
+        body = _grid("Body_Base", 160, lambda x, y: 0.0)
+        body.shape_key_add(name="Basis")
+        kb = body.shape_key_add(name="Spread", from_mix=False)
+        for i, v in enumerate(body.data.vertices):
+            kb.data[i].co = Vector(v.co) + Vector((SPREAD * math.tanh((v.co.x - 0.5) / 0.003), 0, 0))
+        body[scene_utils.STAMP_BAKED] = {"Spread": 0.0}
+        kb.value = 1.0  # the body wears the spread live
+        return body
+
+    def strain(top):
+        return max(((Vector(top.data.vertices[a].co) - ORIG[a]) - (Vector(top.data.vertices[b].co) - ORIG[b])).length
+                   / (ORIG[a] - ORIG[b]).length for a, b in (tuple(e.vertices) for e in top.data.edges))
+
+    body = spread_body(); top = _grid("Top", 80, lambda x, y: GAP)
+    ORIG = [Vector(v.co) for v in top.data.vertices]
+    T.transfer_shapekeys(body, [top], keys=[], authored={"Spread": 0.0}, heal=0.0)
+    raw = strain(top)
+    check(raw > 1.0, "without healing the seat shears along the midline (strain %.2f)" % raw)
+    _clear(); body = spread_body(); top2 = _grid("Top", 80, lambda x, y: GAP)
+    ORIG = [Vector(v.co) for v in top2.data.vertices]
+    rep = T.transfer_shapekeys(body, [top2], keys=[], authored={"Spread": 0.0}, heal=0.05)
+    row = rep["targets"][0]
+    check(row["torn_edges"] > 0 and row["healed_verts"] > 0, "healing reports the tear (%r)" % row)
+    healed = strain(top2)
+    check(healed < 1.0 and healed < 0.6 * raw, "healed seat gathers across the midline (strain %.2f vs raw %.2f)" % (healed, raw))
+    gaps = _gap_over_body(top2, body)
+    check(min(gaps) > GAP - 1e-3, "healing keeps the garment off the skin (min gap %.2f mm)" % (min(gaps) * 1000))
+    edge = top2.data.vertices[0].co
+    check(abs(edge.x - ORIG[0].x + SPREAD) < 1e-4, "far from the midline the seat is the skin's own move (dx=%g)" % (edge.x - ORIG[0].x))
+
+
 def main():
     _clear(); _enable()
     for t in (test_seat_only_folds_into_basis_and_stamps, test_add_key_carries_seat_as_live_value,
               test_authored_offset_unbakes_negative, test_add_key_with_authored_offset, test_smooth_keeps_gap, test_whatif_writes_nothing, test_refusals,
-              test_scan_reads_authored_value):
+              test_scan_reads_authored_value, test_static_island_is_dropped, test_tear_heals):
         _clear()
         t()
     from avatarprep.core import shapekey_transfer

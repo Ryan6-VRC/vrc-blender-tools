@@ -4,7 +4,7 @@ Run:
   blender --background --factory-startup --python cli/transfer_shapekeys.py -- \
       --in <in.blend> --source Body_Base --targets Top,base \
       [--authored Breasts_big=0.5 ...] [--keys Breasts_flat,Breasts_big] \
-      [--no-seat] [--smooth N] [--scan Breasts_big] [--whatif] [--out <out.blend>] [--report <json>]
+      [--no-seat] [--smooth N] [--heal-mm 20] [--scan Breasts_big] [--whatif] [--out <out.blend>] [--report <json>]
 
 The garment was cut against some configuration of the vendor body; the venue body rests
 at another (its ``avatarprep_baked`` map plus live key values). ``--authored`` names the
@@ -63,6 +63,13 @@ def _parse_args():
                    help="Laplacian-smooth each transferred displacement N times over the garment's "
                         "edges, inside the footprint: softens a band that buckles where the seat "
                         "crosses a fold, at a small cost in gap fidelity (default 0)")
+    p.add_argument("--heal-mm", dest="heal_mm", type=float, default=20.0,
+                   help="Around an edge the mapping tears (its ends move apart by more than the "
+                        "edge is long: a bridge between the breasts, a hem across the crease) "
+                        "re-solve the move within this radius as the smooth interpolation of its "
+                        "surroundings, so the cloth gathers instead of shearing (default 20; 0 off)")
+    p.add_argument("--tear", type=float, default=1.0,
+                   help="Move difference across an edge, in edge lengths, that counts as a tear (default 1.0)")
     p.add_argument("--whatif", action="store_true", help="Measure and report; write nothing")
     p.add_argument("--report", dest="report_path", default=None, help="Write the JSON report here")
     add_force_load_repair(p)
@@ -144,8 +151,12 @@ def main():
         if keys or authored:
             rep = T.transfer_shapekeys(source, targets, keys, authored, seat=args.seat,
                                        footprint=args.footprint_mm / 1000.0, smooth=args.smooth,
+                                       heal=args.heal_mm / 1000.0, tear=args.tear,
                                        whatif=args.whatif)
             out["transfer"] = rep
+            if rep["static_islands_dropped"]:
+                print("AVATARPREP: static islands dropped from the binding surface: %s"
+                      % ", ".join("%d verts (%.1f mm)" % (d["verts"], d["max_move_mm"]) for d in rep["static_islands_dropped"]))
             print("AVATARPREP: authored %s; body state %s; seat %s; keys added %s"
                   % (json.dumps(rep["authored"]), json.dumps(rep["state"]),
                      json.dumps(rep["seat"]) or "none", ",".join(keys) or "none"))
@@ -154,6 +165,8 @@ def main():
                 print("AVATARPREP:   before %s" % _fmt(row["before"]))
                 print("AVATARPREP:   after  %s" % _fmt(row["after"]))
                 fid = row["fidelity_to_authored_mm"]
+                print("AVATARPREP:   torn edges=%d healed verts=%d; over static island=%d"
+                      % (row["torn_edges"], row["healed_verts"], row["verts_over_static_island"]))
                 print("AVATARPREP:   fidelity to authored gap p95=%smm max=%smm; leak=%d; max move=%.1fmm"
                       % (fid.get("p95", "-"), fid.get("max", "-"), row["leak_outside_footprint"],
                          row["max_move_mm"]))
