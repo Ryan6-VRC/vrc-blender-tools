@@ -202,6 +202,14 @@ def test_refusals():
     top2 = _garment()
     expect_raises(lambda: T.transfer_shapekeys(body, [top2], keys=["Ghost"]), "not found", "missing source key")
     expect_raises(lambda: T.transfer_shapekeys(body, [top2], keys=[]), "nothing to do", "empty request")
+    expect_raises(lambda: T.transfer_shapekeys(body, [top2], keys=[], authored={"Bump": 0.0}, seat=False), "nothing to do", "no-seat without keys")
+    expect_raises(lambda: T.transfer_shapekeys(body, [body], keys=[], authored={"Bump": 0.0}), "source body", "source as target")
+    expect_raises(lambda: T.scan_authored(body, top2, "Ghost"), "not found", "scan of a missing key")
+    top2["avatarprep_baked"] = "not-a-map"
+    before = [Vector(v.co) for v in top2.data.vertices]
+    expect_raises(lambda: T.transfer_shapekeys(body, [top2], keys=[], authored={"Bump": 0.0}), "not a map", "corrupt baked stamp")
+    drift = max((Vector(v.co) - b).length for v, b in zip(top2.data.vertices, before))
+    check(drift == 0.0, "a corrupt stamp is refused before anything moves (drift=%g)" % drift)
 
 
 def test_scan_reads_authored_value():

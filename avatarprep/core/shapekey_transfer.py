@@ -24,10 +24,10 @@ Two effects, independently switchable by the caller:
   whose authored configuration differs from the body's state, where ``T_k`` is the
   transferred full delta of key ``k`` and ``state_k`` is the body's effective amount
   (``avatarprep_baked`` cumulative plus live value). A key the caller also adds carries
-  its seat as the added key's live value instead; a key not added folds into Basis and
-  is recorded in the garment's ``avatarprep_baked`` map — a negative cumulative for an
-  authored offset un-baked (``Breasts_big`` -0.5), which ``compose-mergeable`` already
-  reads as a fit-time proxy.
+  the body's state as its live value, and only the authored offset folds into Basis; a key
+  not added folds the whole seat into Basis. Either fold is recorded in the garment's
+  ``avatarprep_baked`` map — a negative cumulative for an authored offset un-baked
+  (``Breasts_big`` -0.5), which ``compose-mergeable`` already reads as a fit-time proxy.
 * **add** — the caller names which keys land on the garment as relative keys. Optional:
   not every venue wants a garment carrying body morphs, and a seat alone is a complete fix.
 
@@ -107,6 +107,9 @@ def scan_authored(source, target, key, values=(0.0, 0.25, 0.5, 0.75, 1.0),
     for k in neutral:
         authored.setdefault(k, 0.0)
     B, D, tris = _source_geometry(source)
+    for k in [key] + list(authored):
+        if k not in D:
+            raise TransferError("shape key %r not found on source %r" % (k, source.name))
     state = source_state(source)
     VS = _body_now(B, D, source)
     G = [target.matrix_world @ v.co for v in target.data.vertices]
@@ -183,6 +186,8 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
     if not keys and not authored:
         raise TransferError("nothing to do: name keys to add (--keys) or an authored "
                             "configuration to seat from (--authored)")
+    if not keys and not seat:
+        raise TransferError("nothing to do: seat=False needs keys to add")
     B, D, tris = _source_geometry(source)
     state = source_state(source)
     for k in list(authored) + keys:
@@ -194,17 +199,31 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
             involved.append(k)
     # Keys whose seat is nonzero: authored differs from the body's state.
     seat_amount = {k: state.get(k, 0.0) - authored.get(k, 0.0) for k in involved}
+    for k in involved:
+        if k in keys and not (0.0 <= state.get(k, 0.0) <= 1.0):
+            raise TransferError("source state of %r is %g, outside the 0..1 a live key value "
+                                "can hold; seat without adding it" % (k, state.get(k, 0.0)))
+    target_baked = {}
     for t in targets:
         if t.type != 'MESH':
             raise TransferError("target %r is not a mesh" % t.name)
+        if t is source or t.data is source.data:
+            raise TransferError("target %r is the source body; the source is never written" % t.name)
         if scene_utils.is_linked(t) or not scene_utils.is_editable(t):
             raise TransferError("target %r is linked library data and cannot be written" % t.name)
+        if t.data.users > 1:
+            raise TransferError("target %r shares its mesh data with %d other user(s); make it "
+                                "single-user first" % (t.name, t.data.users - 1))
         if t.data.shape_keys:
+            if not t.data.shape_keys.use_relative:
+                raise TransferError("target %r carries absolute shape keys; this door writes "
+                                    "relative ones" % t.name)
             present = [k for k in keys if k in t.data.shape_keys.key_blocks]
             if present:
                 raise TransferError("target %r already carries %s — a vendor key is never "
                                     "overwritten; delete a synthetic one first"
                                     % (t.name, ", ".join(present)))
+        target_baked[t.name] = _baked_map(t)  # validated before anything moves
 
     cfg_authored = {k: authored.get(k, 0.0) for k in involved}
     VS = _body_now(B, D, source)
@@ -365,9 +384,7 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                         for i, bm in enumerate(basis_move):
                             if bm.length > 0:
                                 kb.data[i].co = Mi @ ((t.matrix_world @ Vector(kb.data[i].co)) + bm)
-                    if not t.data.shape_keys.use_relative:
-                        t.data.shape_keys.use_relative = True
-                    bmap = _baked_map(t)
+                    bmap = dict(target_baked[t.name])
                     for k, amt in fold.items():
                         cum = bmap.get(k, 0.0) + amt
                         bmap[k] = 0.0 if abs(cum) < 1e-6 else cum

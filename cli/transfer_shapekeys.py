@@ -12,8 +12,8 @@ configuration the garment was cut against, per key (absent keys read as 0, the v
 neutral body); the seat moves the garment from there to the body's state. ``--keys`` names
 which of the body's keys land on the garment as relative keys — an optional call, since not
 every venue wants a garment carrying body morphs; a seat alone is a complete fix. A key
-that is added carries its seat as its live value; a key that is not folds into Basis and
-is recorded in the garment's ``avatarprep_baked``.
+that is added carries the body's state as its live value, with the authored offset folded
+into Basis and recorded as ``-authored``; a key that is not folds the whole seat into Basis.
 
 ``--scan KEY`` reports the garment's gap against the body at each candidate value of KEY,
 so an unknown authored value can be read off it: the value with a near-zero minimum and no
@@ -93,11 +93,23 @@ def _fmt(st):
 
 def main():
     args = _parse_args()
-    if not args.whatif and not args.out_path:
-        print("AVATARPREP: transfer_shapekeys ? => FAIL: --out is required unless --whatif")
+    keys = [k.strip() for k in args.keys.split(",") if k.strip()]
+    authored = _kv(args.authored)
+    will_write = bool(keys or authored) and not args.whatif
+    if args.whatif and args.out_path:
+        print("AVATARPREP: transfer_shapekeys ? => FAIL: --out is meaningless under --whatif (preview mutates nothing)")
+        sys.exit(2)
+    if not args.seat and not keys:
+        print("AVATARPREP: transfer_shapekeys ? => FAIL: --no-seat needs --keys, or the run does nothing")
+        sys.exit(2)
+    if will_write and not args.out_path:
+        print("AVATARPREP: transfer_shapekeys ? => FAIL: --out is required to seat or add keys; --whatif previews, --scan alone needs neither")
+        sys.exit(2)
+    if not (keys or authored or args.scan):
+        print("AVATARPREP: transfer_shapekeys ? => FAIL: nothing to do: pass --keys, --authored or --scan")
         sys.exit(2)
     import bpy
-    repair = open_blend(args.in_path, writes=not args.whatif, force_load_repair=args.force_load_repair)
+    repair = open_blend(args.in_path, writes=will_write, force_load_repair=args.force_load_repair)
     enable_avatarprep()
     from avatarprep.core import shapekey_transfer as T
 
@@ -114,8 +126,6 @@ def main():
                   % (args.source, name))
             sys.exit(1)
         targets.append(t)
-    keys = [k.strip() for k in args.keys.split(",") if k.strip()]
-    authored = _kv(args.authored)
     label = "%s->%s" % (args.source, ",".join(t.name for t in targets))
     out = {"load_repair": repair, "scans": [], "transfer": None}
 
@@ -151,9 +161,6 @@ def main():
                     print("AVATARPREP:   live %s" % json.dumps(row["live_values"]))
                 if row["baked_written"]:
                     print("AVATARPREP:   avatarprep_baked %s" % json.dumps(row["baked_written"]))
-        elif not args.scan:
-            print("AVATARPREP: transfer_shapekeys %s => FAIL: nothing to do — pass --keys, --authored or --scan" % label)
-            sys.exit(2)
     except T.TransferError as e:
         print("AVATARPREP: transfer_shapekeys %s => FAIL: %s" % (label, e))
         if args.report_path:
@@ -163,7 +170,10 @@ def main():
 
     if args.report_path:
         write_report(args.report_path, out)
-    if args.whatif or out["transfer"] is None:
+    if out["transfer"] is None:
+        print("AVATARPREP: transfer_shapekeys %s => OK (scan only; nothing written)" % label)
+        return
+    if args.whatif:
         print("AVATARPREP: transfer_shapekeys %s => OK (whatif; nothing written)" % label)
         return
     out_path = os.path.abspath(args.out_path)
