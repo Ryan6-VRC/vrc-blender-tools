@@ -363,14 +363,15 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
             healed = [False] * len(G)
 
             def _heal(field):
-                # Torn edges: the mapping moves the two ends apart by more than the edge is long.
-                torn = set()
+                # Torn edges: the mapping moves the two ends relative to each other by more
+                # than the edge is long — apart across a bridge, together into a crush.
+                torn_edges = 0; torn = set()
                 for i, nbs in enumerate(adjacency):
                     for j in nbs:
                         if j > i:
                             L = (G[i] - G[j]).length
                             if L > 1e-9 and (field[i] - field[j]).length > tear * L:
-                                torn.add(i); torn.add(j)
+                                torn_edges += 1; torn.add(i); torn.add(j)
                 if not torn:
                     return field, 0
                 import heapq
@@ -384,7 +385,26 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                         nd = d + (G[i] - G[j]).length
                         if nd <= heal and nd < dist.get(j, 1e9):
                             dist[j] = nd; heapq.heappush(heap, (nd, j))
-                free = sorted(dist)
+                # A component of the free set with no fixed neighbour has nothing to
+                # interpolate from — a small island wholly within the radius — and is left as
+                # mapped rather than solved toward a constant.
+                free = set(dist)
+                seen = set()
+                for s0 in list(free):
+                    if s0 in seen:
+                        continue
+                    comp = [s0]; seen.add(s0); bounded = False; q = [s0]
+                    while q:
+                        i = q.pop()
+                        for j in adjacency[i]:
+                            if j in free:
+                                if j not in seen:
+                                    seen.add(j); comp.append(j); q.append(j)
+                            else:
+                                bounded = True
+                    if not bounded:
+                        free.difference_update(comp)
+                free = sorted(free)
                 field = list(field)
                 for _ in range(500):
                     worst = 0.0
@@ -401,23 +421,29 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                         field[i] = new
                     if worst < 1e-6:
                         break
-                # A healed vertex interpolates between skin that moved and skin that did not,
-                # so it can land inside the body; hold it at the gap it had before the move.
-                pushed = 0
                 for i in free:
                     healed[i] = True
-                    loc0, n0, fi0, d0 = tree_auth.find_nearest(G[i])
+                return field, torn_edges
+
+            def _hold_out(field, start, tree_start, tree_end):
+                # A healed vertex interpolates between skin that moved and skin that did not,
+                # so it can land inside the body; hold it at the gap it had before this move.
+                # Runs after smoothing, on the final field.
+                for i in range(len(G)):
+                    if not healed[i]:
+                        continue
+                    loc0, n0, fi0, d0 = tree_start.find_nearest(start[i])
                     if loc0 is None or d0 > 0.08:
                         continue
-                    gap0 = max((G[i] - loc0).dot(n0), 0.0)
-                    p = G[i] + field[i]
-                    loc, n, fi, d = tree_now.find_nearest(p)
+                    gap0 = max((start[i] - loc0).dot(n0), 0.0)
+                    p = start[i] + field[i]
+                    loc, n, fi, d = tree_end.find_nearest(p)
                     if loc is None or d > 0.08:
                         continue
                     gap = (p - loc).dot(n)
                     if gap < gap0:
-                        field[i] = field[i] + n * (gap0 - gap); pushed += 1
-                return field, len(torn) // 2
+                        field[i] = field[i] + n * (gap0 - gap)
+                return field
 
             def _smooth(field, mask):
                 for _ in range(int(smooth)):
@@ -441,6 +467,9 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                 T_seat, torn = _heal(T_seat); torn_total += torn
             if smooth:
                 T_seat = _smooth(T_seat, seat_mask)
+            if heal and seat:
+                T_seat = _hold_out(T_seat, G, tree_auth, tree_now)
+            seated = [c + ts for c, ts in zip(G, T_seat)] if seat else list(G)
             T = {}
             for k in keys:
                 kfull[k].value = 1.0  # its coords already sit at the state plus the key
@@ -452,6 +481,11 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                     T[k], torn = _heal(T[k]); torn_total += torn
                 if smooth:
                     T[k] = _smooth(T[k], mask)
+                if heal:
+                    # The key's move starts from the seated garment over the body at its
+                    # state and ends over the body wearing the key in full.
+                    tree_key = BVHTree.FromPolygons([tuple(v + d) for v, d in zip(VS, D[k])], tris)
+                    T[k] = _hold_out(T[k], seated, tree_now, tree_key)
             union = [(any(foot_tri[k][fi] for k in involved) if fi is not None else False) or h
                      for fi, h in zip(near, healed)]
             # Seat: Basis move for keys not added; live value for keys added.
