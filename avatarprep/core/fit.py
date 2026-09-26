@@ -64,7 +64,7 @@ ZONE_WORDS = ("front", "back", "left", "right")
 # matches; ``head`` alone is exact), axes: (axis, +max, -max, flexion test)
 # The flexion test names where a positive turn carries the child's head.
 JOINT_TABLE = (
-    ("hip", ("*upper*leg*", "*thigh*"), (("lateral", 120, 30, "forward"), ("forward", 45, 15, "outward"))),
+    ("hip", ("*upper*leg*", "*upleg*", "*thigh*"), (("lateral", 120, 30, "forward"), ("forward", 45, 15, "outward"))),
     ("knee", ("*lower*leg*", "*shin*", "*calf*", "*knee*"), (("lateral", 130, 0, "back"),)),
     ("ankle", ("*foot*", "*ankle*"), (("lateral", 20, 40, "up"),)),
     ("shoulder", ("*upper*arm*",), (("forward", 75, 60, "down"), ("up", 90, 30, "forward"))),

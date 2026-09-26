@@ -450,9 +450,9 @@ def test_sweep_grammar():
     check(_fit.parse_sweep("Tail", err) == ("Tail", None, None, None), "a bare bone")
     check(_fit.parse_sweep("UpperLeg.L:0..90", err) == ("UpperLeg.L", None, (0.0, 90.0), None), "a range alone")
     from avatarprep.core import fit
-    rows = {n: fit.joint_row(n)[0] for n in ("J_Bip_L_UpperLeg", "mixamorig:LeftFoot", "mixamorig:LeftForeArm",
+    rows = {n: fit.joint_row(n)[0] for n in ("J_Bip_L_UpperLeg", "mixamorig:LeftUpLeg", "mixamorig:LeftFoot", "mixamorig:LeftForeArm",
                                               "Head", "HeadTop_End", "Tail")}
-    check(rows == {"J_Bip_L_UpperLeg": "hip", "mixamorig:LeftFoot": "ankle", "mixamorig:LeftForeArm": "elbow",
+    check(rows == {"J_Bip_L_UpperLeg": "hip", "mixamorig:LeftUpLeg": "hip", "mixamorig:LeftFoot": "ankle", "mixamorig:LeftForeArm": "elbow",
                    "Head": "head", "HeadTop_End": "other", "Tail": "other"}, "joint rows by glob: %r" % rows)
     for bad, why in (("UpperLeg.L:X", "world axis"), ("UpperLeg.L:lateral:30..90", "through 0"),
                      ("UpperLeg.L:lateral:0..90:0", "at least 1")):
