@@ -96,15 +96,15 @@ def _parse_args():
     return a
 
 
-def _fail(reason, offenders=()):
-    print("AVATARPREP: %s => FAIL: %s" % (TOOL, reason))
+def _fail(label, reason, offenders=()):
+    print("AVATARPREP: %s %s => FAIL: %s" % (TOOL, label, reason))
     for o in offenders:
         print("AVATARPREP: OFFENDER", o)
     sys.exit(1)
 
 
-def _fail_refused(refused):
-    _fail(str(refused), refused.offenders)
+def _fail_refused(label, refused):
+    _fail(label, str(refused), refused.offenders)
 
 
 def _resolve_mesh(name):
@@ -153,13 +153,14 @@ def main():
         print("AVATARPREP: ERROR", e)
         sys.exit(2)
     doomed_set = set(doomed)
+    label = ",".join(sorted(doomed_set))
 
     if args.map_arg == "auto":
         try:
             table, info = core.auto_map(armature, targets, doomed_set,
                                         neighbours=args.neighbour_names)
         except core.FoldRefused as refused:
-            _fail_refused(refused)
+            _fail_refused(label, refused)
             return
         except ValueError as e:
             print("AVATARPREP: ERROR", e)
@@ -176,7 +177,7 @@ def main():
                   % (TOOL, bone, table.get(bone), i.get("ratio"), flag))
         if args.report:
             write_report(args.report, {"table": table, "info": info})
-        _fail("auto writes the table; run it with --map <file> after editing")
+        _fail(label, "auto writes the table; run it with --map <file> after editing")
         return
 
     try:
@@ -192,7 +193,7 @@ def main():
     try:
         result = core.fold_bones(armature, targets, doomed_set, bone_map, whatif=args.whatif)
     except core.FoldRefused as refused:
-        _fail_refused(refused)
+        _fail_refused(label, refused)
         return
     except ValueError as e:
         print("AVATARPREP: ERROR", e)
@@ -204,8 +205,8 @@ def main():
         trailer += " | report=%s" % os.path.abspath(args.report)
 
     if args.whatif:
-        print("AVATARPREP: %s bones=%d touched=%d capped=%d => OK (whatif)%s"
-              % (TOOL, len(doomed_set), result["touched"], result["capped"], trailer))
+        print("AVATARPREP: %s %s bones=%d touched=%d capped=%d => OK (whatif)%s"
+              % (TOOL, label, len(doomed_set), result["touched"], result["capped"], trailer))
         return
 
     cmdline = "fold_bones " + " ".join(sys.argv[sys.argv.index("--") + 1:])
@@ -221,8 +222,8 @@ def main():
         sys.exit(2)
     trailer += " | saved=%s" % out_path
 
-    print("AVATARPREP: %s bones=%d touched=%d capped=%d => OK%s"
-          % (TOOL, len(result["bones_removed"]), result["touched"], result["capped"], trailer))
+    print("AVATARPREP: %s %s bones=%d touched=%d capped=%d => OK%s"
+          % (TOOL, label, len(result["bones_removed"]), result["touched"], result["capped"], trailer))
 
 
 if __name__ == "__main__":

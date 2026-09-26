@@ -41,7 +41,7 @@ class NoBonesMatched(ValueError):
 
 
 class FoldRefused(ValueError):
-    """One of fold_bones' five pre-write gates. ``kind`` tags which one (for a
+    """One of fold_bones' six pre-write gates. ``kind`` tags which one (for a
     caller that wants to branch); ``offenders`` is a list of dicts/strings naming
     what tripped it, for the CLI's ``OFFENDER`` lines. Nothing is mutated before
     this raises — every gate in this module runs before any bpy write."""
@@ -172,6 +172,30 @@ def check_full_coverage(bone_map: Dict[str, Dict[str, float]], weighted_doomed: 
             missing)
 
 
+def check_fraction_sums(bone_map: Dict[str, Dict[str, float]], weighted_doomed: Set[str]) -> None:
+    """Gate: a weighted doomed bone's map row whose fractions do not sum to 1
+    within 1e-6. A partial row silently loses that bone's unaccounted share
+    instead of moving it anywhere, and the top-:data:`MAX_BONE_GROUPS`
+    renormalisation step then inflates every OTHER destination on the vertex to
+    cover the gap — a quiet mis-weight, not a caught one. Only weighted bones are
+    checked: a row for a weightless doomed bone is not required at all
+    (:func:`check_full_coverage`), so its fractions (if present) are moot."""
+    offenders = []
+    for bone in sorted(weighted_doomed):
+        dests = bone_map.get(bone)
+        if dests is None:
+            continue  # check_full_coverage already gates a missing row
+        total = sum(dests.values())
+        if abs(total - 1.0) > 1e-6:
+            offenders.append({"bone": bone, "sum": total})
+    if offenders:
+        raise FoldRefused(
+            "bad_fraction_sum",
+            "weighted doomed bone(s) have a map row not summing to 1: %s"
+            % ", ".join("%s=%.6g" % (o["bone"], o["sum"]) for o in offenders),
+            offenders)
+
+
 def _vertex_bone_weights(mesh_obj: bpy.types.Object,
                          bone_names: Set[str]) -> Dict[int, Dict[str, float]]:
     """``{vertex index: {bone-named group: weight}}``, restricted to vertex groups
@@ -211,7 +235,15 @@ def _fold_mesh(weights: Dict[int, Dict[str, float]], doomed: Set[str],
     generalised past its single-island assumption (every ORIGINAL bone-named group
     on a touched vertex, survivor or doomed, is cleared and rewritten from the
     ranked set — not only the doomed ones — so a survivor group capped out here
-    cannot leave stale weight behind)."""
+    cannot leave stale weight behind).
+
+    **Precondition, unchecked:** a touched vertex's bone weight is assumed to
+    already sum to ~1 before the fold — that pre-fold total (preserved through the
+    blend by :func:`check_fraction_sums`) is the renormalisation target, not a
+    fixed 1.0. The venue island this generalises guaranteed it by construction; a
+    vertex that enters already off-1 (a partially-weighted or over-1 source) exits
+    renormalised to ITS OWN prior total instead, silently — nothing here checks
+    the vertex's pre-fold sum, only each donor bone's map row (:func:`check_fraction_sums`)."""
     touched = 0
     capped = 0
     zero_sum: List[int] = []
@@ -356,9 +388,10 @@ def fold_bones(armature: bpy.types.Object, meshes: Sequence[bpy.types.Object],
 
     Runs every gate (:func:`check_no_surviving_children`,
     :func:`check_no_foreign_weight`, :func:`check_map_destinations`,
-    :func:`check_full_coverage`, and the zero-sum-vertex check below) before any
-    mutation, ``whatif`` or not — a preview that could disagree with the real run
-    is worthless (``prune_bones``' standard).
+    :func:`check_full_coverage`, :func:`check_fraction_sums`, and the
+    zero-sum-vertex check below) before any mutation, ``whatif`` or not — a
+    preview that could disagree with the real run is worthless (``prune_bones``'
+    standard).
 
     Returns a report dict: ``bones_removed`` (``[]`` under ``whatif``, since
     nothing is removed yet — see ``doomed`` for the plan), ``touched``, ``capped``,
@@ -382,6 +415,7 @@ def fold_bones(armature: bpy.types.Object, meshes: Sequence[bpy.types.Object],
 
     check_map_destinations(bone_map, armature, doomed)
     check_full_coverage(bone_map, weighted_doomed)
+    check_fraction_sums(bone_map, weighted_doomed)
 
     fold_results: Dict[str, dict] = {}
     zero_sum_offenders = []

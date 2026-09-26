@@ -382,21 +382,48 @@ def test_gate_unmapped_bone():
 
 
 def test_gate_zero_sum():
+    """A row that fails to sum to 1 is now caught earlier, by
+    ``check_fraction_sums`` (see ``test_gate_fraction_sum``) — so a *valid*
+    (sum-to-1) map can no longer zero-sum a touched vertex through the public
+    ``fold_bones()`` gate sequence: with every weighted row summing to exactly 1,
+    a vertex's post-blend total is algebraically ``sum(w_b for b in its doomed
+    bones)``, which is > 0 for any vertex ``fold_bones`` calls "touched",
+    regardless of how a row's own fractions are signed/split. The zero-sum check
+    survives as a defensive backstop (e.g. catastrophic float cancellation in a
+    row with large opposing fractions that still sums to 1 within tolerance), so
+    this test exercises it directly at the unit the gate reads from —
+    ``_fold_mesh`` — rather than fabricating a public-API map that can no longer
+    reach it."""
     _repo_root()
     from avatarprep.core import fold_bones as core
 
     arm, ribbon, second = _build_scene()
     doomed = set(core.resolve_doomed(arm, ["Ribbon*"]))
+    all_bone_names = {b.name for b in arm.data.bones}
+    weights = core._vertex_bone_weights(ribbon, all_bone_names)
     zero_map = {"Ribbon": {"Bun": 0.0}, "Ribbon_1": {"Strand_1": 1.0}, "Ribbon_2": {"Strand_2": 1.0}}
 
+    res = core._fold_mesh(weights, doomed, zero_map)
+    check(res["zero_sum"] == [0], "expected vertex 0 to zero-sum, got %r" % res["zero_sum"])
+
+
+def test_gate_fraction_sum():
+    _repo_root()
+    from avatarprep.core import fold_bones as core
+
+    arm, ribbon, second = _build_scene()
+    doomed = set(core.resolve_doomed(arm, ["Ribbon*"]))
+    partial_map = {"Ribbon": {"Bun": 1.0}, "Ribbon_1": {"Strand_1": 0.5}, "Ribbon_2": {"Strand_2": 1.0}}
+
     try:
-        core.fold_bones(arm, [ribbon], doomed, zero_map, whatif=True)
+        core.fold_bones(arm, [ribbon], doomed, partial_map, whatif=True)
     except core.FoldRefused as refused:
-        check(refused.kind == "zero_sum", "wrong gate kind: %r" % refused.kind)
-        check(any(o["mesh"] == "RibbonMesh" and o["vertex"] == 0 for o in refused.offenders),
-              "expected RibbonMesh vertex 0 named, got %r" % refused.offenders)
+        check(refused.kind == "bad_fraction_sum", "wrong gate kind: %r" % refused.kind)
+        check(any(o["bone"] == "Ribbon_1" and abs(o["sum"] - 0.5) < 1e-9
+                 for o in refused.offenders),
+              "expected Ribbon_1 sum=0.5 named, got %r" % refused.offenders)
     else:
-        FAILURES.append("expected FoldRefused(zero_sum), the fold ran")
+        FAILURES.append("expected FoldRefused(bad_fraction_sum), the fold ran")
 
 
 def test_rerun_refuses():
@@ -437,6 +464,7 @@ def main():
     test_gate_foreign_mesh()
     test_gate_bad_destination()
     test_gate_unmapped_bone()
+    test_gate_fraction_sum()
     test_gate_zero_sum()
     test_rerun_refuses()
     test_folded_stamp_readable_by_report_stamps()
