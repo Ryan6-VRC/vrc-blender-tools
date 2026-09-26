@@ -80,8 +80,9 @@ LEGEND = (
     "classes, fixed at rest, first match wins: physbone = garment-bone share >= 0.5 (moved by dynamics, "
     "so left out of every metric); edge = a boundary-loop vertex or one ring in; skin-tight = within 5 mm "
     "of the body; loose = the rest. Cut vertices (--cut-shape) are in no class",
-    "a step turns one body bone by the named angle about a frame axis through its head, the rest of the "
-    "body at rest; positive is flexion. Named Bone:axis:angle; --sweep Bone:axis:0..angle:1 (or "
+    "a step turns one body bone and everything under it by the named angle about an axis through its "
+    "head (forward, lateral or up from the frame; own = along the bone; a and b = across it), the rest "
+    "of the body at rest; positive is flexion. Named Bone:axis:angle; --sweep Bone:axis:0..angle:1 (or "
     "angle..0:1 when negative) measures that step alone",
     "depth = mm inside the body along the nearest body triangle's normal. new-pen = skin-tight vertices "
     "deeper than 1 mm that were not at rest; edge-poke = the same over edge vertices within 10 mm of the "
@@ -746,7 +747,8 @@ WORST_KEYS = (("new_pen", "count"), ("edge_poke", "count"), ("body_through", "co
 
 
 def worst(steps_out, gname, label) -> Dict:
-    """Per metric, the step with the largest value for one garment and region."""
+    """Per metric, the step with the largest value for one garment and region, with that
+    step's body self-crossing count."""
     out = {}
     for metric, key in WORST_KEYS:
         best = None
@@ -756,8 +758,8 @@ def worst(steps_out, gname, label) -> Dict:
                 continue
             tie = v.get("max_mm", v.get("max", 0.0))
             if best is None or (v[key], tie) > (best[1][key], best[2]):
-                best = (s["name"], v, tie)
-        out[metric] = None if best is None else {"step": best[0], **best[1]}
+                best = (s["name"], v, tie, s["garments"][gname]["self_x"])
+        out[metric] = None if best is None else {"step": best[0], **best[1], "self_x": best[3]}
     sx = max(steps_out, key=lambda s: s["garments"][gname]["self_x"], default=None)
     out["self_x"] = None if sx is None else {"step": sx["name"], "count": sx["garments"][gname]["self_x"]}
     return out

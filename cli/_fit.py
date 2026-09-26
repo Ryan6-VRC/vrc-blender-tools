@@ -174,7 +174,8 @@ def fmt_metric(metric, v):
     if metric in ("new_pen", "edge_poke", "body_through"):
         if not v["count"]:
             return "%s 0 at every step" % metric.replace("_", "-")
-        return "%s %d (max %.2f mm) @ %s" % (metric.replace("_", "-"), v["count"], v["max_mm"], v["step"])
+        return "%s %d (max %.2f mm) @ %s, body self-x there %d" % (
+            metric.replace("_", "-"), v["count"], v["max_mm"], v["step"], v["self_x"])
     if metric in ("stretch", "excess"):
         return "%s max %.3f, p95 %.3f over %d edges, %d over 1.3 @ %s" % (
             metric, v["max"], v["p95"], v["n"], v["over"], v["step"])

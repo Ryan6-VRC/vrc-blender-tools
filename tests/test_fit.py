@@ -186,6 +186,24 @@ def test_regions():
     refuses(lambda: fit.load(s["body"], [g], groups=["Nope"]), "group:Nope", "group: on no garment")
 
 
+def test_shape_and_cut():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    g = s["garment"]
+    d = fit.load(s["body"], [g], shapes=[(None, "Bulk", 1.0)])
+    check(d["garments"][0]["rsd"].min() < -0.005, "--shape Bulk=1 swells the pelvis through the band at rest")
+    check(s["body"].data.shape_keys.key_blocks["Bulk"].value == 0.0, "the body's live value is untouched")
+    d = fit.load(s["body"], [g], cut_shapes=["Bulk"], cut_threshold=0.005)
+    kb = s["body"].data.shape_keys.key_blocks
+    pelvis = sum(1 for x, y in zip(kb["Bulk"].data, kb["Basis"].data) if (x.co - y.co).length > 0.005)
+    check(d["body"]["cut"].sum() == pelvis, "--cut-shape removes the vertices Bulk moves over the threshold (%d of %d)"
+          % (d["body"]["cut"].sum(), pelvis))
+    check(not d["body"]["cut"][d["body"]["F"]].any(), "no kept body triangle touches a cut vertex")
+    refuses(lambda: fit.load(s["body"], [g], cut_shapes=["Nope"]), "is on none of", "an unknown cut shape")
+    refuses(lambda: fit.load(s["body"], [g], shapes=[(None, "Nope", 1.0)]), "is on none of", "an unknown shape")
+
+
 def test_simulated_transfer():
     import _weight_fixture as F
     from avatarprep.core import fit
@@ -369,6 +387,7 @@ def main():
     test_rows_and_flexion()
     test_symmetric_other()
     test_regions()
+    test_shape_and_cut()
     test_simulated_transfer()
     test_push_core()
     test_sweep_grammar()
