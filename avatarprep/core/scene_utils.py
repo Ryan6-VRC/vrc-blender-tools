@@ -24,6 +24,8 @@ STAMP_BASE = "avatarprep_base"     # armature: body lineage (str); CREATED via s
 STAMP_STATE = "avatarprep_state"   # armature: proportion state (str); import_fbx seeds the reserved
                                    # 'unproportioned' origin, apply_proportion_edge writes the edge target
 STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake
+STAMP_WEIGHTS = "avatarprep_weights"  # mesh DATABLOCK: the canonical transfer_weights command line
+                                   # (str) that last wrote its body weights
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
 
 
