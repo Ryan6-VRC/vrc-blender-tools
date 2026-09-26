@@ -1,7 +1,7 @@
-"""In-script fixture for the weight-transfer suite and its add-on differential runner.
+"""In-script fixture for the weight-transfer and fit suites and the add-on differential runner.
 
-Not a suite (no ``test_`` prefix): ``tests/test_weight_transfer.py`` and
-``tests/acceptance/diff_addon.py`` both build from it.
+Not a suite (no ``test_`` prefix): ``tests/test_weight_transfer.py``, ``tests/test_fit.py``
+and ``tests/acceptance/diff_addon.py`` build from it.
 
 Body ``Body_Base`` on ``BodyRig``: a pelvis tube (Hips, fading to UpperLeg.L/R at its
 lower rim) over two leg tubes (UpperLeg, LowerLeg below the knee, Hips at the top), Foot and
@@ -19,6 +19,10 @@ body's bones plus garment bones Flap..Flap4), 2 mm off the body, as islands:
 Every body-bone vertex starts on a crude vendor weight (Hips at ``1 - p``). Groups beside
 the bones: ``Detail`` (non-bone, front of the band) and ``WriteMask`` (the band's +X half
 and the left cuff at 1.0).
+
+``build(tail=True)`` adds a ``Tail`` bone to both rigs (a non-humanoid bone hanging behind the
+pelvis), a tail tube on the body weighted to it, and a ``TailCover`` sleeve on it.
+``add_band`` adds a band 2 mm around the left thigh, where the body is pure UpperLeg.L.
 """
 import math
 
@@ -37,6 +41,8 @@ BODY_BONES = [  # name, head, tail, parent
     ("Foot.R", (-LX, 0, 0.10), (-LX, -0.08, 0.02), "LowerLeg.R"),
     ("Toes.R", (-LX, -0.10, 0.02), (-LX, -0.15, 0.02), "Foot.R"),
 ]
+TAIL_Y, RT = 0.20, 0.03
+TAIL_BONE = [("Tail", (0, TAIL_Y, 0.88), (0, TAIL_Y, 0.60), "Hips")]
 GARMENT_BONES = [("Flap%s" % s, (0, 0.17, 0.92), (0, 0.17, 0.82), "Hips") for s in ("", "2", "3", "4")]
 
 
@@ -115,6 +121,8 @@ def mesh(name, verts, faces, rig):
 
 def body_weights(v, tag):
     x, y, z = v
+    if tag == "tail":
+        return {"Tail": 1.0}
     if tag == "pelvis":
         h = smoothstep((z - 0.88) / 0.10)
         left = smoothstep((x / RP + 0.3) / 0.6)
@@ -125,17 +133,20 @@ def body_weights(v, tag):
     return {"Hips": hips, "UpperLeg." + side: (1 - hips) * (1 - lower), "LowerLeg." + side: (1 - hips) * lower}
 
 
-def build():
+def build(tail=False):
     """Build the scene; returns ``{"body", "body_rig", "garment", "garment_rig", "tags"}``
-    where ``tags`` names each garment vertex's island."""
+    where ``tags`` names each garment vertex's island (plus ``tail_cover`` with ``tail``)."""
     clear()
-    body_rig = armature("BodyRig", BODY_BONES)
-    garment_rig = armature("GarmentRig", BODY_BONES + GARMENT_BONES)
+    bones = BODY_BONES + (TAIL_BONE if tail else [])
+    body_rig = armature("BodyRig", bones)
+    garment_rig = armature("GarmentRig", bones + GARMENT_BONES)
 
     verts, faces, tags = [], [], []
     tube(0, 0, RP, 0.88, 1.10, 11, 32, "pelvis", verts, faces, tags)
     tube(LX, 0, RL, 0.10, 0.90, 40, 24, "leg", verts, faces, tags)
     tube(-LX, 0, RL, 0.10, 0.90, 40, 24, "leg", verts, faces, tags)
+    if tail:
+        tube(0, TAIL_Y, RT, 0.60, 0.86, 13, 16, "tail", verts, faces, tags)
     body = mesh("Body_Base", verts, faces, body_rig)
     groups = {}
     for i, (v, t) in enumerate(zip(verts, tags)):
@@ -181,8 +192,28 @@ def build():
             vg["Detail"].add([i], 0.3 + 0.6 * (z - 0.90) / 0.16, 'REPLACE')
         if (t == "band" and x > 0) or t == "cuff_L":
             vg["WriteMask"].add([i], 1.0, 'REPLACE')
-    return {"body": body, "body_rig": body_rig, "garment": garment, "garment_rig": garment_rig,
-            "tags": tags, "four": four}
+    out = {"body": body, "body_rig": body_rig, "garment": garment, "garment_rig": garment_rig,
+           "tags": tags, "four": four}
+    if tail:
+        out["tail_cover"] = _weighted_tube("TailCover", garment_rig, (0, TAIL_Y, RT + GAP, 0.62, 0.84, 11, 16),
+                                           {"Tail": 1.0})
+    return out
+
+
+def _weighted_tube(name, rig, shape, weights):
+    verts, faces, tags = [], [], []
+    cx, cy, r, z0, z1, rings, segs = shape
+    tube(cx, cy, r, z0, z1, rings, segs, name, verts, faces, tags)
+    ob = mesh(name, verts, faces, rig)
+    for g, w in weights.items():
+        ob.vertex_groups.new(name=g).add(list(range(len(verts))), w, 'REPLACE')
+    return ob
+
+
+def add_band(s, name, weights, gap=GAP, z0=0.60, z1=0.76):
+    """A band ``gap`` off the left thigh between ``z0`` and ``z1`` on the garment rig, every
+    vertex carrying ``weights`` (``{group: w}``)."""
+    return _weighted_tube(name, s["garment_rig"], (LX, 0, RL + gap, z0, z1, 8, 24), weights)
 
 
 def weights_by_name(ob):

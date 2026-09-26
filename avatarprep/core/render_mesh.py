@@ -458,3 +458,36 @@ def render(
     return ("AVATARPREP: rendermesh %s angles=%s shading=%s tiles=%d res=%d => OK%s | png=%s"
             % (lbl, ",".join(resolved_angles), shading, len(resolved_angles),
                delivered_edge, _notes_field(notes), path))
+
+
+def stitch(paths, out_path) -> str:
+    """Lay equal-size square sheets side by side, in the given order, into one PNG at ``out_path``
+    (a Compare door's one-sheet-per-input view); returns ``out_path``. Reads and writes
+    ``Non-Color`` so the bytes pass through unchanged."""
+    tiles = []
+    for p in paths:
+        img = bpy.data.images.load(p)
+        try:
+            img.colorspace_settings.name = 'Non-Color'
+            img.alpha_mode = 'STRAIGHT'
+            w, h = img.size
+            if w != h or (tiles and w != tiles[0].shape[0]):
+                raise ValueError("stitch wants equal square sheets; %s is %dx%d" % (p, w, h))
+            arr = np.empty(w * h * 4, dtype=np.float32)
+            img.pixels.foreach_get(arr)
+            arr = arr.reshape(h, w, 4)
+        finally:
+            bpy.data.images.remove(img)
+        tiles.append(np.clip(arr * 255.0 + 0.5, 0, 255).astype(np.uint8))
+    sheet = _compose_sheet(tiles, tiles[0].shape[0], len(tiles), 1)
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    out = bpy.data.images.new("rendermesh_stitch", sheet.shape[1], sheet.shape[0], alpha=True)
+    try:
+        out.colorspace_settings.name = 'Non-Color'
+        out.pixels.foreach_set((sheet.astype(np.float32) / 255.0).reshape(-1))
+        out.filepath_raw = out_path
+        out.file_format = 'PNG'
+        out.save()
+    finally:
+        bpy.data.images.remove(out)
+    return out_path
