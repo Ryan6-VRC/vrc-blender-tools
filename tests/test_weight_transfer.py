@@ -252,8 +252,7 @@ def test_cli(tmp):
                        capture_output=True, text=True)
     txt = p.stdout + p.stderr
     check(p.returncode == 0 and "mesh Shorts weights=transfer_weights --targets Shorts" in txt
-          and "Traceback" not in txt, "report_stamps prints the weights-only mesh
-%s" % txt)
+          and "Traceback" not in txt, "report_stamps prints the weights-only mesh\n%s" % txt)
     bpy.ops.wm.open_mainfile(filepath=viz)
     check(bpy.data.objects["Shorts"].data.color_attributes.get("avatarprep_matched") is not None,
           "the --viz copy carries the review layer")
