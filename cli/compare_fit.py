@@ -11,10 +11,10 @@ Every input is measured exactly as ``report_fit`` measures it, over the same ste
 the baseline; each line gives every input's worst step per metric and region and its
 difference from the baseline. ``--simulate-transfer`` measures one input twice: as it is,
 and with each garment carrying the body's weights interpolated at its nearest body points
-(garment bones keeping their share, as ``transfer_weights`` keeps them). A posed defect the
-simulation removes is the weights'; one it leaves is the geometry's. ``--render DIR``
-writes one sheet per compared step, the inputs side by side in ``--in`` order. Inputs are
-read and never saved.
+(``transfer_weights``' write rule, garment bones kept; ``avatarprep/core/fit.py``
+``simulated``). How the result is read is the weightpaint skill's. ``--render DIR`` writes
+one sheet per compared step (each input's worst stretch, new-penetration and body-through
+steps), the inputs side by side in ``--in`` order. Inputs are read and never saved.
 
 ``=> OK`` means measured. Exit 0 on OK; 1 on ``=> FAIL:`` (a refusal in any input, inputs
 that sweep different steps, a failed render); 2 on unresolvable input or a crash. Metric
@@ -32,7 +32,7 @@ from cli import _fit
 from cli import report_fit
 
 TOOL = "compare_fit"
-MAX_RENDER_STEPS = 3
+MAX_RENDER_STEPS = 4
 
 
 class _Parser(argparse.ArgumentParser):
@@ -100,18 +100,24 @@ def main():
                 g.pop("object", None)
             inputs.append((label + ":simulated", path, sim, repair))
 
-    try:
-        bones = None
-        if a.sweep_list is None:
-            bones = []
-            for _, _, data, _ in inputs:
-                for b in report_fit.plan_for(a, fit, data)[1]["bones"]:
-                    if b["bone"] not in bones:
-                        bones.append(b["bone"])
-        planned = [(label, path, data, repair) + report_fit.plan_for(a, fit, data, bones=bones)
-                   for label, path, data, repair in inputs]
-    except fit.FitError as e:
-        _fail(run_label, str(e), a, out)
+    first, bones = [], None
+    for label, path, data, repair in inputs:
+        try:
+            first.append(report_fit.plan_for(a, fit, data))
+        except fit.FitError as e:
+            _fail(label, str(e), a, out)
+    if a.sweep_list is None:
+        bones = []
+        for _, the_plan, _ in first:
+            bones += [b["bone"] for b in the_plan["bones"] if b["bone"] not in bones]
+    planned = []
+    for (label, path, data, repair), got in zip(inputs, first):
+        if bones is not None and [b["bone"] for b in got[1]["bones"]] != bones:
+            try:
+                got = report_fit.plan_for(a, fit, data, bones=bones)
+            except fit.FitError as e:
+                _fail(label, "%s (another input's derived sweep set holds it)" % e, a, out)
+        planned.append((label, path, data, repair) + tuple(got))
     names = [[s["name"] for s in p[5]["steps"]] for p in planned]
     if any(n != names[0] for n in names[1:]):
         _fail(run_label, "the inputs sweep different steps (their rigs differ), so their numbers do not "
@@ -167,10 +173,10 @@ def main():
             for rl in (list(base[4]) or ["all"]):
                 steps = []
                 for r in results:
-                    for metric in ("stretch", "new_pen"):
-                        v = r["worst"][g["name"]][rl][metric]
-                        if v and v["step"] not in steps and (metric == "stretch" or v["count"]):
-                            steps.append(v["step"])
+                    for rl2, metric, step in report_fit.render_steps(fit, r, {rl: None} if rl != "all" else {},
+                                                                      g["name"]):
+                        if step not in steps:
+                            steps.append(step)
                 for step in steps[:MAX_RENDER_STEPS]:
                     pngs = []
                     for label, path, data, repair, regions, the_plan, sets in planned:

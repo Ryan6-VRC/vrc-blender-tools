@@ -473,7 +473,9 @@ def stitch(paths, out_path) -> str:
             w, h = img.size
             if w != h or (tiles and w != tiles[0].shape[0]):
                 raise ValueError("stitch wants equal square sheets; %s is %dx%d" % (p, w, h))
-            arr = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, 4)
+            arr = np.empty(w * h * 4, dtype=np.float32)
+            img.pixels.foreach_get(arr)
+            arr = arr.reshape(h, w, 4)
         finally:
             bpy.data.images.remove(img)
         tiles.append(np.clip(arr * 255.0 + 0.5, 0, 255).astype(np.uint8))

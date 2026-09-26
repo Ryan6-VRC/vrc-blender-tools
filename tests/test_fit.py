@@ -8,6 +8,7 @@ Fixture: ``tests/_weight_fixture.py`` (the tail and the thigh bands are this sui
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -220,6 +221,15 @@ def test_simulated_transfer():
     check(wb["slide"]["p95"] < 0.5 < wa["slide"]["p95"], "and its slide: %r -> %r" % (wa["slide"], wb["slide"]))
     check(np.array_equal(d["garments"][0]["W"][:, d["body"]["names"].index("Hips")], np.ones(len(hips.data.vertices))),
           "the simulation leaves the measured data alone")
+    d = fit.load(s["body"], [s["garment"]])
+    g, sg = d["garments"][0], fit.simulated(d)["garments"][0]
+    go = len(g["garment_only"])
+    kept = [i for i in range(len(g["V"])) if g["raw"][i, g["garment_only"]].sum() >= 1 - 1e-4] + [s["four"]]
+    check(all(np.allclose(sg["W"][i], g["W"][i]) for i in kept),
+          "vertices at p = 1 and the one with no allowance keep their own weights, as transfer_weights keeps them")
+    half = [i for i in range(len(g["V"])) if abs(g["raw"][i, g["garment_only"]].sum() - 0.5) < 1e-6]
+    check(half and all(abs(sg["own"][i, go:].sum() - 0.5) < 1e-6 and (sg["own"][i, go:] > 0).sum() <= 2 for i in half),
+          "a p = 0.5 vertex takes body weight 0.5 on at most 4 - 2 bones")
 
 
 def test_push_core():
@@ -234,6 +244,202 @@ def test_push_core():
     check(pl["kind"] == "static" and pl["seeds"] > 0, "--allow-static pushes the rest contact: %r" % pl["kind"])
 
 
+def _add_bone(rig, name, head, tail, parent):
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='EDIT')
+    eb = rig.data.edit_bones.new(name)
+    eb.head, eb.tail = head, tail
+    if parent:
+        eb.parent = rig.data.edit_bones[parent]
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+def _one_step(d, bone="UpperLeg.L", axis="lateral", angle=90.0):
+    from avatarprep.core import fit
+    return fit.plan(d, [(bone, axis, (0.0, angle) if angle > 0 else (angle, 0.0), 1)])["steps"][0]
+
+
+def test_pose_math():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    d = fit.load(s["body"], [F.add_band(s, "ThighBand", {"UpperLeg.L": 1.0})])
+    st = _one_step(d)
+    h, R = st["h"], fit.rotation(st["u"], st["angle"])
+    k = d["body"]["bones"]["LowerLeg.L"]["head"]
+    got = fit.pose_points(np.array([h, k]), np.ones(2), h, R)
+    check(np.allclose(got[0], h, atol=1e-12), "the swept bone's head stays fixed")
+    check(np.allclose(got[1], h + R @ (k - h), atol=1e-12), "the knee lands at h + R(k - h)")
+    BV, _ = fit.posed(d, d["garments"][0], st)
+    share = d["body"]["W"][:, st["cols"]].sum(1)
+    full, none = share > 1 - 1e-9, share < 1e-12
+    V0 = d["body"]["V"]
+    check(full.any() and np.allclose(BV[full], (V0[full] - h) @ R.T + h, atol=1e-9),
+          "vertices wholly on the swept chain turn rigidly about its head")
+    check(none.any() and np.array_equal(BV[none], V0[none]), "vertices off the swept chain do not move")
+
+
+def test_garment_bones():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    rig = s["garment_rig"]
+    _add_bone(rig, "Strap", (F.LX, -0.08, 0.70), (F.LX, -0.08, 0.60), "UpperLeg.L")
+    _add_bone(rig, "Free", (0.3, 0, 0.7), (0.3, 0, 0.6), None)
+    strap = F.add_band(s, "StrapBand", {"Strap": 1.0})
+    free = F.add_band(s, "FreeBand", {"Free": 1.0})
+    toes = F.add_band(s, "ToesBand", {"Toes.L": 1.0})
+    d = fit.load(s["body"], [strap, free, toes])
+    st = _one_step(d)
+    h, R = st["h"], fit.rotation(st["u"], st["angle"])
+    gs, gf, gt = d["garments"]
+    _, GV = fit.posed(d, gs, st)
+    check(np.allclose(GV, (gs["V"] - h) @ R.T + h, atol=1e-9),
+          "a garment bone under UpperLeg.L moves rigidly with the thigh, so it does not slide")
+    _, GV = fit.posed(d, gf, st)
+    check(np.array_equal(GV, gf["V"]), "a garment bone with no body ancestor stays still")
+    check(gs["cls"]["physbone"].all() and gf["cls"]["physbone"].all(), "garment-only bands are physbone")
+    check(not gt["cls"]["physbone"].any(),
+          "a body armature deform bone the body mesh leaves unweighted is not garment-only (Toes.L)")
+    refuses(lambda: fit.plan(d, bones=["Nope"]), "lacks Nope", "a union sweep bone this rig lacks")
+
+
+def test_top4_in_fit():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    d = fit.load(s["body"], [s["garment"]])
+    g = d["garments"][0]
+    row = g["own"][s["four"]]
+    check(int((row > 0).sum()) == 4 and np.allclose(row[row > 0], 0.25),
+          "five equal groups skin on four at 0.25 each: %r" % row)
+    check(abs(g["phys"][s["four"]] - 0.75) < 1e-9, "three of the four kept are garment bones (%g)" % g["phys"][s["four"]])
+    check(abs(g["W"][s["four"], d["body"]["names"].index("Hips")] - 1.0) < 1e-9,
+          "Flap bones move with their ancestor Hips")
+
+
+def test_body_through():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    hips = F.add_band(s, "HipsBand", {"Hips": 1.0})
+    thigh = F.add_band(s, "ThighBand", {"UpperLeg.L": 1.0})
+    d = fit.load(s["body"], [hips, thigh])
+    p, r = _sweep(d, [("UpperLeg.L", None, None, None)])
+    w = r["worst"]["HipsBand"]["all"]["body_through"]
+    check(w["count"] > 0 and 0 < w["max_mm"] <= 5.0,
+          "the thigh leaving a still band comes through it, within 5 mm: %r" % w)
+    check(sum(_by_step(r, "ThighBand", "body_through", "count")) == 0,
+          "a band that follows its thigh has no body-through, however close the other thigh comes")
+    g = d["garments"][1]
+    adduct = next(st for st in p["steps"] if st["name"] == "UpperLeg.L:forward:-10")
+    BV, GV = fit.posed(d, g, adduct)
+    saved = g["bh0"]
+    g["bh0"] = np.full_like(saved, -1.0)
+    try:
+        _, tri, height, _ = fit._depth_and_through(d, g, BV, GV, np.zeros(len(GV), bool),
+                                                   np.flatnonzero(g["tok"]), fit.THROUGH)
+    finally:
+        g["bh0"] = saved
+    check(((height > 0) & (height <= fit.THROUGH)).any(),
+          "without the rest-inside rule the other thigh would read as body-through (the rule is doing work)")
+
+
+def test_push_seeds_follow_contact():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    d = fit.load(s["body"], [F.add_band(s, "ThighBand", {"UpperLeg.L": 1.0})])
+    g = d["garments"][0]
+    p = fit.plan(d, [("UpperLeg.L", "forward", None, None)])
+    near = 0.0005
+    pop = ~g["cls"]["physbone"] & ~g["cut"]
+    for st in p["steps"]:
+        seeds = fit._seeds(d, g, st, near, ~g["cut"])
+        BV, GV = fit.posed(d, g, st)
+        depth, _, _, _ = fit._depth_and_through(d, g, BV, GV, pop, np.zeros(0, np.int64), 0)
+        contact = pop & (depth > -near * 1000.0)
+        check(np.array_equal(seeds, contact), "%s: a band following its thigh seeds only where it touches the "
+              "body (%d seeds, %d touching)" % (st["name"], seeds.sum(), contact.sum()))
+        if st["angle"] > 0:
+            check(not seeds.any(), "%s: abduction away from the other thigh seeds nothing" % st["name"])
+
+
+def _hex_band(s, name, inradius, inward=False):
+    import _weight_fixture as F
+    verts, faces, tags = [], [], []
+    F.tube(F.LX, 0, inradius / np.cos(np.pi / 6), 0.60, 0.76, 4, 6, name, verts, faces, tags)
+    if inward:
+        faces = [f[::-1] for f in faces]
+    ob = F.mesh(name, verts, faces, s["garment_rig"])
+    ob.vertex_groups.new(name="Hips").add(list(range(len(verts))), 1.0, 'REPLACE')
+    return ob
+
+
+def test_push_profile():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    hips = F.add_band(s, "HipsBand", {"Hips": 1.0})
+    flipped = F.add_band(s, "Flipped", {"Hips": 1.0})
+    me = flipped.data
+    for poly in me.polygons:
+        poly.flip()
+    me.update()
+    hexb = _hex_band(s, "Hex", F.RL + 0.0015)
+    d = fit.load(s["body"], [hips, flipped, hexb])
+    p = fit.plan(d, [("UpperLeg.L", "lateral", None, None)])
+    amount, falloff = 0.0005, 0.025
+    pl = fit.plan_push(d, 0, p, amount=amount, falloff=falloff)
+    g = d["garments"][0]
+    V, seeds = g["V"], pl["seeded"]
+    dist = np.min(np.linalg.norm(V[:, None, :] - V[seeds][None, :, :], axis=2), axis=1)
+    want = amount * fit.smoothstep(1.0 - dist / falloff)
+    got = np.linalg.norm(pl["delta"], axis=1)
+    check(np.allclose(got, want, atol=1e-9), "the push follows amount * smoothstep(1 - d / falloff)")
+    check(pl["rim_moved"] > 0, "without --rim-hold the boundary moves")
+    held = fit.plan_push(d, 0, p, amount=amount, falloff=falloff, rim_hold=0.01)
+    check(held["rim_moved"] == 0 and held["moved"] > 0, "--rim-hold keeps the boundary on the skin: %r"
+          % {k: held[k] for k in ("moved", "rim_moved")})
+    pf = fit.plan_push(d, 1, p, amount=amount, falloff=falloff)
+    radial = d["garments"][1]["V"][:, :2] - np.array([F.LX, 0.0])
+    moved = np.linalg.norm(pf["delta"], axis=1) > 0
+    check(pf["turned"] == pf["moved"] > 0 and ((pf["delta"][:, :2] * radial).sum(1)[moved] > 0).all(),
+          "an inward-wound band's normals are turned, and it still moves outward")
+    gh = d["garments"][2]
+    pop = ~gh["cls"]["physbone"]
+    corner_only = False
+    for st in p["steps"]:
+        seeds = fit._seeds(d, gh, st, 0.0005, ~gh["cut"])
+        BV, GV = fit.posed(d, gh, st)
+        depth, _, _, _ = fit._depth_and_through(d, gh, BV, GV, pop, np.zeros(0, np.int64), 0)
+        corner_only |= bool((seeds & ~(depth > -0.5)).any())
+    check(corner_only, "a coarse band seeds the corners of a triangle the body comes through between its vertices")
+
+
+def test_apply_push_units():
+    from avatarprep.core import fit
+    me = bpy.data.meshes.new("CmMesh")
+    rng = np.random.default_rng(1)
+    co = (rng.random((200, 3)) * [30, 20, 170]).tolist()
+    me.from_pydata(co, [], [(i, i + 1, i + 2) for i in range(0, 198, 3)])
+    ob = bpy.data.objects.new("CmMesh", me)
+    bpy.context.scene.collection.objects.link(ob)
+    ob.shape_key_add(name="Basis")
+    a = ob.shape_key_add(name="A", from_mix=False)
+    b = ob.shape_key_add(name="B", from_mix=False)
+    b.relative_key = a
+    for i in range(len(co)):
+        a.data[i].co = a.data[i].co + type(a.data[i].co)((0.0, 0.0, 1.3))
+        b.data[i].co = a.data[i].co + type(a.data[i].co)((0.7, 0.0, 0.0))
+    ab = np.array([(y.co - x.co)[:] for x, y in zip(a.data, b.data)])
+    delta = rng.random((len(co), 3)) * 0.05
+    n = fit.apply_push(ob, delta)
+    ab2 = np.array([(y.co - x.co)[:] for x, y in zip(a.data, b.data)])
+    check(n == 3 and np.abs(ab2 - ab).max() < 1e-4, "a centimetre-scale mesh takes the push; a key relative to "
+          "another key keeps its offset from it")
+
+
 def test_sweep_grammar():
     from cli import _fit
 
@@ -243,6 +449,11 @@ def test_sweep_grammar():
           "a colon in the bone name survives")
     check(_fit.parse_sweep("Tail", err) == ("Tail", None, None, None), "a bare bone")
     check(_fit.parse_sweep("UpperLeg.L:0..90", err) == ("UpperLeg.L", None, (0.0, 90.0), None), "a range alone")
+    from avatarprep.core import fit
+    rows = {n: fit.joint_row(n)[0] for n in ("J_Bip_L_UpperLeg", "mixamorig:LeftFoot", "mixamorig:LeftForeArm",
+                                              "Head", "HeadTop_End", "Tail")}
+    check(rows == {"J_Bip_L_UpperLeg": "hip", "mixamorig:LeftFoot": "ankle", "mixamorig:LeftForeArm": "elbow",
+                   "Head": "head", "HeadTop_End": "other", "Tail": "other"}, "joint rows by glob: %r" % rows)
     for bad, why in (("UpperLeg.L:X", "world axis"), ("UpperLeg.L:lateral:30..90", "through 0"),
                      ("UpperLeg.L:lateral:0..90:0", "at least 1")):
         refuses(lambda: _fit.parse_sweep(bad, err), why, "sweep grammar %s" % bad, exc=ValueError)
@@ -314,7 +525,8 @@ def test_cli(tmp):
     cmp = os.path.join(tmp, "c.json")
     rc, txt = _blender("compare_fit", ["--in", a_blend, "--in", b_blend, "--targets", "Band", "--sweep",
                                        "UpperLeg.L:lateral", "--render", rdir, "--report", cmp])
-    check(rc == 0 and "=> OK" in txt and "verdict" not in txt.lower(), "compare_fit exits 0 with OK\n%s" % txt)
+    check(rc == 0 and set(re.findall(r"=> ([A-Z]+)", txt)) == {"OK"},
+          "compare_fit's only summary token is OK, never a verdict\n%s" % txt)
     if os.path.exists(cmp):
         c = json.load(open(cmp))
         dn = c["deltas"]["Band"]["all"]
@@ -341,6 +553,9 @@ def test_cli(tmp):
     check(rc == 1 and "--allow-static" in txt, "static contact refuses\n%s" % txt)
     rc, txt = _blender("push_garment", ["--in", static, "--targets", "Band", "--amount", "0.0005", "--whatif"])
     check(rc == 2 and "--sweep or" in txt, "a push without --sweep or --region is bad args\n%s" % txt)
+    rc, txt = _blender("push_garment", ["--in", static, "--targets", "Band", "--amount", "0.5", "--sweep",
+                                        "UpperLeg.L", "--whatif"])
+    check(rc == 2 and "metres" in txt, "an --amount over --falloff is bad args naming metres\n%s" % txt)
 
     before_mtime = os.path.getmtime(a_blend)
     rc, txt = _blender("push_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.0005",
@@ -368,6 +583,11 @@ def test_cli(tmp):
         radial = old["Basis"][:, :2] - np.array([F.LX, 0.0])
         check(((ref[:, :2] * radial).sum(1)[mag > 0] > 0).all(), "the push is outward from the thigh")
         check(ob.get(scene_utils.STAMP_PUSHED) == line, "the object carries the recipe: %r" % ob.get(scene_utils.STAMP_PUSHED))
+        rep = scene_utils.report_stamps(bpy.context.scene)
+        entry = [m for a in rep["armatures"] for m in a["meshes"] + rep["unbound"] if m["name"] == "Band"]
+        check(entry and entry[0].get("pushed") == line, "report_stamps surfaces the push: %r" % rep)
+        rc, txt = _blender("report_stamps", ["--in", pushed])
+        check(rc == 0 and ("mesh Band pushed=%s" % line) in txt, "report_stamps prints the push\n%s" % txt)
         rc, txt = _blender("push_garment", ["--in", pushed, "--targets", "Band", "--amount", "0.0005",
                                             "--sweep", "UpperLeg.L:lateral", "--whatif"])
         check(rc == 1 and "already pushed by `%s`" % line in txt, "a stamped mesh refuses and names its line\n%s" % txt)
@@ -390,6 +610,13 @@ def main():
     test_shape_and_cut()
     test_simulated_transfer()
     test_push_core()
+    test_pose_math()
+    test_garment_bones()
+    test_top4_in_fit()
+    test_body_through()
+    test_push_seeds_follow_contact()
+    test_push_profile()
+    test_apply_push_units()
     test_sweep_grammar()
     with tempfile.TemporaryDirectory() as tmp:
         test_cli(tmp)

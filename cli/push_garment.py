@@ -55,9 +55,7 @@ def _parse_args(argv):
     p.add_argument("--in", dest="in_path", required=True, help="costume .blend holding the targets and the body")
     p.add_argument("--targets", required=True, help="comma-separated garment meshes to push")
     p.add_argument("--amount", type=float, required=True, help="metres the seeds move outward")
-    _fit.add_measure_args(p, sweep_help="sweep this body bone for seeds (repeatable); AXIS is forward, back, "
-                                        "lateral, up, own, a or b, angles in degrees with positive flexion, "
-                                        "STEPS per direction (default 3)")
+    _fit.add_measure_args(p, sweep_help="sweep this body bone for seeds (repeatable). " + _fit.SWEEP_FORM)
     p.add_argument("--near", type=float, default=DEFAULTS["near"], help="metres outside the body that still seeds")
     p.add_argument("--falloff", type=float, default=DEFAULTS["falloff"], help="metres around a seed the push fades over")
     p.add_argument("--rim-hold", dest="rim_hold", type=float, default=DEFAULTS["rim_hold"],
@@ -78,6 +76,9 @@ def _parse_args(argv):
                 "touches would move contact nobody asked about")
     if not (a.amount > 0 and a.falloff > 0 and a.near >= 0 and a.rim_hold >= 0):
         p.error("--amount and --falloff must be positive, --near and --rim-hold not negative")
+    if a.amount > a.falloff:
+        p.error("--amount %g m is more than --falloff %g m; both are metres (0.0005 is half a millimetre)"
+                % (a.amount, a.falloff))
     if a.out_path and os.path.abspath(a.out_path) == os.path.abspath(a.in_path):
         p.error("--out is --in itself; pass --in-place to save over it")
     return a
@@ -118,7 +119,8 @@ def main():
             refuse("%s was already pushed by `%s`; a second push would move it twice. Re-derive from the blend "
                    "before that push, or leave it" % (t.name, stamp))
         if scene_utils.is_linked(t) or not scene_utils.is_editable(t):
-            refuse("%s is linked or override data and cannot be written" % t.name)
+            refuse("%s is linked or override data and cannot be written; push the local garment this "
+                   "costume owns (own-mergeable makes one)" % t.name)
         if t.data.users > 1:
             refuse("%s shares its mesh with %d other user(s); make it single-user first" % (t.name, t.data.users - 1))
 
@@ -155,7 +157,7 @@ def main():
         if busiest:
             print("AVATARPREP: %s most dynamic seeds at: %s" % (
                 t.name, ", ".join("%s (%d)" % (s["step"], s["dynamic"]) for s in busiest)))
-        out["targets"].append({"mesh": t.name, **{k: v for k, v in pl.items() if k != "delta"}})
+        out["targets"].append({"mesh": t.name, **{k: v for k, v in pl.items() if k not in ("delta", "seeded")}})
 
     saved = None
     if not a.whatif:

@@ -60,17 +60,18 @@ SEED_THROUGH = 0.005    # m: push_garment's body-vertex reach for the through te
 AXIS_WORDS = ("forward", "back", "lateral", "up", "own", "a", "b")
 ZONE_WORDS = ("front", "back", "left", "right")
 
-# row, globs (matched against the lowercased bone name), axes: (axis, +max, -max, flexion test)
+# row, globs (matched against the whole lowercased bone name, so a side or rig prefix still
+# matches; ``head`` alone is exact), axes: (axis, +max, -max, flexion test)
 # The flexion test names where a positive turn carries the child's head.
 JOINT_TABLE = (
-    ("hip", ("upper*leg*", "thigh*"), (("lateral", 120, 30, "forward"), ("forward", 45, 15, "outward"))),
-    ("knee", ("lower*leg*", "shin*", "calf*", "knee*"), (("lateral", 130, 0, "back"),)),
-    ("ankle", ("foot*", "ankle*"), (("lateral", 20, 40, "up"),)),
-    ("shoulder", ("upper*arm*",), (("forward", 75, 60, "down"), ("up", 90, 30, "forward"))),
-    ("clavicle", ("shoulder*", "clavicle*"), (("forward", 20, 20, "down"), ("up", 15, 15, "forward"))),
-    ("elbow", ("lower*arm*", "fore*arm*", "elbow*"), (("up", 130, 0, "forward"), ("own", 60, 60, None))),
-    ("wrist", ("hand*", "wrist*"), (("a", 45, 45, None), ("b", 45, 45, None))),
-    ("spine", ("spine*", "chest*", "upperchest*", "neck*"),
+    ("hip", ("*upper*leg*", "*thigh*"), (("lateral", 120, 30, "forward"), ("forward", 45, 15, "outward"))),
+    ("knee", ("*lower*leg*", "*shin*", "*calf*", "*knee*"), (("lateral", 130, 0, "back"),)),
+    ("ankle", ("*foot*", "*ankle*"), (("lateral", 20, 40, "up"),)),
+    ("shoulder", ("*upper*arm*",), (("forward", 75, 60, "down"), ("up", 90, 30, "forward"))),
+    ("clavicle", ("*shoulder*", "*clavicle*"), (("forward", 20, 20, "down"), ("up", 15, 15, "forward"))),
+    ("elbow", ("*lower*arm*", "*fore*arm*", "*elbow*"), (("up", 130, 0, "forward"), ("own", 60, 60, None))),
+    ("wrist", ("*hand*", "*wrist*"), (("a", 45, 45, None), ("b", 45, 45, None))),
+    ("spine", ("*spine*", "*chest*", "*upperchest*", "*neck*"),
      (("lateral", 25, 15, "forward"), ("forward", 15, 15, None), ("own", 20, 20, None))),
     ("head", ("head",), (("lateral", 30, 30, "forward"), ("forward", 20, 20, None))),
 )
@@ -81,16 +82,16 @@ LEGEND = (
     "so left out of every metric); edge = a boundary-loop vertex or one ring in; skin-tight = within 5 mm "
     "of the body; loose = the rest. Cut vertices (--cut-shape) are in no class",
     "a step turns one body bone and everything under it by the named angle about an axis through its "
-    "head (forward, lateral or up from the frame; own = along the bone; a and b = across it), the rest "
-    "of the body at rest; positive is flexion. Named Bone:axis:angle; --sweep Bone:axis:0..angle:1 (or "
-    "angle..0:1 when negative) measures that step alone",
+    "head (forward, back, lateral or up from the frame; own = along the bone; a and b = across it), "
+    "the rest of the body at rest; positive is flexion. Each step is named Bone:axis:angle, and "
+    "--sweep Bone:axis:0..angle:1 (angle..0:1 when negative) measures that step alone",
     "depth = mm inside the body along the nearest body triangle's normal. new-pen = skin-tight vertices "
-    "deeper than 1 mm that were not at rest; edge-poke = the same over edge vertices within 10 mm of the "
+    "deeper than 1 mm that were not deeper than 1 mm at rest; edge-poke = the same over edge vertices within 10 mm of the "
     "body at rest. Rest penetration is reported beside them and is never counted as new",
-    "body-through = body vertices that were beneath a garment triangle at rest and are within 5 mm on "
-    "its outer side at the step (outer = facing away from the body at rest; triangles with an edge, "
-    "physbone or cut corner excluded): skin poking out between garment vertices, which no vertex "
-    "depth sees",
+    "body-through = body vertices inside the garment at rest (on the inner side of their nearest garment "
+    "triangle) that lie within 5 mm outside a non-edge triangle at the step (outside = the side facing "
+    "away from the body at rest; a triangle with an edge, physbone or cut corner is not counted): skin "
+    "poking out between garment vertices, which no vertex depth sees",
     "stretch = posed / rest length of edges with no physbone or cut end and rest length >= 0.5 mm; "
     "excess = stretch divided by the stretch of the edge between the two ends' body anchors (anchor edge "
     ">= 0.5 mm), so skin stretching under the garment does not count. Both: max, p95, count over 1.3",
@@ -225,9 +226,10 @@ def _bones(arm, deform_names) -> Dict[str, Dict]:
     out = {}
     for b in arm.data.bones:
         kids = [c for c in b.children if c.use_deform] or list(b.children)
+        kid = min(kids, key=lambda c: (c.head_local - b.tail_local).length) if kids else None
         desc = [b.name] + [c.name for c in b.children_recursive]
         out[b.name] = {"head": w(b.head_local), "tail": w(b.tail_local),
-                       "child": w(kids[0].head_local) if kids else w(b.tail_local),
+                       "child": w(kid.head_local) if kid else w(b.tail_local),
                        "parent": b.parent.name if b.parent else None,
                        "cols": np.array([col[n] for n in desc if n in col], np.int64)}
     return out
@@ -275,13 +277,14 @@ def _garment(ob, shapes, body_names, cut):
         if b is not None:
             mapping[j, idx[b.name]] = 1.0
     own = top4(g["W"])
+    raw = np.asarray(g["W"], np.float64)
     E, boundary, ring = _edges(ob.data)
     F = g["F"]
     keepF = F[~cut[F].any(1)]
     dom, under = _dominant(names, own, arm)
     return {"name": ob.name, "object": ob, "V": g["V"].astype(np.float64), "N": g["N"].astype(np.float64),
             "F": keepF, "E": E[~cut[E].any(1)], "boundary": boundary, "ring": ring, "cut": cut,
-            "names": names, "garment_only": garment_only, "mapping": mapping, "own": own,
+            "names": names, "garment_only": garment_only, "mapping": mapping, "own": own, "raw": raw,
             "W": own @ mapping, "phys": own[:, garment_only].sum(1) if garment_only else np.zeros(len(own)),
             "armature": arm.name, "dominant": dom, "under": under, "groups": {}}
 
@@ -309,12 +312,16 @@ def load(source, targets: Sequence, *, shapes=(), cut_shapes=(), cut_threshold=0
     except WT.WeightTransferError as e:
         raise FitError(str(e))
     cut = _cut_masks([source] + targets, cut_shapes, cut_threshold)
-    names = src["names"]
+    # every deform bone of the body armature is a column, weighted by the body mesh or not, so a
+    # garment bone is garment-only exactly when transfer_weights would call it one
+    names = list(src["names"]) + sorted(src["deform"] - set(src["names"]))
+    Wraw = np.zeros((len(src["V"]), len(names)), np.float32)
+    Wraw[:, :len(src["names"])] = src["W"]
     arm = src["armature"]
     bcut = cut[source.name]
     body = {"name": source.name, "armature": arm.name, "V": src["V"].astype(np.float64),
             "N": src["N"], "F_all": src["F"], "F": src["F"][~bcut[src["F"]].any(1)], "cut": bcut,
-            "Wraw": src["W"], "W": top4(src["W"]), "names": names, "bones": _bones(arm, names),
+            "Wraw": Wraw, "W": top4(Wraw), "names": names, "bones": _bones(arm, names),
             "roots": {b.name for b in arm.data.bones if b.parent is None}}
     if not len(body["F"]):
         raise FitError("--cut-shape removes every triangle of %s" % source.name)
@@ -348,8 +355,9 @@ def _rest(data, g):
     lo, hi = V[live].min(0) - CROP, V[live].max(0) + CROP
     Vc, Fc, sel = _crop(body["V"], body["F"], lo, hi)
     if Vc is None:
-        raise FitError("%s is farther than %g m from %s everywhere; nothing to measure against"
-                       % (g["name"], CROP, body["name"]))
+        raise FitError("%s is farther than %g m from %s everywhere, so there is nothing to measure it "
+                       "against; check that --source names the body it is worn on and that it is seated "
+                       "there (transfer_shapekeys seats it)" % (g["name"], CROP, body["name"]))
     loc, nor, face, dist = _nearest(_tree(Vc, Fc), V)
     anc = sel[np.maximum(face, 0)]
     T = body["F"][anc]
@@ -361,7 +369,14 @@ def _rest(data, g):
     g["bn0"] = nor
     tn = np.cross(V[g["F"][:, 1]] - V[g["F"][:, 0]], V[g["F"][:, 2]] - V[g["F"][:, 0]])
     g["gsign"] = np.where((tn * nor[g["F"]].mean(1)).sum(1) >= 0, 1.0, -1.0)
-    g["out0"] = np.nan_to_num(_unit(tn)) * g["gsign"][:, None]
+    # each body vertex near the garment: signed height over its nearest garment triangle at rest
+    # (negative = inside the garment); a vertex already outside is never counted as coming through
+    g["bh0"] = np.full(len(body["V"]), np.inf)
+    cand = np.flatnonzero(((body["V"] >= lo) & (body["V"] <= hi)).all(1) & ~body["cut"])
+    if len(cand) and len(g["F"]):
+        bl, bn, bf, _ = _nearest(_tree(V, g["F"]), body["V"][cand])
+        ok = bf >= 0
+        g["bh0"][cand[ok]] = ((body["V"][cand[ok]] - bl[ok]) * bn[ok]).sum(1) * g["gsign"][bf[ok]]
     phys = live & (g["phys"] >= PHYS_SHARE)
     edge = live & ~phys & g["ring"]
     tight = live & ~phys & ~edge & (dist <= TIGHT)
@@ -448,7 +463,8 @@ def region_mask(data, g, terms) -> np.ndarray:
             else:
                 b = data["body"]["bones"].get(bone)
                 if b is None:
-                    raise FitError("zone:%s names no bone of %s" % (value, data["body"]["armature"]))
+                    raise FitError("zone:%s names no bone of %s; name one of its bones (the frame's origin "
+                                   "is %s)" % (value, data["body"]["armature"], f["reference_bone"]))
                 up = (g["V"] - b["head"]) @ f["up"]
                 m = m & ((up > 0) if word == "above" else (up < 0))
     return m
@@ -576,6 +592,10 @@ def plan(data, sweeps=None, focus_masks=None, steps=DEFAULT_STEPS, bones=None) -
     sh = shares(data, focus_masks)
     entries = []
     if sweeps is None and bones is not None:
+        lost = [n for n in bones if n not in body["bones"]]
+        if lost:
+            raise FitError("%s lacks %s, which the sweep set holds; name the bones with --sweep"
+                           % (body["armature"], ", ".join(lost)))
         entries = [(n, None, None, None, False) for n in bones]
     elif sweeps is None:
         for n in body["names"]:
@@ -643,12 +663,11 @@ def posed(data, g, step):
             pose_points(g["V"], g["W"][:, c].sum(1), step["h"], R))
 
 
-def _depth_and_through(data, g, BV, GV, query, through_tris, through_reach, crossing=False):
-    """Depth (mm, positive inside) for the ``query`` vertices; body vertices within
-    ``through_reach`` of ``through_tris``: their triangle index and outward height (m), with
-    ``crossing`` only those that were beneath that triangle's plane at rest (so another body
-    part that was already outside, a neighbouring limb, is not counted); the self-crossing
-    count of the cropped body."""
+def _depth_and_through(data, g, BV, GV, query, through_tris, through_reach):
+    """Depth (mm, positive inside) for the ``query`` vertices; for body vertices that were
+    inside the garment at rest (``bh0 <= 0``, so a neighbouring limb already outside it is
+    never counted) and lie within ``through_reach`` of ``through_tris``: their triangle index
+    and signed outward height (m); the self-crossing count of the cropped body."""
     body = data["body"]
     live = ~g["cut"]
     lo, hi = GV[live].min(0) - CROP, GV[live].max(0) + CROP
@@ -666,16 +685,13 @@ def _depth_and_through(data, g, BV, GV, query, through_tris, through_reach, cros
     height = np.zeros(0)
     if len(through_tris):
         lo, hi = GV[live].min(0) - through_reach, GV[live].max(0) + through_reach
-        cand = np.flatnonzero(((BV >= lo) & (BV <= hi)).all(1) & ~body["cut"])
+        cand = np.flatnonzero(((BV >= lo) & (BV <= hi)).all(1) & ~body["cut"] & (g["bh0"] <= 0))
         if len(cand):
             loc, nor, face, _ = _nearest(_tree(GV, g["F"][through_tris]), BV[cand], through_reach)
             ok = face >= 0
             tri = through_tris[face[ok]]
-            h = ((BV[cand[ok]] - loc[ok]) * nor[ok]).sum(1) * g["gsign"][tri]
-            if crossing:
-                was = ((body["V"][cand[ok]] - g["V"][g["F"][tri, 0]]) * g["out0"][tri]).sum(1) < 0
-                tri, h = tri[was], h[was]
-            hit_tri, height = tri, h
+            hit_tri = tri
+            height = ((BV[cand[ok]] - loc[ok]) * nor[ok]).sum(1) * g["gsign"][tri]
     return depth, hit_tri, height, selfx
 
 
@@ -694,8 +710,7 @@ def measure_step(data, g, step, regions) -> Dict:
     ``{label: vertex mask}``)."""
     BV, GV = posed(data, g, step)
     tris = np.flatnonzero(g["tok"])
-    depth, hit_tri, height, selfx = _depth_and_through(data, g, BV, GV, g["contact"], tris, THROUGH,
-                                                       crossing=True)
+    depth, hit_tri, height, selfx = _depth_and_through(data, g, BV, GV, g["contact"], tris, THROUGH)
     rdep = -g["rsd"] * 1000.0
     E = g["E"]
     ratio = np.linalg.norm(GV[E[:, 0]] - GV[E[:, 1]], axis=1) / np.maximum(g["L0"], 1e-12)
@@ -708,7 +723,7 @@ def measure_step(data, g, step, regions) -> Dict:
     out = {"self_x": selfx, "regions": {}}
     tight, edge = g["cls"]["skin-tight"], g["cls"]["edge"] & (g["rd"] <= EDGE_NEAR)
     newly = (depth > PEN_MM) & (rdep <= PEN_MM)
-    through = height > 0
+    through = (height > 0) & (height <= THROUGH)
     for label, R in regions.items():
         pen = tight & R & newly
         poke = edge & R & newly
@@ -807,22 +822,33 @@ def estimate(data, the_plan, regions) -> float:
 
 def simulated(data) -> Dict:
     """A copy of ``data`` whose garments carry the body's weights interpolated at each vertex's
-    nearest body point, garment bones keeping their share as ``transfer_weights`` keeps them
-    (the body part scaled to ``1 - p``), then Unity's top four. Separates a weights defect from
-    a geometry one: a posed defect this removes is the weights'."""
+    nearest body point (every vertex matched, no inpaint), written by ``transfer_weights``' rule:
+    ``p`` is a vertex's stored garment-bone total and is kept; the body part is zeroed at or
+    under ``EPS``, cut to its ``4 - garment groups`` largest (``weight_transfer.limit``) and
+    normalised to ``1 - p``; a vertex at ``p >= 1 - EPS``, with no allowance, or with no body
+    weight there keeps its own weights. Unity's top four then skins it. How the comparison is
+    read is the weightpaint skill's."""
     body = data["body"]
     out = dict(data)
     out["garments"] = []
+    nb = len(body["names"])
     for g in data["garments"]:
         m = WT.match(body["V"].astype(np.float32), body["F"], body["N"], body["Wraw"],
                      g["V"].astype(np.float32), g["N"].astype(np.float32), max_distance=np.inf,
                      normal_angle=180.0, flip=True)
-        s = m["weights"].sum(1, keepdims=True)
-        interp = np.where(s > 0, m["weights"] / np.where(s > 0, s, 1.0), 0.0)
         go = g["garment_only"]
-        p = g["own"][:, go].sum(1) if go else np.zeros(len(g["V"]))
-        own = np.concatenate([g["own"][:, go], interp * (1.0 - p)[:, None]], 1)
-        mapping = np.concatenate([g["mapping"][go], np.eye(len(body["names"]))], 0)
+        rest = [j for j in range(len(g["names"])) if j not in set(go)]
+        raw_go = g["raw"][:, go]
+        p = raw_go.sum(1)
+        allow = np.clip(WT.UNITY_BONES - (raw_go > 0).sum(1), 0, WT.UNITY_BONES)
+        T, _ = WT.limit(np.clip(m["weights"], 0.0, 1.0), allow)
+        s = T.sum(1)
+        active = (p < 1.0 - WT.EPS) & (allow > 0) & (s > 0)
+        body_part = g["raw"][:, rest] @ g["mapping"][rest] if rest else np.zeros((len(g["V"]), nb))
+        new = T / np.where(s > 0, s, 1.0)[:, None] * (1.0 - p)[:, None]
+        body_part[active] = new[active]
+        own = np.concatenate([raw_go, body_part], 1)
+        mapping = np.concatenate([g["mapping"][go], np.eye(nb)], 0)
         own = top4(own)
         h = dict(g)
         h["own"] = own
@@ -836,8 +862,9 @@ def simulated(data) -> Dict:
 
 def _seeds(data, g, step, near, focus):
     """Seed vertices at one step: posed vertices inside the body or within ``near`` of it, and
-    the corners of garment triangles a body vertex within ``SEED_THROUGH`` comes through (or
-    reaches within ``near`` of from beneath); physbone and cut vertices never seed."""
+    the corners of garment triangles that a body vertex inside the garment at rest comes through
+    or reaches within ``near`` of from beneath, within ``SEED_THROUGH``; physbone and cut
+    vertices never seed."""
     BV, GV = posed(data, g, step)
     pop = focus & ~g["cls"]["physbone"] & ~g["cut"]
     tris = np.arange(len(g["F"]))
@@ -857,7 +884,8 @@ def plan_push(data, gi, the_plan, *, amount, near=0.0005, falloff=0.025, rim_hol
     the rest seeds instead. Every vertex within ``falloff`` (rest, straight line) of a seed moves
     along its rest normal, turned to face away from its nearest body triangle, by
     ``amount * smoothstep(1 - d / falloff)``, times ``smoothstep(e / rim_hold)`` when set (``e``
-    its distance to the nearest boundary vertex). Returns the object-space delta and counts."""
+    its distance to the nearest boundary vertex). Returns the object-space delta, the seed mask
+    (``seeded``) and counts."""
     g = data["garments"][gi]
     focus = (~g["cut"]) if focus is None else focus
     rest = _seeds(data, g, None, near, focus)
@@ -900,7 +928,7 @@ def plan_push(data, gi, the_plan, *, amount, near=0.0005, falloff=0.025, rim_hol
     dw = n * (amount * f)[:, None]
     M3 = np.array(g["object"].matrix_world.to_3x3(), np.float64)
     moved = f > 0
-    return {"delta": dw @ np.linalg.inv(M3).T, "kind": kind, "rest_seeds": int(rest.sum()),
+    return {"delta": dw @ np.linalg.inv(M3).T, "seeded": seeds, "kind": kind, "rest_seeds": int(rest.sum()),
             "posed_seeds": int(posed_any.sum()), "dynamic_seeds": int(dynamic.sum()), "seeds": int(seeds.sum()),
             "moved": int(moved.sum()), "full": int((f >= 0.99).sum()),
             "max_mm": round(float(np.linalg.norm(dw, axis=1).max()) * 1000.0, 4),
@@ -924,12 +952,14 @@ def apply_push(ob, delta) -> int:
         return a.reshape(-1, 3)
 
     before = [co(k.data) - co(keys[0].data) for k in keys] if keys else []
+    scale = max([np.abs(co(k.data)).max() for k in keys] + [np.abs(co(me.vertices)).max(), 1e-3])
     for k in keys:
         k.data.foreach_set("co", (co(k.data) + delta).ravel())
     me.vertices.foreach_set("co", (co(me.vertices) + delta).ravel())
     me.update()
     after = [co(k.data) - co(keys[0].data) for k in keys] if keys else []
-    if any(np.abs(a - b).max() > 1e-6 for a, b in zip(before, after)) or len(me.vertices) != n:
+    tol = 4 * float(np.spacing(np.float32(scale + np.abs(delta).max())))  # float32 storage at any unit scale
+    if any(np.abs(a - b).max() > tol for a, b in zip(before, after)) or len(me.vertices) != n:
         raise FitError("invariant broken (nothing saved): %s: a shape key's offset from Basis changed" % ob.name)
     return len(keys)
 
