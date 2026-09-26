@@ -30,6 +30,8 @@ STAMP_FOLDED = "avatarprep_folded" # mesh: str, the canonical fold_bones command
                                    # write_stamp, so it is a scalar like STAMP_BASE/STAMP_STATE, not
                                    # a dict like STAMP_BAKED
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
+STAMP_PUSHED = "avatarprep_pushed"  # mesh OBJECT: the canonical push_garment command line (str);
+                                   # a stamped mesh refuses a second push
 
 
 def write_stamp(obj, key, value) -> None:
