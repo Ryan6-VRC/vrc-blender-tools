@@ -12,21 +12,26 @@ inpaint, smoothing and smoothed influence limit, composed with the write policy 
 now owns (garment bones kept, body share ``1 - p``). Both sides run on the same in-memory
 fixture (``tests/_weight_fixture.py``) in one session, one case per knob family.
 
+The venue's narrowing and world-axis blend (``--exclude-blend=+Y,...`` from the Hips head,
+lateral along world X, leg-hole smoothing) are re-implemented here from the venue script,
+independently of the core's blend functions, so the blend is not compared against itself.
+
 Per case it prints: whether the evaluated positions and normals are identical; every vertex
 whose matched/unmatched verdict differs, with its distance and angle margins; the largest
 weight difference on commonly matched vertices; the inpaint solver difference on identical
-inputs; and the final per-vertex max |dw| on vertices neither limit touched, beside the
-capped-set delta (ours: rows cut to their allowance; the add-on's: rows its dilated
-limit mask or hard cap changed). Pass is identical positions, no flips and
-max |dw| <= 1e-5 off the capped sets. Three design differences are measured, never
-tolerated: the core clips to [0, 1] before smoothing where the add-on clipped at 0 after it;
-its smoothing walk is independent of seed order where the add-on's is not (the smoothing-set
-line); and it limits per vertex where the add-on's mask dilates into neighbours (the
-capped-set delta). ``puffed_smooth_4_0.2`` is therefore expected to exceed the tolerance
-(about 1.7e-2): its inpainted region is large enough for the clip order and the smoothing set
-to move weights. The choice and its figure are recorded at ``weight_transfer.smooth``; every
-other case is expected to pass.
+inputs; the final per-vertex max |dw| on vertices neither limit touched and no flip moved;
+and every capped vertex (ours: rows cut to their allowance; the add-on's: rows its dilated
+limit mask or hard cap changed) with its |dw|. Pass is identical positions and
+max |dw| <= 1e-5 off the capped and flipped vertices. Three design differences are listed,
+never tolerated: the core clips to [0, 1] before smoothing where the add-on clipped at 0
+after it; its smoothing set is the straight-line ball where the add-on walks edges in vertex
+order (the smoothing-set line); and it limits per vertex where the add-on's mask dilates
+into neighbours (the capped list). ``puffed_smooth_4_0.2`` exceeds the tolerance by design:
+its inpainted region is large enough for the clip order and the smoothing set to move
+weights. The choice is recorded at ``weight_transfer.smooth``; every other case is expected
+to pass.
 """
+import fnmatch
 import importlib.util
 import json
 import os
@@ -116,14 +121,66 @@ def ref_limit(wt, T, adj, allow):
     return out, changed
 
 
+def venue_excluded(arm, globs):
+    """The venue script's narrowing: deform bones a case-insensitive glob hits, with descendants."""
+    bones = [b for b in arm.data.bones if b.use_deform]
+    roots = {b.name for g in globs for b in bones if fnmatch.fnmatchcase(b.name.lower(), g.lower())}
+
+    def under(b):
+        while b is not None:
+            if b.name in roots:
+                return True
+            b = b.parent
+        return False
+    return sorted(b.name for b in bones if under(b))
+
+
+def venue_normalised(T):
+    s = T.sum(1, keepdims=True)
+    return np.where(s > 0, T / np.where(s > 0, s, 1), 0)
+
+
+def venue_smoothstep(x):
+    x = np.clip(x, 0, 1)
+    return x * x * (3 - 2 * x)
+
+
+def venue_leg_hole_band(me, V, share, wmax, radius):
+    """The venue script's leg-hole band: boundary loops (union-find over single-polygon
+    edges) whose mean share exceeds wmax, and the vertices within radius of them."""
+    from scipy.spatial import cKDTree
+    count = {}
+    for poly in me.polygons:
+        for e in poly.edge_keys:
+            count[e] = count.get(e, 0) + 1
+    edges = [e for e, c in count.items() if c == 1]
+    par = list(range(len(V)))
+
+    def find(i):
+        while par[i] != i:
+            par[i] = par[par[i]]
+            i = par[i]
+        return i
+    for u, v in edges:
+        par[find(u)] = find(v)
+    loops = {}
+    for u, v in edges:
+        loops.setdefault(find(u), set()).update((u, v))
+    rims = [sorted(x) for x in loops.values() if share[sorted(x)].mean() > wmax]
+    if not rims:
+        return np.zeros(len(V), bool)
+    d, _ = cKDTree(V[np.concatenate(rims)]).query(V)
+    return d <= radius
+
+
 def ref_pipeline(util, wt, WT, s, case):
     source, target = s["body"], s["garment"]
     SV, SF, SN, SW, snames, TV, TF, TN = ref_arrays(util, WT, source, target)
     runs = [ref_one(util, wt, target, SV, SF, SN, SW, TV, TF, TN, case)]
     xcols = []
+    arm = source.modifiers["Armature"].object
     if case.get("exclude"):
-        arm = source.modifiers["Armature"].object
-        xb = WT.excluded_bones(arm, case["exclude"])
+        xb = venue_excluded(arm, case["exclude"])
         xcols = [j for j, n in enumerate(snames) if n in xb]
         tot = SW.sum(1)
         share = np.where(tot > 0, SW[:, xcols].sum(1) / np.where(tot > 0, tot, 1), 0)
@@ -132,13 +189,19 @@ def ref_pipeline(util, wt, WT, s, case):
     adj = util.get_mesh_adjacency_matrix_sparse(target.data, include_self=True)
     if case.get("blend"):
         import scipy.sparse
-        Ts = [WT._normalised(r[2]) for r in runs]
-        frame = WT.body_frame(source.modifiers["Armature"].object)
-        m = WT.blend_mix(TV, frame, *case["blend"], lateral=case.get("lateral"))
+        Ts = [venue_normalised(r[2]) for r in runs]
+        sign, axis = case["venue_axis"][0], "XYZ".index(case["venue_axis"][1])
+        vec = np.zeros(3)
+        vec[axis] = -1.0 if sign == "-" else 1.0
+        hips = np.array(arm.matrix_world @ arm.data.bones["Hips"].head_local)
+        _, c, w = case["blend"]
+        m = venue_smoothstep(((TV - hips) @ vec - (c - w / 2)) / w)
+        if case.get("lateral"):
+            lc, lw = case["lateral"]
+            m = m * (1 - venue_smoothstep((np.abs(TV[:, 0] - hips[0]) - (lc - lw / 2)) / lw))
         T = m[:, None] * Ts[1] + (1 - m[:, None]) * Ts[0]
         n, alpha, radius = case["blend_smooth"]
-        band, _ = WT.leg_hole_band(WT.boundary_loops(target.data), TV, Ts[0][:, xcols].sum(1),
-                                   case["exclude_max"], radius)
+        band = venue_leg_hole_band(target.data, TV, Ts[0][:, xcols].sum(1), case["exclude_max"], radius)
         A = scipy.sparse.csr_array(adj, dtype=np.float64)
         S = scipy.sparse.diags(1 / np.asarray(A.sum(1)).ravel()) @ A
         T0 = T.copy()
@@ -239,8 +302,8 @@ def run_case(util, wt, WT, F, case):
     flips = np.flatnonzero(ours_matched != ref["matched"])
     out["flipped_matches"] = [{"vertex": int(i), "ours": bool(ours_matched[i]), "addon": bool(ref["matched"][i]),
                                "distance_margin_m": round(float(case["max_distance"] - m["distance"][i]), 9),
-                               "angle_margin_deg": round(float(case["normal_angle"] - min(m["angle"][i], 180 - m["angle"][i]
-                                                                                        if case["flip"] else 1e9)), 6)}
+                               "angle_margin_deg": round(float(case["normal_angle"] - (min(m["angle"][i], 180 - m["angle"][i])
+                                                                                         if case["flip"] else m["angle"][i])), 6)}
                               for i in flips]
     both = m["matched"] & ref["runs"][0 if case.get("blend") else -1][0]
     out["max_dw_matched_interp"] = float(np.abs(m["weights"][both] - ref["runs"][0 if case.get("blend") else -1][1][both]).max()) if both.any() else 0.0
@@ -293,7 +356,9 @@ def run_case(util, wt, WT, F, case):
     out["max_dw_capped"] = float(dw[capped].max()) if capped.any() else 0.0
     out["inpainted_active"] = int((active & ~ours_matched).sum())
     out["max_dw_inpainted_noncapped"] = float(dw[free & ~ours_matched].max()) if (free & ~ours_matched).any() else None
-    out["pass"] = bool(out["positions_identical"] and not len(flips) and out["max_dw_noncapped"] <= TOL)
+    out["capped_vertices"] = [{"vertex": int(i), "ours": bool(ours_capped[i]), "addon": bool(ref_changed[i]),
+                               "dw": round(float(dw[i]), 6)} for i in np.flatnonzero(capped)]
+    out["pass"] = bool(out["positions_identical"] and out["max_dw_noncapped"] <= TOL)
     return out
 
 
@@ -327,13 +392,13 @@ CASES = [
     {"name": "exclude_legs", "max_distance": 0.05, "normal_angle": 30.0, "flip": True,
      "exclude": ["upper*leg*"], "exclude_max": 0.35},
     {"name": "blend_back_lateral_smooth", "max_distance": 0.05, "normal_angle": 30.0, "flip": True,
-     "exclude": ["upper*leg*"], "exclude_max": 0.35, "blend": ("back", 0.0, 0.04),
+     "exclude": ["upper*leg*"], "exclude_max": 0.35, "blend": ("back", 0.0, 0.04), "venue_axis": "+Y",
      "lateral": (0.06, 0.04), "blend_smooth": (2, 0.5, 0.04)},
     {"name": "puffed", "max_distance": 0.05, "normal_angle": 30.0, "flip": True, "puff": True},
     {"name": "puffed_smooth_4_0.2", "max_distance": 0.05, "normal_angle": 30.0, "flip": True, "puff": True,
      "smooth": (4, 0.2)},
     {"name": "puffed_blend", "max_distance": 0.05, "normal_angle": 30.0, "flip": True, "puff": True,
-     "exclude": ["upper*leg*"], "exclude_max": 0.35, "blend": ("back", 0.0, 0.04),
+     "exclude": ["upper*leg*"], "exclude_max": 0.35, "blend": ("back", 0.0, 0.04), "venue_axis": "+Y",
      "lateral": (0.06, 0.04), "blend_smooth": (2, 0.5, 0.04)},
 ]
 
@@ -367,6 +432,8 @@ def main():
                      r["smooth_set_only_addon"]))
         for f in r["flipped_matches"]:
             print("%s   flip %r" % (TOKEN, f))
+        for c in r["capped_vertices"]:
+            print("%s   capped vertex %d ours=%s addon=%s |dw|=%.4f" % (TOKEN, c["vertex"], c["ours"], c["addon"], c["dw"]))
     if "--report" in argv:
         path = os.path.abspath(argv[argv.index("--report") + 1])
         os.makedirs(os.path.dirname(path), exist_ok=True)
