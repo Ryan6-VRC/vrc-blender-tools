@@ -1,12 +1,38 @@
+# Portions ported from RobustSkinWeightsTransferCode, under this licence:
+#
+# MIT License
+#
+# Copyright (c) 2024 Rinat Abdrashitov
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 """Transfer a body's skin weights onto skinned garments while every garment bone keeps its weight exactly.
 
 Algorithm: Abdrashitov, Raichstat, Monsen & Hill, *Robust Skin Weights Transfer via Weight
 Inpainting* (SIGGRAPH Asia 2023), ported from its MIT reference code
-(RobustSkinWeightsTransferCode, Copyright (c) 2024 Rinat Abdrashitov, MIT). The inpaint's
-Laplacian is robust-laplacian's point-cloud Laplacian (Nicholas Sharp, MIT).
-sentfromspacevr's Robust Weight Transfer add-on (GPL) combines the two with flipped-normal
-matching; both additions are rebuilt here from their MIT sources and no line of the add-on
-is used. The influence limit is this module's own design.
+(RobustSkinWeightsTransferCode, Copyright (c) 2024 Rinat Abdrashitov, MIT; its notice heads
+this file). The inpaint's Laplacian is robust-laplacian's point-cloud Laplacian (Nicholas
+Sharp, MIT), called as a library. sentfromspacevr's Robust Weight Transfer add-on (GPL)
+combines the two with flipped-normal matching; both additions are rebuilt here from their
+MIT sources and no add-on source is copied. Two helpers do follow the add-on's structure:
+``smooth`` its ``smooth_weigths`` (the Jacobi form, step 3) and ``adjacency`` its
+``get_mesh_adjacency_matrix_sparse`` (a symmetric CSR from the edge list); both are standard
+sparse idioms, written afresh here. The influence limit is this module's own design.
 
 Per target mesh, in world space at the current shape-key mix plus ``shapes``:
 
@@ -19,7 +45,8 @@ Per target mesh, in world space at the current shape-key mix plus ``shapes``:
    fixed, ``Q = L + L M^-1 L`` over the point-cloud Laplacian of every target vertex (its
    ``L`` is positive semi-definite, opposite in sign to the igl cotmatrix behind the MIT
    code's ``-L + L M^-1 L``), solved by sparse LU; clipped to [0, 1] after the solve, since the biharmonic fill overshoots.
-   A failed solve refuses and names the loose parts that hold no matched vertex.
+   A failed solve refuses and names the loose parts that hold no matched vertex, as does a
+   part of the Laplacian's graph that holds no matched vertex but a vertex the run writes.
 3. **Smooth** (optional). ``steps`` Jacobi passes of ``(1 - f) w + f * mean(one-ring incl.
    self)`` on every vertex within ``max_distance`` (straight line) of an unmatched vertex.
    Jacobi is the add-on's form rather than the paper's Gauss-Seidel sweep, kept so its
@@ -40,7 +67,8 @@ Per target mesh, in world space at the current shape-key mix plus ``shapes``:
    outside ``mask`` is left alone. Groups naming no source deform bone are untouched.
 8. **Refuse / assert.** Refused before anything is written: a written vertex with no body
    weight; transferred weight on a bone the target armature lacks, anywhere in the matched
-   or written region; a target whose baked shape state disagrees with the source's; no
+   or written region; a target whose shape state, ``shapes`` applied, disagrees with the
+   source's; a ``shapes`` value outside its key's slider range; no
    leg-hole loop for the smoothing; a target with no vertex to write. Targets are written
    one after another and the asserts run after each, so a failure can leave earlier targets
    written in memory: the caller discards the scene on failure (the door saves nothing).
@@ -185,9 +213,12 @@ def loose_parts(A, V, matched) -> List[Dict]:
     for c in np.unique(lab):
         vs = np.flatnonzero(lab == c)
         if not matched[vs].any():
-            out.append({"verts": int(len(vs)),
-                        "centre_mm": [round(float(x) * 1000.0, 1) for x in V[vs].mean(0)]})
+            out.append(_part(V, vs))
     return out
+
+
+def _part(V, vs):
+    return {"verts": int(len(vs)), "centre_mm": [round(float(x) * 1000.0, 1) for x in V[vs].mean(0)]}
 
 
 # --- configuration shapes --------------------------------------------------------------
@@ -195,12 +226,22 @@ def loose_parts(A, V, matched) -> List[Dict]:
 def resolve_shapes(shapes: Sequence[Tuple[Optional[str], str, float]], meshes: Sequence) -> Dict[str, Dict[str, float]]:
     """``{mesh_name: {key: value}}`` from ``(mesh_or_None, key, value)`` triples. A bare key
     lands on every listed mesh carrying it and is refused when none does; a scoped key is
-    refused when its mesh is not listed or lacks the key."""
+    refused when its mesh is not listed or lacks the key. A value outside the key's slider
+    range is refused, since Blender would clamp it to the range and run at another value."""
     by = {m.name: m for m in meshes}
     out = {m.name: {} for m in meshes}
 
     def has(m, k):
         return m.data.shape_keys is not None and k in m.data.shape_keys.key_blocks
+
+    def put(m, k, v):
+        kb = m.data.shape_keys.key_blocks[k]
+        if not kb.slider_min - 1e-6 <= v <= kb.slider_max + 1e-6:
+            raise WeightTransferError("--shape %s=%g is outside the slider range [%g, %g] of %s's key %s, "
+                                      "which Blender would clamp it into; pass a value inside the range, "
+                                      "or widen the key's Range Min/Max first"
+                                      % (k, v, kb.slider_min, kb.slider_max, m.name, k))
+        out[m.name][k] = v
 
     for mesh, key, value in shapes:
         if mesh is not None:
@@ -209,13 +250,13 @@ def resolve_shapes(shapes: Sequence[Tuple[Optional[str], str, float]], meshes: S
                                           "target (%s)" % (mesh, key, ", ".join(by)))
             if not has(by[mesh], key):
                 raise WeightTransferError("--shape %s:%s: %s has no shape key %r" % (mesh, key, mesh, key))
-            out[mesh][key] = value
+            put(by[mesh], key, value)
             continue
         hit = [m for m in meshes if has(m, key)]
         if not hit:
             raise WeightTransferError("--shape %s is on none of %s" % (key, ", ".join(by)))
         for m in hit:
-            out[m.name][key] = value
+            put(m, key, value)
     return out
 
 
@@ -237,16 +278,22 @@ def _baked(ob) -> Dict[str, float]:
                                   % (scene_utils.STAMP_BAKED, ob.name, raw))
 
 
-def seat_disagreement(source, target) -> List[Tuple[str, float, float]]:
+def seat_disagreement(source, target, shapes=None) -> List[Tuple[str, float, float]]:
     """``(key, source_state, target_state)`` where the two disagree by more than 1e-6.
 
     Compared keys: every key in either ``avatarprep_baked`` map, plus every key both meshes
     carry as a shape key. A mesh's state for a key is its baked value plus its live value
-    when it carries the key. A live key only the source carries (a face key, a toggle) is
-    not compared, and neither is a key the target records as a negative bake: that is
-    ``transfer_shapekeys`` un-baking an authored offset, seated by construction."""
+    when it carries the key, the live value being the one ``shapes`` (``resolve_shapes``'s
+    ``{mesh_name: {key: value}}``) sets for the run where it sets one. A live key only the
+    source carries (a face key, a toggle) is not compared, and neither is a key the target
+    records as a negative bake: that is ``transfer_shapekeys`` un-baking an authored offset,
+    seated by construction."""
+    shapes = shapes or {}
+
     def live(ob):
-        return {k.name: float(k.value) for k in ob.data.shape_keys.key_blocks[1:]} if ob.data.shape_keys else {}
+        run = shapes.get(ob.name, {})
+        return ({k.name: float(run.get(k.name, k.value)) for k in ob.data.shape_keys.key_blocks[1:]}
+                if ob.data.shape_keys else {})
     sb, tb = _baked(source), _baked(target)
     sl, tl = live(source), live(target)
     out = []
@@ -325,12 +372,15 @@ def match(SV, SF, SN, SW, TV, TN, max_distance=0.05, normal_angle=30.0, flip=Tru
 
 # --- step 2: inpaint -----------------------------------------------------------------------
 
-def inpaint(TV, W, matched) -> np.ndarray:
+def inpaint(TV, W, matched, need=None) -> np.ndarray:
     """Step 2. Unmatched rows of ``W`` replaced by the biharmonic fill over the point-cloud
     Laplacian of ``TV``; matched rows returned as given. Unclipped, float64. Raises
-    ``WeightTransferError`` when the system cannot be solved."""
+    ``WeightTransferError`` when the system cannot be solved, or when a connected part of
+    the Laplacian's graph holds no matched vertex but a ``need`` vertex (bool V; default
+    every vertex): the fill there would be zero, not an interpolation."""
     import robust_laplacian
     import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
     from scipy.sparse.linalg import splu
     matched = np.asarray(matched, bool)
     if not matched.any():
@@ -341,6 +391,14 @@ def inpaint(TV, W, matched) -> np.ndarray:
         return out
     L, M = robust_laplacian.point_cloud_laplacian(np.asarray(TV))
     L = sp.csr_matrix(L, dtype=np.float64)
+    _, lab = connected_components(L, directed=False)
+    need = np.ones(len(out), bool) if need is None else np.asarray(need, bool)
+    dry = np.unique(lab[~np.isin(lab, lab[b]) & need])
+    if len(dry):
+        raise WeightTransferError(
+            "the point-cloud Laplacian leaves %s with no path to a matched vertex, so the inpaint has "
+            "nothing to fill them from; raise --max-distance or --normal-angle until a vertex there "
+            "matches, or --mask them out" % _fmt_parts([_part(TV, np.flatnonzero(lab == c)) for c in dry]))
     with np.errstate(divide="ignore"):
         Minv = sp.diags(1.0 / M.diagonal().astype(np.float64))
     Q = (L + L @ Minv @ L).tocsr()
@@ -544,7 +602,7 @@ def limit(T, allow):
 
 # --- one transfer ------------------------------------------------------------------------------
 
-def _transfer(TV, TN, src, SF, knobs, A, name="target"):
+def _transfer(TV, TN, src, SF, knobs, A, name="target", need=None):
     m = match(src["V"], SF, src["N"], src["W"], TV, TN, knobs["max_distance"], knobs["normal_angle"],
               knobs["flip"])
     if not m["matched"].any():
@@ -552,7 +610,7 @@ def _transfer(TV, TN, src, SF, knobs, A, name="target"):
                                   "--max-distance or --normal-angle, and check --shape and the seat"
                                   % (name, knobs["max_distance"], knobs["normal_angle"]))
     try:
-        T = inpaint(TV, m["weights"], m["matched"])
+        T = inpaint(TV, m["weights"], m["matched"], need)
     except WeightTransferError as e:
         parts = loose_parts(A, TV, m["matched"])
         raise WeightTransferError("%s: %s; loose parts with no matched vertex: %s"
@@ -662,13 +720,14 @@ def transfer_weights(source, targets: Sequence, *, shapes=(), mask: Optional[str
         armature_of(t)
         if mask is not None and mask not in t.vertex_groups:
             raise WeightTransferError("%s has no vertex group %r for --mask" % (t.name, mask))
-        if not allow_unseated:
-            bad = seat_disagreement(source, t)
-            if bad:
-                raise WeightTransferError(
-                    "%s is not seated on %s: shape state differs on %s; seat it with transfer_shapekeys "
-                    "first, or pass --allow-unseated to transfer onto it as it sits"
-                    % (t.name, source.name, ", ".join("%s (source %g, target %g)" % b for b in bad)))
+    per_mesh = resolve_shapes(shapes, [source] + targets)
+    for t in targets:
+        bad = [] if allow_unseated else seat_disagreement(source, t, per_mesh)
+        if bad:
+            raise WeightTransferError(
+                "%s is not seated on %s: shape state differs on %s; seat it with transfer_shapekeys "
+                "first, or pass --allow-unseated to transfer onto it as it sits"
+                % (t.name, source.name, ", ".join("%s (source %g, target %g)" % b for b in bad)))
     if (exclude_max is None) != (not exclude):
         raise WeightTransferError("--source-exclude and --source-exclude-max go together")
     if exclude and not 0.0 <= exclude_max < 1.0:
@@ -694,7 +753,6 @@ def transfer_weights(source, targets: Sequence, *, shapes=(), mask: Optional[str
     if smooth is not None and (smooth[0] < 1 or not 0.0 < smooth[1] <= 1.0):
         raise WeightTransferError("--smooth wants N >= 1 passes at a factor in (0, 1]")
 
-    per_mesh = resolve_shapes(shapes, [source] + targets)
     knobs = {"max_distance": max_distance, "normal_angle": normal_angle, "flip": flip, "smooth": smooth}
     ids0 = (len(bpy.data.objects), len(bpy.data.meshes), len(bpy.data.shape_keys))
     keys0 = {o.name: _key_meta(o.data) for o in [source] + targets}
@@ -763,16 +821,30 @@ def _plan(t, TV, TN, src, SFx, xcols, knobs, frame, blend, blend_lateral, blend_
     A = adjacency(t.data)
     row = {"mesh": t.name, "verts": len(TV)}
 
+    active = p < 1.0 - EPS
+    kept_full = active & (allow == 0)
+    active &= allow > 0
+    if mask is not None:
+        active &= W0[:, t.vertex_groups[mask].index] > 0.5
+    if not active.any():
+        raise WeightTransferError(
+            "%s: no vertex to write (of %d: %d at full garment weight, %d with no allowance left%s); "
+            "check --mask and the garment groups" % (
+                t.name, len(TV), int((p >= 1.0 - EPS).sum()), int(kept_full.sum()),
+                ", %d over 0.5 in --mask %s" % (int((W0[:, t.vertex_groups[mask].index] > 0.5).sum()), mask)
+                if mask is not None else ""))
+
     na = knobs["normal_angle"]
     if blend is None:
-        m, T, sband = _transfer(TV, TN, src, src["F"] if SFx is None else SFx, knobs, A, t.name)
+        m, T, sband = _transfer(TV, TN, src, src["F"] if SFx is None else SFx, knobs, A, t.name, active)
         matched = m["matched"]
         flipped = matched & (m["angle"] > na)
     else:
-        m, Tw, sband = _transfer(TV, TN, src, src["F"], knobs, A, t.name)
-        mx, Tn, sbx = _transfer(TV, TN, src, SFx, knobs, A, t.name)
-        Tw, Tn = _normalised(Tw), _normalised(Tn)
+        # each transfer need only reach the written vertices its share of the mix is non-zero on
         mix = blend_mix(TV, frame, blend[0], blend[1], blend[2], blend_lateral)
+        m, Tw, sband = _transfer(TV, TN, src, src["F"], knobs, A, t.name, active & (mix < 1.0))
+        mx, Tn, sbx = _transfer(TV, TN, src, SFx, knobs, A, t.name, active & (mix > 0.0))
+        Tw, Tn = _normalised(Tw), _normalised(Tn)
         T = mix[:, None] * Tn + (1.0 - mix[:, None]) * Tw
         lband, nloops = np.zeros(len(TV), bool), 0
         if blend_smooth is not None and blend_smooth[0] > 0:
@@ -793,18 +865,6 @@ def _plan(t, TV, TN, src, SFx, xcols, knobs, frame, blend, blend_lateral, blend_
         sband = sband | sbx
     row["matched_flipped"] = int(flipped.sum())
 
-    active = p < 1.0 - EPS
-    kept_full = active & (allow == 0)
-    active &= allow > 0
-    if mask is not None:
-        active &= W0[:, t.vertex_groups[mask].index] > 0.5
-    if not active.any():
-        raise WeightTransferError(
-            "%s: no vertex to write (of %d: %d at full garment weight, %d with no allowance left%s); "
-            "check --mask and the garment groups" % (
-                t.name, len(TV), int((p >= 1.0 - EPS).sum()), int(kept_full.sum()),
-                ", %d over 0.5 in --mask %s" % (int((W0[:, t.vertex_groups[mask].index] > 0.5).sum()), mask)
-                if mask is not None else ""))
     region = matched | active
     lost = [n for j, n in enumerate(src["names"]) if n not in arm.data.bones and (T[region, j] > EPS).any()]
     if lost:

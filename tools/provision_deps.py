@@ -13,9 +13,10 @@ match the ABI the doors run under. Two folders are filled:
 * ``deps/`` - those wheels installed with ``--no-deps``, which ``cli/_common.py``'s
   ``ensure_deps()`` appends to ``sys.path`` for the headless doors.
 
-Both are built in temporary folders and swapped in only when pip succeeded and the
-downloaded file names equal the manifest's ``wheels`` list, so a failed or offline
-run leaves the previous folders working. ``--no-deps`` keeps numpy out: Blender
+Both are built in temporary folders and swapped in together, only when pip succeeded
+and the downloaded file names equal the manifest's ``wheels`` list, so a failed or
+offline run leaves the previous folders working (``swap_in`` owns how the swap keeps
+that promise when a folder is held open). ``--no-deps`` keeps numpy out: Blender
 bundles its own. The pins below and the manifest's ``wheels`` list move together.
 """
 import argparse
@@ -32,6 +33,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEPS = os.path.join(REPO, "deps")
 WHEELS = os.path.join(REPO, "avatarprep", "wheels")
 MANIFEST = os.path.join(REPO, "avatarprep", "blender_manifest.toml")
+ASIDE = ".provision-old"
 
 
 def bundled_python(blender):
@@ -40,6 +42,47 @@ def bundled_python(blender):
     hits = sorted(glob.glob(os.path.join(root, "*", "python", "bin", "python.exe"))
                   + glob.glob(os.path.join(root, "*", "python", "bin", "python3*")))
     return hits[0] if hits else None
+
+
+def swap_in(pairs):
+    """Move each staged ``(new, dest)`` folder into place, all or none. Every existing ``dest``
+    is renamed to ``dest + ASIDE`` before any ``new`` moves, so a folder a running Blender or
+    a scanner holds open fails the swap with nothing replaced; a failure after that moves the
+    placed ``new`` folders back and renames every original home. ``new`` sits on ``dest``'s
+    volume, so each move is a rename. Returns the set-aside folders it could not delete once
+    all are in place. Raises ``OSError`` with every ``dest`` as it was, or ``RuntimeError``
+    naming what the rollback could not restore."""
+    aside, placed = [], []
+    try:
+        for _, dest in pairs:
+            if os.path.lexists(dest):
+                os.rename(dest, dest + ASIDE)
+                aside.append(dest)
+        for new, dest in pairs:
+            os.rename(new, dest)
+            placed.append((new, dest))
+    except OSError as e:
+        stuck = []
+        for new, dest in reversed(placed):
+            try:
+                os.rename(dest, new)
+            except OSError:
+                stuck.append("%s (the new folder is still there)" % dest)
+        for dest in reversed(aside):
+            try:
+                os.rename(dest + ASIDE, dest)
+            except OSError:
+                stuck.append("%s (the previous folder is at %s)" % (dest, dest + ASIDE))
+        if stuck:
+            raise RuntimeError("the swap failed (%s) and could not be rolled back: %s"
+                               % (e, "; ".join(stuck)))
+        raise
+    left = []
+    for dest in aside:
+        shutil.rmtree(dest + ASIDE, ignore_errors=True)
+        if os.path.lexists(dest + ASIDE):
+            left.append(dest + ASIDE)
+    return left
 
 
 def fail(msg, code=1):
@@ -76,9 +119,16 @@ def main():
         if got != listed:
             fail("downloaded %s but blender_manifest.toml lists %s; move PINS and the manifest's "
                  "wheels together" % (got, listed))
-        for new, dest in ((new_wheels, WHEELS), (new_deps, DEPS)):
-            shutil.rmtree(dest, ignore_errors=True)
-            shutil.move(new, dest)
+        try:
+            left = swap_in([(new_wheels, WHEELS), (new_deps, DEPS)])
+        except OSError as e:
+            fail("could not swap the new folders in (%s); close any Blender using deps/, or delete a "
+                 "leftover *%s folder, and rerun" % (e, ASIDE))
+        except RuntimeError as e:
+            print("PROVISION FAIL: %s; move those folders back by hand" % e)
+            sys.exit(1)
+    for path in left:
+        print("PROVISION WARN: the previous folder %s could not be deleted; delete it by hand" % path)
     print("PROVISION: wheels %s" % ", ".join(got))
     print("PROVISION OK: %s and %s filled for %s" % (DEPS, WHEELS, py))
 
