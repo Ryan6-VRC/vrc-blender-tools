@@ -62,14 +62,16 @@ ZONE_WORDS = ("front", "back", "left", "right")
 
 # row, globs (matched against the whole lowercased bone name, so a side or rig prefix still
 # matches; ``head`` alone is exact), axes: (axis, +max, -max, flexion test)
-# The flexion test names where a positive turn carries the child's head.
+# The flexion test names where a positive turn carries the child's head. First match wins, so
+# the order carries Mixamo's names: ``*leg`` (LeftLeg, the knee) sits after the hip row's
+# ``*upleg*``, and the elbow row before ``*arm`` (LeftArm, the upper arm) so ForeArm stays elbow.
 JOINT_TABLE = (
     ("hip", ("*upper*leg*", "*upleg*", "*thigh*"), (("lateral", 120, 30, "forward"), ("forward", 45, 15, "outward"))),
-    ("knee", ("*lower*leg*", "*shin*", "*calf*", "*knee*"), (("lateral", 130, 0, "back"),)),
+    ("knee", ("*lower*leg*", "*shin*", "*calf*", "*knee*", "*leg"), (("lateral", 130, 0, "back"),)),
     ("ankle", ("*foot*", "*ankle*"), (("lateral", 20, 40, "up"),)),
-    ("shoulder", ("*upper*arm*",), (("forward", 75, 60, "down"), ("up", 90, 30, "forward"))),
-    ("clavicle", ("*shoulder*", "*clavicle*"), (("forward", 20, 20, "down"), ("up", 15, 15, "forward"))),
     ("elbow", ("*lower*arm*", "*fore*arm*", "*elbow*"), (("up", 130, 0, "forward"), ("own", 60, 60, None))),
+    ("shoulder", ("*upper*arm*", "*arm"), (("forward", 75, 60, "down"), ("up", 90, 30, "forward"))),
+    ("clavicle", ("*shoulder*", "*clavicle*"), (("forward", 20, 20, "down"), ("up", 15, 15, "forward"))),
     ("wrist", ("*hand*", "*wrist*"), (("a", 45, 45, None), ("b", 45, 45, None))),
     ("spine", ("*spine*", "*chest*", "*upperchest*", "*neck*"),
      (("lateral", 25, 15, "forward"), ("forward", 15, 15, None), ("own", 20, 20, None))),
@@ -168,11 +170,17 @@ def _nearest(tree, P, maxd=None):
     return loc, nor, face, dist
 
 
+def _in_box(V, F, lo, hi):
+    """Indices of the triangles of ``F`` whose bounds overlap the box, so a large triangle
+    crossing or holding the box with every corner outside it is kept."""
+    T = V[F]
+    return np.flatnonzero(((T.min(1) <= hi) & (T.max(1) >= lo)).all(1))
+
+
 def _crop(V, F, lo, hi):
-    """``(Vc, Fc, sel)``: triangles of ``F`` with a corner inside the box, compacted; ``sel``
-    indexes them in ``F``."""
-    inside = ((V >= lo) & (V <= hi)).all(1)
-    sel = np.flatnonzero(inside[F].any(1))
+    """``(Vc, Fc, sel)``: triangles of ``F`` overlapping the box (``_in_box``), compacted;
+    ``sel`` indexes them in ``F``."""
+    sel = _in_box(V, F, lo, hi)
     if not len(sel):
         return None, None, sel
     used, inv = np.unique(F[sel], return_inverse=True)
@@ -235,12 +243,21 @@ def _bones(arm, deform_names) -> Dict[str, Dict]:
     return out
 
 
-def _edges(me):
+def _edges(me, cut):
+    """Edges, boundary vertices and the ring one in, counting edge uses over the polygons with
+    no cut corner, so a ``--cut-shape`` Delete's new open rim is boundary too."""
     E = np.empty((len(me.edges), 2), np.int64)
     me.edges.foreach_get("vertices", E.ravel())
     le = np.empty(len(me.loops), np.int64)
     me.loops.foreach_get("edge_index", le)
-    count = np.bincount(le, minlength=len(me.edges))
+    lv = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    lt = np.empty(len(me.polygons), np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    poly = np.repeat(np.arange(len(lt)), lt)  # a face's loops are contiguous and in face order
+    cut_poly = np.zeros(len(lt), bool)
+    np.logical_or.at(cut_poly, poly, cut[lv])
+    count = np.bincount(le[~cut_poly[poly]], minlength=len(me.edges))
     boundary = np.zeros(len(me.vertices), bool)
     boundary[E[count == 1].ravel()] = True
     ring = boundary.copy()
@@ -278,7 +295,7 @@ def _garment(ob, shapes, body_names, cut):
             mapping[j, idx[b.name]] = 1.0
     own = top4(g["W"])
     raw = np.asarray(g["W"], np.float64)
-    E, boundary, ring = _edges(ob.data)
+    E, boundary, ring = _edges(ob.data, cut)
     F = g["F"]
     keepF = F[~cut[F].any(1)]
     dom, under = _dominant(names, own, arm)
@@ -833,7 +850,8 @@ def simulated(data) -> Dict:
     out["garments"] = []
     nb = len(body["names"])
     for g in data["garments"]:
-        m = WT.match(body["V"].astype(np.float32), body["F"], body["N"], body["Wraw"],
+        # the full body, as transfer_weights matches it (it takes no --cut-shape)
+        m = WT.match(body["V"].astype(np.float32), body["F_all"], body["N"], body["Wraw"],
                      g["V"].astype(np.float32), g["N"].astype(np.float32), max_distance=np.inf,
                      normal_angle=180.0, flip=True)
         go = g["garment_only"]
@@ -1003,8 +1021,7 @@ def render_step(data, gi, step, out_dir, label, focus=None, resolution=512):
     made = []
     try:
         for name, V, F, col in (("__fit_body", BV, body["F"], None), ("__fit_garment", GV, g["F"], gcol)):
-            inside = ((V >= lo) & (V <= hi)).all(1)
-            used, inv = np.unique(F[inside[F].any(1)], return_inverse=True)
+            used, inv = np.unique(F[_in_box(V, F, lo, hi)], return_inverse=True)
             me = bpy.data.meshes.new(name)
             me.from_pydata(V[used].tolist(), [], inv.reshape(-1, 3).tolist())
             me.update()
