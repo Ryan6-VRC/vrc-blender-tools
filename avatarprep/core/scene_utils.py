@@ -175,14 +175,21 @@ def _library_fields(ob) -> Dict[str, Any]:
 
 def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     """Read door — the query counterpart of the ``stamp_base`` write door. Enumerate
-    the scene's avatarprep provenance without mutating anything, **grouping each baked
+    the scene's avatarprep provenance without mutating anything, **grouping each stamped
     mesh under its owning armature** so two armatures in one ``.blend`` can't fuse
     their baked morphs into one read:
 
       {"armatures": [{"name", "base", "state", "state_kind",
-                      "meshes": [{"name", "baked": {shapekey: value}}
-                                 | {"name", "baked": None, "corrupt": <repr>} ...]} ...],
-       "unbound":   [<same per-mesh entry shape> ...]}
+                      "meshes": [<mesh entry> ...]} ...],
+       "unbound":   [<mesh entry> ...]}
+
+      <mesh entry> = {"name", "library", "data_library",
+                      ["baked": {shapekey: value} | "baked": None, "corrupt": <repr>],
+                      ["weights": <transfer_weights recipe line>]}
+
+    A mesh qualifies by carrying ``avatarprep_baked``, ``avatarprep_weights`` or both, and
+    its entry holds a key for each stamp it carries: ``baked`` and ``weights`` are the two
+    keys a consumer branches on by presence. Every other key is always present.
 
     Every armature is reported even when unstamped (``base=None``,
     ``state_kind="absent"``) so absent/interrupted/corrupt read honestly, never
@@ -197,21 +204,19 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
 
     Every entry carries ``library`` / ``data_library`` (the library path as
     stored, or None).
-    A mesh carrying only ``avatarprep_weights`` is listed too, its entry holding
-    ``weights`` (the recipe line) and no ``baked`` key; a mesh with both carries both.
     A linked fit-reference rig (own-mergeable) reports its stamps like any other
     armature — the grouping already keeps its morphs apart — and these two fields
     are how a reader tells the reference from the mergeable when names alone do
     not settle it. A collection INSTANCE of a linked base is invisible here (its
     objects are not scene objects); ``fbx_export`` refuses that shape by name.
 
-    **True partition — every baked mesh appears exactly once.** Owner resolution
+    **True partition — every stamped mesh appears exactly once.** Owner resolution
     reuses ``get_bound_meshes``' union ("bound" = parent OR armature-modifier target):
     a mesh with exactly one owning armature lands in that armature's ``meshes[]``; a
     mesh owned by zero or by >=2 armatures (ambiguous — never duplicated) lands in
     top-level ``unbound[]``. So the armatures' ``meshes[]`` plus ``unbound[]`` are
     disjoint. Both ``meshes`` (per armature) and ``unbound`` are always present
-    (empty ``[]``, never absent) so a consumer never branches on key-absence."""
+    (empty ``[]``, never absent)."""
     if scene is None:
         scene = bpy.context.scene
     objects = list(scene.objects) if scene else list(bpy.data.objects)

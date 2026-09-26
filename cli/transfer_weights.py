@@ -123,6 +123,8 @@ def _parse_args(argv):
             p.error("--smooth wants N[,F], got %r" % a.smooth)
         if len(parts) > 2:
             p.error("--smooth wants N[,F], got %r" % a.smooth)
+        if a.smooth_t[0] < 1 or not 0.0 < a.smooth_t[1] <= 1.0:
+            p.error("--smooth wants N >= 1 passes at a factor F in (0, 1], got %r" % a.smooth)
     else:
         a.smooth_t = None
     a.exclude = [g for g in (a.source_exclude or "").split(",") if g]
@@ -151,45 +153,59 @@ def _parse_args(argv):
                               float(f[2]) if len(f) > 2 and f[2] else 0.04)
         except ValueError:
             p.error("--exclude-blend-smooth wants N[,ALPHA[,RADIUS]], got %r" % a.exclude_blend_smooth)
+        n, alpha, radius = a.blend_smooth
+        if n < 1 or not 0.0 < alpha <= 1.0 or not radius > 0:
+            p.error("--exclude-blend-smooth wants N >= 1 steps, ALPHA in (0, 1] and a positive RADIUS "
+                    "(inf smooths every vertex), got %r" % a.exclude_blend_smooth)
     if a.out_path and os.path.abspath(a.out_path) == os.path.abspath(a.in_path):
         p.error("--out is --in itself; pass --in-place to save over it")
+    if a.viz and os.path.abspath(a.viz) in {os.path.abspath(x) for x in (a.in_path, a.out_path) if x}:
+        p.error("--viz is the review copy and must not be --in or --out; name its own file")
     return a
 
 
 def recipe(a) -> str:
     """The canonical command line: weight-determining flags in the door's order, defaults
-    omitted, no paths or mode flags."""
-    out = [TOOL, "--targets", ",".join(a.target_list)]
+    omitted, no paths or mode flags. A value starting with ``-`` is joined as
+    ``--flag=value`` so argparse re-reads it as a value."""
+    out = [TOOL]
+
+    def opt(flag, value):
+        value = str(value)
+        out.extend(["%s=%s" % (flag, value)] if value.startswith("-") else [flag, value])
+
+    opt("--targets", ",".join(a.target_list))
     if a.source != DEFAULTS["source"]:
-        out += ["--source", a.source]
+        opt("--source", a.source)
     for mesh, key, value in a.shape_list:
-        out += ["--shape", "%s%s=%s" % (mesh + ":" if mesh else "", key, value)]
+        opt("--shape", "%s%s=%s" % (mesh + ":" if mesh else "", key, value))
     if a.mask:
-        out += ["--mask", a.mask]
+        opt("--mask", a.mask)
     if a.max_distance != DEFAULTS["max_distance"]:
-        out += ["--max-distance", str(a.max_distance)]
+        opt("--max-distance", a.max_distance)
     if a.normal_angle != DEFAULTS["normal_angle"]:
-        out += ["--normal-angle", str(a.normal_angle)]
+        opt("--normal-angle", a.normal_angle)
     if not a.flip:
-        out += ["--no-flip"]
+        out.append("--no-flip")
     if a.smooth_t:
-        out += ["--smooth", "%d,%s" % a.smooth_t]
+        opt("--smooth", "%d,%s" % a.smooth_t)
     if a.exclude:
-        out += ["--source-exclude", ",".join(a.exclude), "--source-exclude-max", str(a.source_exclude_max)]
+        opt("--source-exclude", ",".join(a.exclude))
+        opt("--source-exclude-max", a.source_exclude_max)
     if a.blend:
-        out += ["--exclude-blend", "%s,%s,%s" % a.blend]
+        opt("--exclude-blend", "%s,%s,%s" % a.blend)
     if a.lateral:
-        out += ["--exclude-blend-lateral", "%s,%s" % a.lateral]
+        opt("--exclude-blend-lateral", "%s,%s" % a.lateral)
     if a.blend_smooth:
-        out += ["--exclude-blend-smooth", "%d,%s,%s" % a.blend_smooth]
+        opt("--exclude-blend-smooth", "%d,%s,%s" % a.blend_smooth)
     if a.allow_no_loops:
-        out += ["--allow-no-loops"]
+        out.append("--allow-no-loops")
     if a.allow_unseated:
-        out += ["--allow-unseated"]
+        out.append("--allow-unseated")
     if a.reference_bone != DEFAULTS["reference_bone"]:
-        out += ["--reference-bone", a.reference_bone]
+        opt("--reference-bone", a.reference_bone)
     if a.forward_bone:
-        out += ["--forward", a.forward_bone]
+        opt("--forward", a.forward_bone)
     return shlex.join(out)
 
 
@@ -256,8 +272,11 @@ def main():
               % (",".join(x["bones"]), x["max"], x["verts"], x["tris"], x["of_tris"]))
     if rep["frame"]:
         f = rep["frame"]
-        print("AVATARPREP: frame from %s head; forward from %s: %s"
-              % (f["reference_bone"], f["from"], " ".join("%s=%s" % (k, f[k]) for k in WT.AXES if k in f)))
+        axes = " ".join("%s=%s" % (k, f[k]) for k in WT.AXES if k in f)
+        if "forward" in f:
+            print("AVATARPREP: frame from %s head; forward from %s: %s" % (f["reference_bone"], f["from"], axes))
+        else:
+            print("AVATARPREP: frame from %s head, up only (world +Z): %s" % (f["reference_bone"], axes))
     for r in rep["targets"]:
         print("AVATARPREP: %s" % _fmt_row(r))
         if r.get("blend"):
