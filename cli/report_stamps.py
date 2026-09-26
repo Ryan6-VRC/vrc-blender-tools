@@ -59,14 +59,19 @@ def main():
         return ""
 
     def _print_mesh(owner, m):
-        # A corrupt (non-map) stamp is the one genuine fault → WARNING (greppable,
-        # matching the Slice-E CLI family); a clean baked map prints a plain line.
+        # A mesh qualifies on EITHER stamp (avatarprep_baked / avatarprep_folded), so
+        # either key may be absent — print only what the entry actually carries. A
+        # corrupt (non-map) baked stamp is the one genuine fault → WARNING (greppable,
+        # matching the Slice-E CLI family); everything else is a plain line.
         if m.get("corrupt") is not None:
             print("AVATARPREP: WARNING mesh %s baked=CORRUPT %s (%s)%s"
                   % (m["name"], m["corrupt"], owner, _linked(m)))
-        else:
+        elif "baked" in m:
             print("AVATARPREP: mesh %s baked=%s (%s)%s"
                   % (m["name"], m["baked"], owner, _linked(m)))
+        if "folded" in m:
+            print("AVATARPREP: mesh %s folded=%r (%s)%s"
+                  % (m["name"], m["folded"], owner, _linked(m)))
 
     for a in report["armatures"]:
         base = a["base"] if a["base"] is not None else "unknown"
