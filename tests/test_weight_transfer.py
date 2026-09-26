@@ -133,6 +133,44 @@ def test_shapes():
     refuses(lambda: _run(F.build(), shapes=[(None, "Nope", 1.0)]), "is on none of", "unknown bare shape")
     refuses(lambda: _run(F.build(), shapes=[("Other", "Bulk", 1.0)]), "neither the source nor a target",
             "scoped shape on an unlisted mesh")
+    refuses(lambda: _run(F.build(), shapes=[(None, "Bulk", 2.0)]), "outside the slider range [0, 1]",
+            "a --shape value Blender would clamp")
+    s = F.build()
+    s["body"].data.shape_keys.key_blocks["Bulk"].slider_max = 2.0
+    _run(s, shapes=[(None, "Bulk", 2.0)])  # inside a widened range
+
+    def keyed(body_bulk):
+        s = F.build()
+        s["garment"].shape_key_add(name="Basis")
+        s["garment"].shape_key_add(name="Bulk", from_mix=False).value = 0.0
+        s["body"].data.shape_keys.key_blocks["Bulk"].value = body_bulk
+        return s
+    _run(keyed(0.5), shapes=[(None, "Bulk", 0.5)])  # a bare --shape sets both: seated for the run
+    refuses(lambda: _run(keyed(0.0), shapes=[("Body_Base", "Bulk", 1.0)]), "not seated",
+            "a scoped --shape that unseats the run")
+
+
+def _islanded_target(s):
+    """A band on the left thigh and, 50 cm in front, a 64-vertex patch: more vertices than the
+    point-cloud Laplacian's neighbour count, so its graph leaves the patch disconnected."""
+    import _weight_fixture as F
+    verts, faces, tags = [], [], []
+    F.tube(F.LX, 0, F.RL + F.GAP, 0.60, 0.76, 8, 24, "band", verts, faces, tags)
+    F.patch(-0.05, 0.05, -0.6, 0.95, 1.05, 7, False, "far", verts, faces, tags)
+    ob = F.mesh("Islanded", verts, faces, s["garment_rig"])
+    ob.vertex_groups.new(name="Hips").add(list(range(len(verts))), 1.0, 'REPLACE')
+    ob.vertex_groups.new(name="BandOnly").add([i for i, t in enumerate(tags) if t == "band"], 1.0, 'REPLACE')
+    return ob
+
+
+def test_disconnected_island():
+    import _weight_fixture as F
+    from avatarprep.core import weight_transfer as WT
+    s = F.build()
+    ob = _islanded_target(s)
+    refuses(lambda: WT.transfer_weights(s["body"], [ob]), "Islanded: the point-cloud Laplacian leaves 64 verts",
+            "an island the Laplacian leaves with no matched vertex")
+    WT.transfer_weights(s["body"], [ob], mask="BandOnly")  # masked out, the island is not written
 
 
 def test_blend_and_frame():
@@ -412,6 +450,7 @@ def main():
     test_rerun_reproduces()
     test_no_flip_and_mask_and_smooth()
     test_shapes()
+    test_disconnected_island()
     test_blend_and_frame()
     test_blend_regions()
     test_refusals()

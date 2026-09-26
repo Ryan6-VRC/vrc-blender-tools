@@ -14,7 +14,9 @@ and with each garment carrying the body's weights interpolated at its nearest bo
 (``transfer_weights``' write rule, garment bones kept; ``avatarprep/core/fit.py``
 ``simulated``). How the result is read is the weightpaint skill's. ``--render DIR`` writes
 one sheet per compared step (each input's worst stretch, new-penetration and body-through
-steps), the inputs side by side in ``--in`` order. Inputs are read and never saved.
+steps), the inputs side by side in ``--in`` order, at most ``MAX_RENDER_STEPS`` (4) sheets
+per garment and region; a line names the steps past the cap, which get no sheet. Inputs are
+read and never saved.
 
 ``=> OK`` means measured. Exit 0 on OK; 1 on ``=> FAIL:`` (a refusal in any input, inputs
 that sweep different steps, a failed render); 2 on unresolvable input or a crash. Metric
@@ -177,6 +179,10 @@ def main():
                                                                       g["name"]):
                         if step not in steps:
                             steps.append(step)
+                if len(steps) > MAX_RENDER_STEPS:
+                    print("AVATARPREP: render %s [%s] skipped %d step(s) past the %d-sheet cap: %s"
+                          % (g["name"], rl, len(steps) - MAX_RENDER_STEPS, MAX_RENDER_STEPS,
+                             ", ".join(steps[MAX_RENDER_STEPS:])))
                 for step in steps[:MAX_RENDER_STEPS]:
                     pngs = []
                     for label, path, data, repair, regions, the_plan, sets in planned:

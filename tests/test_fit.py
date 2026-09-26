@@ -232,6 +232,62 @@ def test_simulated_transfer():
           "a p = 0.5 vertex takes body weight 0.5 on at most 4 - 2 bones")
 
 
+def test_simulated_ignores_body_cut():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    g = s["garment"]
+    whole = fit.simulated(fit.load(s["body"], [g]))["garments"][0]["W"]
+    d = fit.load(s["body"], [g], cut_shapes=["Bulk"], cut_threshold=0.005)
+    cut = fit.simulated(d)["garments"][0]["W"]
+    check(d["body"]["cut"].any() and np.allclose(cut, whole, atol=1e-6),
+          "the simulated transfer matches the whole body, as transfer_weights does, whatever the body's "
+          "--cut-shape (%d body vertices cut, max weight difference %g)"
+          % (d["body"]["cut"].sum(), np.abs(cut - whole).max()))
+
+
+def test_cut_rim_is_edge():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    band = F.add_band(s, "CutBand", {"UpperLeg.L": 1.0})
+    band.shape_key_add(name="Basis")
+    kb = band.shape_key_add(name="Delete", from_mix=False)
+    for i, v in enumerate(band.data.vertices):
+        if v.co.z > 0.705:
+            kb.data[i].co = (v.co.x, v.co.y, v.co.z + 0.05)
+    g = fit.load(s["body"], [band], cut_shapes=["Delete"])["garments"][0]
+    z = g["V"][:, 2]
+    rim, inner = np.abs(z - 0.70) < 1e-4, np.abs(z - 0.66) < 1e-4
+    check(g["cut"].sum() == (z > 0.705).sum() and rim.any() and g["boundary"][rim].all()
+          and g["cls"]["edge"][rim].all(), "a --cut-shape Delete's new rim is boundary and classes edge (%d of %d)"
+          % (g["cls"]["edge"][rim].sum(), rim.sum()))
+    check(inner.any() and not g["cls"]["edge"][inner].any(), "a row two in from the cut rim is not edge")
+
+
+def test_big_body_triangle():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    plane = F.mesh("BigPlane", [(-1, -1, 0.5), (1, -1, 0.5), (1, 1, 0.5), (-1, 1, 0.5)], [(0, 1, 2, 3)], s["body_rig"])
+    plane.vertex_groups.new(name="Hips").add([0, 1, 2, 3], 1.0, 'REPLACE')
+    n = 4
+    verts = [(-0.02 + 0.04 * j / n, -0.02 + 0.04 * i / n, 0.5 + F.GAP) for i in range(n + 1) for j in range(n + 1)]
+    faces = [(a, a + 1, a + n + 2, a + n + 1) for a in (i * (n + 1) + j for i in range(n) for j in range(n))]
+    patch = F.mesh("Patch", verts, faces, s["garment_rig"])
+    patch.vertex_groups.new(name="Hips").add(list(range(len(verts))), 1.0, 'REPLACE')
+    try:
+        d = fit.load(plane, [patch])
+    except fit.FitError as e:
+        FAILURES.append("a metre-wide body triangle under a 4 cm patch, every corner outside the crop, is kept: %s" % e)
+        return
+    g = d["garments"][0]
+    check(np.allclose(g["rd"], F.GAP, atol=1e-6) and np.allclose(g["rsd"], F.GAP, atol=1e-6),
+          "every patch vertex anchors on the big triangle 2 mm under it: %r" % g["rd"])
+    ctx = fit.rest_context(d, g, {"all": ~g["cut"]})
+    check(ctx["regions"]["all"]["pen"] == 0, "the posed crop keeps the big triangle too: %r" % ctx)
+
+
 def test_push_core():
     import _weight_fixture as F
     from avatarprep.core import fit
@@ -459,6 +515,29 @@ def test_sweep_grammar():
         refuses(lambda: _fit.parse_sweep(bad, err), why, "sweep grammar %s" % bad, exc=ValueError)
 
 
+def test_joint_rows():
+    from avatarprep.core import fit
+    want = {
+        # Mixamo
+        "mixamorig:LeftUpLeg": "hip", "mixamorig:LeftLeg": "knee", "mixamorig:LeftFoot": "ankle",
+        "mixamorig:LeftShoulder": "clavicle", "mixamorig:LeftArm": "shoulder", "mixamorig:LeftForeArm": "elbow",
+        "mixamorig:RightLeg": "knee", "mixamorig:RightArm": "shoulder", "mixamorig:LeftHand": "wrist",
+        "mixamorig:Spine1": "spine", "mixamorig:Neck": "spine",
+        # Unity humanoid
+        "LeftUpperLeg": "hip", "LeftLowerLeg": "knee", "LeftFoot": "ankle", "LeftShoulder": "clavicle",
+        "LeftUpperArm": "shoulder", "LeftLowerArm": "elbow", "LeftHand": "wrist", "Spine": "spine",
+        "Chest": "spine", "UpperChest": "spine", "Neck": "spine", "Head": "head",
+        # VRM, Blender-side names and the fixture's
+        "J_Bip_L_UpperLeg": "hip", "J_Bip_L_LowerLeg": "knee", "J_Bip_L_UpperArm": "shoulder",
+        "J_Bip_L_LowerArm": "elbow", "J_Bip_L_Shoulder": "clavicle", "Upper_Arm.L": "shoulder",
+        "Lower_Arm.L": "elbow", "Thigh_L": "hip", "Calf_L": "knee", "UpperLeg.L": "hip", "LowerLeg.L": "knee",
+        "Foot.L": "ankle", "Toes.L": "other", "Hips": "other", "Tail": "other", "HeadTop_End": "other",
+        "Armature": "other",
+    }
+    got = {n: fit.joint_row(n)[0] for n in want}
+    check(got == want, "joint rows: %r" % {n: (got[n], want[n]) for n in want if got[n] != want[n]})
+
+
 def _blender(tool, args):
     cmd = [bpy.app.binary_path, "--background", "--factory-startup", "--python",
            os.path.join(REPO, "cli", tool + ".py"), "--"] + args
@@ -609,6 +688,9 @@ def main():
     test_regions()
     test_shape_and_cut()
     test_simulated_transfer()
+    test_simulated_ignores_body_cut()
+    test_cut_rim_is_edge()
+    test_big_body_triangle()
     test_push_core()
     test_pose_math()
     test_garment_bones()
@@ -618,6 +700,7 @@ def main():
     test_push_profile()
     test_apply_push_units()
     test_sweep_grammar()
+    test_joint_rows()
     with tempfile.TemporaryDirectory() as tmp:
         test_cli(tmp)
     if FAILURES:

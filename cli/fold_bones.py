@@ -23,6 +23,11 @@ weighted centroid), writes it to ``--map-out``, prints it with its ambiguity fla
 ALWAYS exits 1 — auto only ever writes the table, it never runs the fold. Edit the file,
 then pass the same path as ``--map`` to run it for real.
 
+A saving run stamps each target object with ``avatarprep_folded``, the canonical command
+line printed as ``recipe:`` (``--targets``, ``--bones``, ``--neighbours`` if given, and
+``--map <path>``; no I/O, report or mode flags). ``--whatif`` and auto print no recipe
+and stamp nothing.
+
 Exit 0 on a real run's ``=> OK``; 1 on ``=> FAIL:`` (a gate refused, or the deliberate
 auto stop); 2 on unresolvable input (bad args, missing mesh/armature, a crash).
 Gates, the fold math, and ``auto_map``'s algorithm: ``avatarprep/core/fold_bones.py``.
@@ -31,6 +36,7 @@ import json
 import os
 import sys
 import argparse
+import shlex
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
@@ -96,6 +102,16 @@ def _parse_args():
     return a
 
 
+def recipe(a) -> str:
+    """The canonical command line: the fold-determining flags in the door's order, no
+    I/O, report or mode flags. ``--map`` is the table's path as given."""
+    out = [TOOL, "--targets", ",".join(a.target_names), "--bones", ",".join(a.bone_patterns)]
+    if a.neighbour_names:
+        out += ["--neighbours", ",".join(a.neighbour_names)]
+    out += ["--map", a.map_arg]
+    return shlex.join(out)
+
+
 def _fail(label, reason, offenders=()):
     print("AVATARPREP: %s %s => FAIL: %s" % (TOOL, label, reason))
     for o in offenders:
@@ -119,15 +135,16 @@ def _resolve_mesh(name):
 def _resolve_target_armature(meshes):
     arms = {}
     for m in meshes:
-        found = None
-        for mod in m.modifiers:
-            if mod.type == 'ARMATURE' and mod.object is not None:
-                found = mod.object
-                break
-        if found is None:
+        found = [mod.object for mod in m.modifiers
+                 if mod.type == 'ARMATURE' and mod.object is not None]
+        if not found:
             print("AVATARPREP: ERROR target mesh %r has no ARMATURE modifier" % m.name)
             sys.exit(2)
-        arms[found.name] = found
+        if len(found) > 1:
+            print("AVATARPREP: ERROR target mesh %r has %d ARMATURE modifiers (%s); fold_bones "
+                  "needs exactly one" % (m.name, len(found), ", ".join(o.name for o in found)))
+            sys.exit(2)
+        arms[found[0].name] = found[0]
     if len(arms) != 1:
         print("AVATARPREP: ERROR --targets bind to %d distinct armature(s) (%s); fold_bones "
               "needs exactly one" % (len(arms), ", ".join(sorted(arms))))
@@ -209,9 +226,10 @@ def main():
               % (TOOL, label, len(doomed_set), result["touched"], result["capped"], trailer))
         return
 
-    cmdline = "fold_bones " + " ".join(sys.argv[sys.argv.index("--") + 1:])
+    line = recipe(args)
+    print("AVATARPREP: recipe: %s" % line)
     for m in targets:
-        scene_utils.write_stamp(m, scene_utils.STAMP_FOLDED, cmdline)
+        scene_utils.write_stamp(m, scene_utils.STAMP_FOLDED, line)
 
     out_path = os.path.abspath(args.in_path) if args.in_place else os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
