@@ -142,3 +142,27 @@ def kv(items):
         k, _, v = it.partition("=")
         out[k] = v
     return out
+
+
+def ensure_deps(tool, label="?"):
+    """Put the provisioned wheels on ``sys.path`` for a door whose core needs scipy and
+    robust_laplacian; one in-grammar FAIL and exit 2 when they do not import.
+
+    The folder is ``<repo>/deps`` (``tools/provision_deps.py`` fills it), or
+    ``AVATARPREP_DEPS`` when set, which the test suite points at an empty folder to
+    prove the refusal. ``site.addsitedir`` appends, so Blender's bundled numpy still
+    wins. Only doors that need the wheels call this; every other door and
+    ``register()`` run without them."""
+    import site
+    deps = os.environ.get("AVATARPREP_DEPS") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "deps")
+    if os.path.isdir(deps):
+        site.addsitedir(deps)
+    try:
+        import scipy.sparse.linalg  # noqa: F401
+        import robust_laplacian  # noqa: F401
+    except ImportError as e:
+        print("AVATARPREP: %s %s => FAIL: scipy and robust_laplacian do not import from %s (%s); "
+              "run python tools/provision_deps.py --blender <blender.exe> once"
+              % (tool, label, deps, e))
+        sys.exit(2)

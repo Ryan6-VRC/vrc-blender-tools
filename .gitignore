@@ -22,6 +22,11 @@ tests/fixtures/*.fbx
 !tests/fixtures/Felis/
 !tests/fixtures/Felis/Felis.fbx
 
+# Provisioned by tools/provision_deps.py, never committed: the headless doors'
+# import folder and the wheel files blender_manifest.toml lists.
+/deps/
+/avatarprep/wheels/
+
 # OS junk
 .DS_Store
 Thumbs.db

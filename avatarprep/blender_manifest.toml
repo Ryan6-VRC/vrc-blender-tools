@@ -17,5 +17,14 @@ license = [
 
 tags = ["Rigging", "Mesh", "Import-Export"]
 
+# Weight transfer (core/weight_transfer.py) imports these. The files are not committed:
+# tools/provision_deps.py downloads them into wheels/ beside this manifest, and its
+# PINS move together with this list.
+platforms = ["windows-x64"]
+wheels = [
+  "./wheels/scipy-1.18.1-cp313-cp313-win_amd64.whl",
+  "./wheels/robust_laplacian-1.0.0-cp313-cp313-win_amd64.whl",
+]
+
 [permissions]
 files = "Export FBX files to disk for Unity/VRChat import"

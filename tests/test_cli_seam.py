@@ -130,11 +130,11 @@ def _build_dirty_blend(path):
     _save_scene(path)
 
 
-def _run_cli(script, args):
+def _run_cli(script, args, env=None):
     """Run a CLI via a fresh blender subprocess. Returns (returncode, stdout)."""
     cmd = [BLENDER, "--background", "--factory-startup",
            "--python", os.path.join(CLI, script), "--"] + args
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -425,8 +425,23 @@ def test_whatif_rejects_out(tmp):
             _fail("%s: the rejection should name --whatif\n%s" % (script, out))
 
 
+def test_weights_without_deps(tmp):
+    """transfer_weights with its wheels absent: one in-grammar FAIL naming the provisioner,
+    exit 2, before any blend is opened (AVATARPREP_DEPS points at an empty folder)."""
+    empty = os.path.join(tmp, "no_deps")
+    os.makedirs(empty, exist_ok=True)
+    env = dict(os.environ, AVATARPREP_DEPS=empty)
+    rc, out = _run_cli("transfer_weights.py",
+                       ["--in", os.path.join(tmp, "absent.blend"), "--targets", "Top", "--whatif"], env=env)
+    if rc != 2:
+        _fail("transfer_weights without deps: expected exit 2, got %d\n%s" % (rc, out))
+    if "provision_deps.py" not in out or "=> FAIL:" not in out:
+        _fail("transfer_weights without deps should FAIL naming tools/provision_deps.py\n%s" % out)
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
+        test_weights_without_deps(tmp)
         test_compat_exit_codes(tmp)
         test_compat_merge_in(tmp)
         test_merge_exit_codes(tmp)

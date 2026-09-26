@@ -24,6 +24,8 @@ STAMP_BASE = "avatarprep_base"     # armature: body lineage (str); CREATED via s
 STAMP_STATE = "avatarprep_state"   # armature: proportion state (str); import_fbx seeds the reserved
                                    # 'unproportioned' origin, apply_proportion_edge writes the edge target
 STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake
+STAMP_WEIGHTS = "avatarprep_weights"  # mesh: the canonical transfer_weights command line (str) that last
+                                   # wrote its body weights; transfer_weights
 STAMP_FOLDED = "avatarprep_folded" # mesh: str, the canonical fold_bones command line; written via
                                    # write_stamp, so it is a scalar like STAMP_BASE/STAMP_STATE, not
                                    # a dict like STAMP_BAKED
@@ -161,6 +163,9 @@ def _baked_entry(ob) -> Dict[str, Any]:
         else:
             entry["baked"] = None
             entry["corrupt"] = repr(raw)
+    weights = ob.get(STAMP_WEIGHTS)
+    if weights is not None:
+        entry["weights"] = weights if isinstance(weights, str) else repr(weights)
     folded = ob.get(STAMP_FOLDED)
     if folded is not None:
         entry["folded"] = folded
@@ -180,18 +185,23 @@ def _library_fields(ob) -> Dict[str, Any]:
 
 def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     """Read door — the query counterpart of the ``stamp_base`` write door. Enumerate
-    the scene's avatarprep provenance without mutating anything, **grouping each baked
+    the scene's avatarprep provenance without mutating anything, **grouping each stamped
     mesh under its owning armature** so two armatures in one ``.blend`` can't fuse
     their baked morphs into one read:
 
       {"armatures": [{"name", "base", "state", "state_kind",
-                      "meshes": [{"name", "baked": {shapekey: value}}
-                                 | {"name", "baked": None, "corrupt": <repr>}
-                                 | {"name", "folded": <command line str>} ...]} ...],
-       "unbound":   [<same per-mesh entry shape> ...]}
+                      "meshes": [<mesh entry> ...]} ...],
+       "unbound":   [<mesh entry> ...]}
 
-    ``folded`` (the ``avatarprep_folded`` command-line stamp fold_bones writes) appears
-    only on a mesh that carries it, alongside or instead of ``baked``.
+      <mesh entry> = {"name", "library", "data_library",
+                      ["baked": {shapekey: value} | "baked": None, "corrupt": <repr>],
+                      ["weights": <transfer_weights recipe line>],
+                      ["folded": <fold_bones command line>]}
+
+    A mesh qualifies by carrying any of ``avatarprep_baked``, ``avatarprep_weights`` or
+    ``avatarprep_folded``, and its entry holds a key for each stamp it carries: ``baked``,
+    ``weights`` and ``folded`` are the keys a consumer branches on by presence. Every other
+    key is always present.
 
     Every armature is reported even when unstamped (``base=None``,
     ``state_kind="absent"``) so absent/interrupted/corrupt read honestly, never
@@ -212,13 +222,13 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     not settle it. A collection INSTANCE of a linked base is invisible here (its
     objects are not scene objects); ``fbx_export`` refuses that shape by name.
 
-    **True partition — every baked mesh appears exactly once.** Owner resolution
+    **True partition — every stamped mesh appears exactly once.** Owner resolution
     reuses ``get_bound_meshes``' union ("bound" = parent OR armature-modifier target):
     a mesh with exactly one owning armature lands in that armature's ``meshes[]``; a
     mesh owned by zero or by >=2 armatures (ambiguous — never duplicated) lands in
     top-level ``unbound[]``. So the armatures' ``meshes[]`` plus ``unbound[]`` are
     disjoint. Both ``meshes`` (per armature) and ``unbound`` are always present
-    (empty ``[]``, never absent) so a consumer never branches on key-absence."""
+    (empty ``[]``, never absent)."""
     if scene is None:
         scene = bpy.context.scene
     objects = list(scene.objects) if scene else list(bpy.data.objects)
@@ -228,7 +238,8 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     # ``avatarprep_folded`` (fold_bones) — so a folded-only mesh is not invisible here.
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
-                  and (ob.get(STAMP_BAKED) is not None or ob.get(STAMP_FOLDED) is not None)]
+                  and (ob.get(STAMP_BAKED) is not None or ob.get(STAMP_WEIGHTS) is not None
+                       or ob.get(STAMP_FOLDED) is not None)]
     baked_names = {ob.name for ob in baked_objs}
 
     # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.
