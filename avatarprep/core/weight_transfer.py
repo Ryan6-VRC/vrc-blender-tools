@@ -20,9 +20,10 @@ Per target mesh, in world space at the current shape-key mix plus ``shapes``:
    by sparse LU; clipped to [0, 1] after the solve, since the biharmonic fill overshoots.
    A failed solve refuses and names the loose parts that hold no matched vertex.
 3. **Smooth** (optional). ``steps`` Jacobi passes of ``(1 - f) w + f * mean(one-ring incl.
-   self)`` on vertices within ``max_distance`` (straight line) of an unmatched vertex. This
-   is the add-on's form rather than the paper's Gauss-Seidel sweep, kept so its recorded
-   ``--smooth`` lines stay meaningful.
+   self)`` on the vertices an edge walk from an unmatched vertex reaches within
+   ``max_distance`` of it. Jacobi is the add-on's form rather than the paper's Gauss-Seidel
+   sweep, kept so its recorded ``--smooth`` lines stay meaningful; the walk is the paper's,
+   without its dependence on seed order.
 4. **Narrow the source** (optional). Case-insensitive globs over the source armature's
    deform bones, each hit taking its descendants; a source vertex whose share on those
    bones exceeds ``exclude_max`` is dropped with every triangle touching it.
@@ -339,16 +340,34 @@ def inpaint(TV, W, matched) -> np.ndarray:
 
 # --- step 3: smooth ------------------------------------------------------------------------
 
+def smooth_band(TV, matched, A, radius):
+    """The vertices an edge walk from each unmatched vertex reaches without leaving the
+    ball of ``radius`` around it, the seeds included (the paper's reference selection, made
+    independent of seed order)."""
+    V = np.asarray(TV, np.float64)
+    ptr, nbr = A.indptr, A.indices
+    band = ~np.asarray(matched, bool)
+    for seed in np.flatnonzero(band):
+        c, seen, stack = V[seed], {int(seed)}, [int(seed)]
+        while stack:
+            v = stack.pop()
+            for nb in nbr[ptr[v]:ptr[v + 1]]:
+                nb = int(nb)
+                if nb not in seen and np.linalg.norm(V[nb] - c) < radius:
+                    seen.add(nb)
+                    stack.append(nb)
+        band[list(seen)] = True
+    return band
+
+
 def smooth(TV, W, matched, A, steps, factor, radius):
-    """Step 3. ``steps`` Jacobi passes over self-inclusive adjacency ``A`` on the vertices
-    within ``radius`` of an unmatched vertex; every other row held. Returns ``(W, band)``."""
+    """Step 3. ``steps`` Jacobi passes over self-inclusive adjacency ``A`` on
+    ``smooth_band``; every other row held. Returns ``(W, band)``."""
     import scipy.sparse as sp
-    from scipy.spatial import cKDTree
     band = np.zeros(len(TV), bool)
     if steps <= 0 or matched.all():
         return W, band
-    d, _ = cKDTree(TV[~matched]).query(TV, distance_upper_bound=radius)
-    band = d < radius
+    band = smooth_band(TV, matched, A, radius)
     S = sp.diags(1.0 / np.asarray(A.sum(1)).ravel()) @ A
     W0, W = W, W.copy()
     for _ in range(steps):
@@ -674,7 +693,7 @@ def transfer_weights(source, targets: Sequence, *, shapes=(), mask: Optional[str
     elif blend is not None:
         frame = body_frame_up(src_arm, reference_bone)
     if frame is not None:
-        report["frame"] = {k: (v.round(6).tolist() if isinstance(v, np.ndarray) else v) for k, v in frame.items()}
+        report["frame"] = {k: ((v.round(6) + 0.0).tolist() if isinstance(v, np.ndarray) else v) for k, v in frame.items()}
 
     plans = []
     with _rest_state(targets, per_mesh):

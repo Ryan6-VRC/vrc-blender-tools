@@ -18,10 +18,12 @@ weight difference on commonly matched vertices; the inpaint solver difference on
 inputs; and the final per-vertex max |dw| on vertices neither limit touched, beside the
 capped-set delta (ours: rows cut to their allowance; the add-on's: rows its dilated
 limit mask or hard cap changed). Pass is identical positions, no flips and
-max |dw| <= 1e-5 off the capped sets. Deliberate design differences are named in the output
-rather than tolerated: the core clips to [0, 1] before smoothing where the add-on clipped at
-0 after it, smooths every vertex within the distance of an unmatched one where the add-on
-walked edges, and limits per vertex where the add-on's mask dilates into neighbours.
+max |dw| <= 1e-5 off the capped sets. Three design differences are measured, never
+tolerated: the core clips to [0, 1] before smoothing where the add-on clipped at 0 after it;
+its smoothing walk is independent of seed order where the add-on's is not (the smoothing-set
+line); and it limits per vertex where the add-on's mask dilates into neighbours (the
+capped-set delta). A ``--smooth`` case therefore diverges on vertices the two sets or the
+clip order separate.
 """
 import importlib.util
 import json
@@ -177,10 +179,31 @@ def write_policy(target, source_deform, snames, T, limiter, mask=None):
 
 # --- comparison ------------------------------------------------------------------------------------
 
+def puff(s):
+    """Flare the band's and left cuff's lower rows outward past the match distance, so a
+    contiguous region is inpainted from matched neighbours (the fixture otherwise inpaints only
+    detached islands, which reads nothing of the solve against a matched border)."""
+    import math
+    for i, v in enumerate(s["garment"].data.vertices):
+        t, (x, y, z) = s["tags"][i], v.co
+        cx, amount = (0.0, 0.07 * (0.94 - z) / 0.04) if t == "band" else (0.08, 0.07 * (0.72 - z) / 0.06)
+        if t in ("band", "cuff_L") and amount > 0:
+            r = math.hypot(x - cx, y)
+            v.co.x = cx + (x - cx) * (r + amount) / r
+            v.co.y = y * (r + amount) / r
+    s["garment"].data.update()
+    return s
+
+
+def _build(F, case):
+    s = F.build()
+    return puff(s) if case.get("puff") else s
+
+
 def run_case(util, wt, WT, F, case):
     out = {"case": case["name"]}
     # ours, end to end
-    s = F.build()
+    s = _build(F, case)
     kw = {k: case[k] for k in ("max_distance", "normal_angle", "flip", "smooth") if k in case}
     for k, ck in (("exclude", "exclude"), ("exclude_max", "exclude_max"), ("blend", "blend"),
                   ("blend_lateral", "lateral"), ("blend_smooth", "blend_smooth")):
@@ -191,7 +214,7 @@ def run_case(util, wt, WT, F, case):
     ours_matched = row["matched_mask"]
 
     # ours, stage arrays on a fresh build (for positions, match and capped set)
-    s = F.build()
+    s = _build(F, case)
     src = WT.source_arrays(s["body"], {})
     with WT._rest_state([s["garment"]], {}):
         dg = bpy.context.evaluated_depsgraph_get()
@@ -226,6 +249,21 @@ def run_case(util, wt, WT, F, case):
     addon_T = wt.inpaint(ref["TV"], None, r_W2, r_matched, True)
     out["max_dw_inpaint_solver"] = float(np.abs(ours_T - addon_T).max())
     out["clip_above_1_vertices"] = int((ours_T > 1.0).any(1).sum())
+    if case.get("smooth"):
+        # The add-on's smoothing set, read off its own function: one full-strength pass over
+        # random weights changes exactly the rows it smooths.
+        n_, a_ = case["smooth"]
+        adj_ = util.get_mesh_adjacency_matrix_sparse(s["garment"].data, include_self=True)
+        R = np.random.default_rng(0).random((len(TV), 3))
+        R2 = np.asarray(wt.smooth_weigths(ref["TV"], R, r_matched, adj_,
+                                          util.get_mesh_adjacency_list(s["garment"].data), 1, 1.0,
+                                          case["max_distance"]))
+        addon_set = np.abs(R2 - R).max(1) > 0
+        _, ours_set = WT.smooth(TV, R, r_matched, WT.adjacency(s["garment"].data), 1, 1.0, case["max_distance"])
+        out["smooth_set_ours"] = int(ours_set.sum())
+        out["smooth_set_addon"] = int(addon_set.sum())
+        out["smooth_set_only_ours"] = int((ours_set & ~addon_set).sum())
+        out["smooth_set_only_addon"] = int((addon_set & ~ours_set).sum())
 
     # final weights: ours end to end vs the reference composed through the same write policy
     deform = src["deform"]
@@ -251,6 +289,8 @@ def run_case(util, wt, WT, F, case):
     out["capped_only_ours"] = int((ours_capped & ~ref_changed & active).sum())
     out["capped_only_addon"] = int((ref_changed & ~ours_capped & active).sum())
     out["max_dw_capped"] = float(dw[capped].max()) if capped.any() else 0.0
+    out["inpainted_active"] = int((active & ~ours_matched).sum())
+    out["max_dw_inpainted_noncapped"] = float(dw[free & ~ours_matched].max()) if (free & ~ours_matched).any() else None
     out["pass"] = bool(out["positions_identical"] and not len(flips) and out["max_dw_noncapped"] <= TOL)
     return out
 
@@ -287,6 +327,12 @@ CASES = [
     {"name": "blend_back_lateral_smooth", "max_distance": 0.05, "normal_angle": 30.0, "flip": True,
      "exclude": ["upper*leg*"], "exclude_max": 0.35, "blend": ("back", 0.0, 0.04),
      "lateral": (0.06, 0.04), "blend_smooth": (2, 0.5, 0.04)},
+    {"name": "puffed", "max_distance": 0.05, "normal_angle": 30.0, "flip": True, "puff": True},
+    {"name": "puffed_smooth_4_0.2", "max_distance": 0.05, "normal_angle": 30.0, "flip": True, "puff": True,
+     "smooth": (4, 0.2)},
+    {"name": "puffed_blend", "max_distance": 0.05, "normal_angle": 30.0, "flip": True, "puff": True,
+     "exclude": ["upper*leg*"], "exclude_max": 0.35, "blend": ("back", 0.0, 0.04),
+     "lateral": (0.06, 0.04), "blend_smooth": (2, 0.5, 0.04)},
 ]
 
 
@@ -307,12 +353,16 @@ def main():
     for r in results:
         print("%s %s: pass=%s positions_identical=%s normals_identical=%s flips=%d interp=%.2e solver=%.2e "
               "clip>1=%d noncapped max|dw|=%.2e (vertex %s) capped ours=%d addon=%d only-ours=%d only-addon=%d "
-              "capped max|dw|=%.3f"
+              "capped max|dw|=%.3f inpainted-written=%d (noncapped max|dw| %s)"
               % (TOKEN, r["case"], r["pass"], r["positions_identical"], r["normals_identical"],
                  len(r["flipped_matches"]), r["max_dw_matched_interp"], r["max_dw_inpaint_solver"],
                  r["clip_above_1_vertices"], r["max_dw_noncapped"], r["worst_noncapped_vertex"],
                  r["capped_ours"], r["capped_addon"], r["capped_only_ours"], r["capped_only_addon"],
-                 r["max_dw_capped"]))
+                 r["max_dw_capped"], r["inpainted_active"], r["max_dw_inpainted_noncapped"]))
+        if "smooth_set_ours" in r:
+            print("%s   smoothing set ours=%d addon=%d only-ours=%d only-addon=%d"
+                  % (TOKEN, r["smooth_set_ours"], r["smooth_set_addon"], r["smooth_set_only_ours"],
+                     r["smooth_set_only_addon"]))
         for f in r["flipped_matches"]:
             print("%s   flip %r" % (TOKEN, f))
     if "--report" in argv:
