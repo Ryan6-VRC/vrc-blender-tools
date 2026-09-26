@@ -22,10 +22,12 @@ AvatarPrep is licensed **MIT** (see `LICENSE`). It was inspired by the now-dorma
 
 ## 1. User install (Blender 5.1+)
 
-1. Download / build the extension zip (`avatarprep-x.y.z.zip`). To build it yourself:
+1. Download / build the extension zip (`avatarprep-x.y.z.zip`). To build it yourself, first fetch the wheels the manifest lists (scipy and robust-laplacian, for weight transfer), then build:
    ```
+   python tools/provision_deps.py --blender <path-to-blender.exe>
    blender --command extension build --source-dir avatarprep --output-dir out
    ```
+   The manifest's `platforms = ["windows-x64"]` makes the build Windows-only, because the wheels are Windows builds.
 2. In Blender: **Edit → Preferences → Get Extensions → drop-down (top-right) → Install from Disk…** and pick the zip. (Or use `blender --command extension install-file -r user_default -e out/avatarprep-x.y.z.zip`.)
 3. In the 3D Viewport, open the **N-panel** (press `N`) and select the **AvatarPrep** tab. You get:
    - **Apply Pose as Rest Pose** — select your armature, enter **Pose mode**, pose it as desired, then click this button.
@@ -34,7 +36,7 @@ AvatarPrep is licensed **MIT** (see `LICENSE`). It was inspired by the now-dorma
 
 ## 2. Headless / agent usage
 
-Each core op has a CLI entry point under `cli/`. They run under `--factory-startup` and enable AvatarPrep from the bundled source package, so they never depend on user preferences, and every op writes a new file rather than mutating its input. The entry points and their flags live in the meta-repo `TOOLS.md`; `--help` on any entry point prints its arguments.
+Each core op has a CLI entry point under `cli/`. They run under `--factory-startup` and enable AvatarPrep from the bundled source package, so they never depend on user preferences, and every op writes a new file rather than mutating its input. `transfer_weights` also needs scipy and robust-laplacian: run `python tools/provision_deps.py --blender <path-to-blender.exe>` once, which fills the gitignored `deps/` it imports from. The entry points and their flags live in the meta-repo `TOOLS.md`; `--help` on any entry point prints its arguments.
 
 The `avatarprep.core` package is a plain Python package (no operator/UI context), so your own `--python` script can `sys.path`-insert the repo and call `scene_utils`, `rest_pose`, `proportions`, `fbx_export`, etc. directly.
 
