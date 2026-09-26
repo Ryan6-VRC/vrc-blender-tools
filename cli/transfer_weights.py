@@ -33,7 +33,7 @@ import shlex
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from cli._common import (enable_avatarprep, open_blend, run_cli, add_force_load_repair,
+from cli._common import (parse_shapes, enable_avatarprep, open_blend, run_cli, add_force_load_repair,
                          write_report, ensure_deps)
 
 TOOL = "transfer_weights"
@@ -105,16 +105,7 @@ def _parse_args(argv):
     a.target_list = [n.strip() for n in a.targets.split(",") if n.strip()]
     if not a.target_list:
         p.error("--targets named nothing")
-    a.shape_list = []
-    for item in a.shapes:
-        left, sep, value = item.rpartition("=")
-        if not sep or not left:
-            p.error("--shape wants K=V or MESH:K=V, got %r" % item)
-        mesh, colon, key = left.partition(":")
-        try:
-            a.shape_list.append((mesh if colon else None, key if colon else left, float(value)))
-        except ValueError:
-            p.error("--shape %s: %r is not a number" % (left, value))
+    a.shape_list = parse_shapes(a.shapes, p.error)
     if a.smooth is not None:
         parts = a.smooth.split(",")
         try:

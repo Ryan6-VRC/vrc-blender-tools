@@ -135,6 +135,22 @@ def write_report(path, data):
     print("AVATARPREP: report ->", report_path)
 
 
+def parse_shapes(items, error):
+    """``--shape`` values (``K=V`` or ``MESH:K=V``) as ``(mesh_or_None, key, value)`` triples;
+    a malformed one calls ``error`` (the door's bad-args exit)."""
+    out = []
+    for item in items:
+        left, sep, value = item.rpartition("=")
+        if not sep or not left:
+            error("--shape wants K=V or MESH:K=V, got %r" % item)
+        mesh, colon, key = left.partition(":")
+        try:
+            out.append((mesh if colon else None, key if colon else left, float(value)))
+        except ValueError:
+            error("--shape %s: %r is not a number" % (left, value))
+    return out
+
+
 def kv(items):
     """Parse repeated ``KEY=VALUE`` args into a dict."""
     out = {}

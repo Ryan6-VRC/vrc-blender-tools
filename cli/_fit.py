@@ -7,6 +7,11 @@ door's parser, and what the scene must hold (a bone, a group) is the core's to r
 import sys
 
 WORLD = ("x", "y", "z")
+SWEEP_FORM = ("AXIS is forward, back, lateral, up, own, a or b; angles in degrees, STEPS per direction "
+              "(default 3). No AXIS sweeps every axis of the bone's joint-table row, over MIN..MAX when "
+              "given, else the row's range. An axis in the row keeps its flexion sign (positive = "
+              "flexion); an axis outside it needs MIN..MAX and turns by the right-hand rule about the "
+              "axis (back is forward reversed)")
 
 
 def add_measure_args(p, *, sweep_help=None):
@@ -22,9 +27,7 @@ def add_measure_args(p, *, sweep_help=None):
                    help="the Delete threshold: how far a --cut-shape must move a vertex to remove it "
                         "(Modular Avatar's ShapeChanger default; read the prefab's when it differs)")
     p.add_argument("--sweep", dest="sweeps", action="append", default=[], metavar="BONE[:AXIS][:MIN..MAX[:STEPS]]",
-                   help=sweep_help or "sweep this body bone instead of the derived set (repeatable); AXIS is "
-                        "forward, back, lateral, up, own, a or b, angles in degrees with positive flexion, "
-                        "STEPS per direction (default 3)")
+                   help=sweep_help or "sweep this body bone instead of the derived set (repeatable). " + SWEEP_FORM)
     p.add_argument("--region", dest="regions", action="append", default=[], metavar="KIND:NAME",
                    help="group:NAME (weight over 0.5), bone:NAME (largest influence at or under it), or "
                         "zone:front|back|left|right|above:BONE|below:BONE; terms joined by + intersect "
@@ -33,17 +36,6 @@ def add_measure_args(p, *, sweep_help=None):
                    help="body bone whose head is the frame's origin")
     p.add_argument("--forward", dest="forward_bone", default=None, metavar="BONE",
                    help="read forward from BONE's tail minus head instead of the feet")
-
-
-def parse_shape(item, error):
-    left, sep, value = item.rpartition("=")
-    if not sep or not left:
-        error("--shape wants K=V or MESH:K=V, got %r" % item)
-    mesh, colon, key = left.partition(":")
-    try:
-        return (mesh if colon else None, key if colon else left, float(value))
-    except ValueError:
-        error("--shape %s: %r is not a number" % (left, value))
 
 
 def parse_sweep(text, error):
@@ -81,7 +73,8 @@ def finish_measure_args(a, error):
     a.target_list = [n.strip() for n in a.targets.split(",") if n.strip()]
     if not a.target_list:
         error("--targets named nothing")
-    a.shape_list = [parse_shape(s, error) for s in a.shapes]
+    from cli._common import parse_shapes
+    a.shape_list = parse_shapes(a.shapes, error)
     a.sweep_list = [parse_sweep(s, error) for s in a.sweeps] or None
     for r in a.regions:
         try:
