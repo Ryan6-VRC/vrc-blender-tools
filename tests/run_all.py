@@ -43,6 +43,7 @@ SUITES = {
     "test_rest_pose.py": "RESTPOSE_TEST",
     "test_shapekey_bake.py": "BAKE_TEST",
     "test_shapekey_transfer.py": "TRANSFER_TEST",
+    "test_weight_transfer.py": "WEIGHTS_TEST",
 }
 
 # test_*.py deliberately not run by the gate (none today; name and justify any
