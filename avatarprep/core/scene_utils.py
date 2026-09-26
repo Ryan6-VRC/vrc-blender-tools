@@ -26,6 +26,9 @@ STAMP_STATE = "avatarprep_state"   # armature: proportion state (str); import_fb
 STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake
 STAMP_WEIGHTS = "avatarprep_weights"  # mesh: the canonical transfer_weights command line (str) that last
                                    # wrote its body weights; transfer_weights
+STAMP_FOLDED = "avatarprep_folded" # mesh: str, the canonical fold_bones command line; written via
+                                   # write_stamp, so it is a scalar like STAMP_BASE/STAMP_STATE, not
+                                   # a dict like STAMP_BAKED
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
 
 
@@ -146,19 +149,26 @@ def open_policy(kind, *, writes, force_load_repair) -> str:
 
 
 def _baked_entry(ob) -> Dict[str, Any]:
-    """The per-mesh baked entry, AS STORED (unchanged from the pre-grouping flat
-    list). A valid map → ``{name, baked: {shapekey: value}}``; a present-but-non-map
-    ``avatarprep_baked`` → ``{name, baked: None, corrupt: <repr>}`` (flagged, never
-    raised). Only its *placement* — under an owning armature vs. ``unbound`` — is new."""
+    """The per-mesh entry. A valid ``avatarprep_baked`` map → ``{name, baked: {shapekey:
+    value}}``; a present-but-non-map one → ``{name, baked: None, corrupt: <repr>}``
+    (flagged, never raised); no ``avatarprep_baked`` at all → no ``baked``/``corrupt`` key
+    (a mesh can qualify on ``avatarprep_folded`` alone). ``folded`` (the stamped fold_bones
+    command line) is added only when present, so an unfolded mesh's entry shape is
+    unchanged. Only its *placement* — under an owning armature vs. ``unbound`` — is new."""
+    entry: Dict[str, Any] = {"name": ob.name}
     raw = ob.get(STAMP_BAKED)
-    entry = {"name": ob.name}
-    if isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
-        entry["baked"] = dict(raw)
-    elif raw is not None:
-        entry.update({"baked": None, "corrupt": repr(raw)})
+    if raw is not None:
+        if isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
+            entry["baked"] = dict(raw)
+        else:
+            entry["baked"] = None
+            entry["corrupt"] = repr(raw)
     weights = ob.get(STAMP_WEIGHTS)
     if weights is not None:
         entry["weights"] = weights if isinstance(weights, str) else repr(weights)
+    folded = ob.get(STAMP_FOLDED)
+    if folded is not None:
+        entry["folded"] = folded
     entry.update(_library_fields(ob))
     return entry
 
@@ -185,11 +195,13 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
 
       <mesh entry> = {"name", "library", "data_library",
                       ["baked": {shapekey: value} | "baked": None, "corrupt": <repr>],
-                      ["weights": <transfer_weights recipe line>]}
+                      ["weights": <transfer_weights recipe line>],
+                      ["folded": <fold_bones command line>]}
 
-    A mesh qualifies by carrying ``avatarprep_baked``, ``avatarprep_weights`` or both, and
-    its entry holds a key for each stamp it carries: ``baked`` and ``weights`` are the two
-    keys a consumer branches on by presence. Every other key is always present.
+    A mesh qualifies by carrying any of ``avatarprep_baked``, ``avatarprep_weights`` or
+    ``avatarprep_folded``, and its entry holds a key for each stamp it carries: ``baked``,
+    ``weights`` and ``folded`` are the keys a consumer branches on by presence. Every other
+    key is always present.
 
     Every armature is reported even when unstamped (``base=None``,
     ``state_kind="absent"``) so absent/interrupted/corrupt read honestly, never
@@ -222,9 +234,12 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     objects = list(scene.objects) if scene else list(bpy.data.objects)
 
     armature_objs = [ob for ob in objects if ob is not None and ob.type == 'ARMATURE']
+    # A mesh qualifies on EITHER stamp — ``avatarprep_baked`` (shapekey_bake) or
+    # ``avatarprep_folded`` (fold_bones) — so a folded-only mesh is not invisible here.
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
-                  and (ob.get(STAMP_BAKED) is not None or ob.get(STAMP_WEIGHTS) is not None)]
+                  and (ob.get(STAMP_BAKED) is not None or ob.get(STAMP_WEIGHTS) is not None
+                       or ob.get(STAMP_FOLDED) is not None)]
     baked_names = {ob.name for ob in baked_objs}
 
     # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.
