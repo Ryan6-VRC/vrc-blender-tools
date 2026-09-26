@@ -13,9 +13,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import bpy
 import fnmatch
+import math
 import mathutils
 
 from . import scene_utils
+from .prune_bones import _bone_parented_objects
 
 # Unity's per-vertex bone-influence cap. A constant, never a flag (tool-design.md
 # "Flags converge on the family's names").
@@ -41,7 +43,7 @@ class NoBonesMatched(ValueError):
 
 
 class FoldRefused(ValueError):
-    """One of fold_bones' six pre-write gates. ``kind`` tags which one (for a
+    """One of fold_bones' eight pre-write gates. ``kind`` tags which one (for a
     caller that wants to branch); ``offenders`` is a list of dicts/strings naming
     what tripped it, for the CLI's ``OFFENDER`` lines. Nothing is mutated before
     this raises — every gate in this module runs before any bpy write."""
@@ -70,9 +72,10 @@ def resolve_doomed(armature: bpy.types.Object, patterns: Sequence[str]) -> List[
     doomed: List[str] = []
     seen: Set[str] = set()
     for pat in patterns:
-        hits = [n for n in match_bones(pat, names) if n not in seen]
-        if not hits:
+        matched = match_bones(pat, names)
+        if not matched:
             raise NoBonesMatched(pat)
+        hits = [n for n in matched if n not in seen]
         seen.update(hits)
         doomed.extend(hits)
     return doomed
@@ -104,6 +107,20 @@ def check_no_surviving_children(armature: bpy.types.Object, doomed: Set[str]) ->
             "surviving_child",
             "doomed bone(s) have a surviving child, which removal would misroute: %s"
             % ", ".join("%s -> %s" % (o["bone"], o["child"]) for o in offenders),
+            offenders)
+
+
+def check_no_bone_parented(armature: bpy.types.Object, doomed: Set[str]) -> None:
+    """Gate: an object riding a doomed bone via ``parent_type='BONE'`` (an Empty,
+    a prop). Removing the bone leaves its ``parent_bone`` dangling and the object
+    jumps to the armature origin — ``prune_bones``' same gate, same scan."""
+    offenders = [{"object": o["object"], "type": o["type"], "bone": o["bone"]}
+                 for o in _bone_parented_objects(armature, doomed) if o["bone_pruned"]]
+    if offenders:
+        raise FoldRefused(
+            "bone_parented",
+            "object(s) ride a doomed bone, which removal would drop to the armature origin: %s"
+            % ", ".join("%r on bone %r" % (o["object"], o["bone"]) for o in offenders),
             offenders)
 
 
@@ -179,7 +196,23 @@ def check_fraction_sums(bone_map: Dict[str, Dict[str, float]], weighted_doomed: 
     renormalisation step then inflates every OTHER destination on the vertex to
     cover the gap — a quiet mis-weight, not a caught one. Only weighted bones are
     checked: a row for a weightless doomed bone is not required at all
-    (:func:`check_full_coverage`), so its fractions (if present) are moot."""
+    (:func:`check_full_coverage`), so its fractions (if present) are moot.
+
+    Each fraction is checked first (``bad_fraction``): it must be a finite number
+    in [0, 1]. The sum alone passes a NaN (JSON accepts it, and ``abs(nan - 1) >
+    1e-6`` is False) and a row like ``{A: 1.5, B: -0.5}``."""
+    bad = []
+    for bone in sorted(weighted_doomed):
+        for tgt, frac in sorted(bone_map.get(bone, {}).items()):
+            if (isinstance(frac, bool) or not isinstance(frac, (int, float))
+                    or not math.isfinite(frac) or not 0.0 <= frac <= 1.0):
+                bad.append({"bone": bone, "destination": tgt, "fraction": frac})
+    if bad:
+        raise FoldRefused(
+            "bad_fraction",
+            "map fraction(s) not a finite number in [0, 1]: %s"
+            % ", ".join("%s -> %s = %r" % (o["bone"], o["destination"], o["fraction"]) for o in bad),
+            bad)
     offenders = []
     for bone in sorted(weighted_doomed):
         dests = bone_map.get(bone)
@@ -230,20 +263,18 @@ def _fold_mesh(weights: Dict[int, Dict[str, float]], doomed: Set[str],
     """The per-vertex fold on one mesh's pre-read ``weights``. Per touched vertex:
     ``new[t] = sum(w_old[b] * frac[b][t])`` over doomed bones ``b``, added to any
     existing (survivor) weight already on ``t``; keep the top
-    :data:`MAX_BONE_GROUPS` groups by weight; renormalise the kept set back to the
-    pre-cap total. This is ``reweight_ribbon_rosyloop.py``'s remap loop verbatim,
+    :data:`MAX_BONE_GROUPS` groups by weight; renormalise the kept set to sum to
+    1.0. This is ``reweight_ribbon_rosyloop.py``'s remap loop verbatim,
     generalised past its single-island assumption (every ORIGINAL bone-named group
     on a touched vertex, survivor or doomed, is cleared and rewritten from the
     ranked set — not only the doomed ones — so a survivor group capped out here
     cannot leave stale weight behind).
 
-    **Precondition, unchecked:** a touched vertex's bone weight is assumed to
-    already sum to ~1 before the fold — that pre-fold total (preserved through the
-    blend by :func:`check_fraction_sums`) is the renormalisation target, not a
-    fixed 1.0. The venue island this generalises guaranteed it by construction; a
-    vertex that enters already off-1 (a partially-weighted or over-1 source) exits
-    renormalised to ITS OWN prior total instead, silently — nothing here checks
-    the vertex's pre-fold sum, only each donor bone's map row (:func:`check_fraction_sums`)."""
+    **Every touched vertex exits summing to exactly 1.0** — what Unity and the
+    Armature modifier assume. A vertex that enters off-1 (a partially-weighted or
+    over-1 source) is thereby normalised, silently: nothing here checks the
+    vertex's pre-fold sum, only each donor bone's map row
+    (:func:`check_fraction_sums`). Untouched vertices keep whatever sum they had."""
     touched = 0
     capped = 0
     zero_sum: List[int] = []
@@ -330,8 +361,10 @@ def _assert_invariants(mesh_obj: bpy.types.Object, weights_before: Dict[int, Dic
                        extra_before: dict) -> None:
     """Post-write checks the contract asks for explicitly: untouched vertices
     identical, non-bone groups bit-identical, shape-key metadata unchanged, no
-    vertex over the cap. Raises ``AssertionError`` naming the offender — these are
-    real regression guards, not documentation of an invariant assumed to hold."""
+    touched vertex over the cap (an untouched one may already exceed it — the fold
+    never wrote it, so it is the untouched-identical check's, not this one's).
+    Raises ``AssertionError`` naming the offender — these are real regression
+    guards, not documentation of an invariant assumed to hold."""
     idx_to_name = {vg.index: vg.name for vg in mesh_obj.vertex_groups}
     for v in mesh_obj.data.vertices:
         current: Dict[str, float] = {}
@@ -339,7 +372,7 @@ def _assert_invariants(mesh_obj: bpy.types.Object, weights_before: Dict[int, Dic
             name = idx_to_name.get(g.group)
             if name in bone_names and g.weight > WEIGHT_EPS:
                 current[name] = current.get(name, 0.0) + g.weight
-        if len(current) > MAX_BONE_GROUPS:
+        if v.index in new_weights and len(current) > MAX_BONE_GROUPS:
             raise AssertionError("vertex %d has %d bone groups after fold (cap is %d)"
                                  % (v.index, len(current), MAX_BONE_GROUPS))
         if v.index not in new_weights:
@@ -387,8 +420,9 @@ def fold_bones(armature: bpy.types.Object, meshes: Sequence[bpy.types.Object],
     the door's auto-refuses-to-run behaviour true rather than asserted.
 
     Runs every gate (:func:`check_no_surviving_children`,
-    :func:`check_no_foreign_weight`, :func:`check_map_destinations`,
-    :func:`check_full_coverage`, :func:`check_fraction_sums`, and the
+    :func:`check_no_bone_parented`, :func:`check_no_foreign_weight`,
+    :func:`check_map_destinations`, :func:`check_full_coverage`,
+    :func:`check_fraction_sums` — fraction values, then row sums — and the
     zero-sum-vertex check below) before any mutation, ``whatif`` or not — a
     preview that could disagree with the real run is worthless (``prune_bones``'
     standard).
@@ -407,6 +441,7 @@ def fold_bones(armature: bpy.types.Object, meshes: Sequence[bpy.types.Object],
                          "writes a suggestion table via auto_map(), it never executes")
     doomed = set(doomed)
     check_no_surviving_children(armature, doomed)
+    check_no_bone_parented(armature, doomed)
     check_no_foreign_weight(doomed, meshes)
 
     all_bone_names = {b.name for b in armature.data.bones}

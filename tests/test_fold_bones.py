@@ -1,4 +1,4 @@
-"""Synthetic headless test for avatarprep.core.fold_bones.
+"""Synthetic headless test for avatarprep.core.fold_bones and cli/fold_bones.py.
 
 Run: blender --background --factory-startup --python tests/test_fold_bones.py
 Prints FOLD_TEST OK / FOLD_TEST FAIL: <reason>.
@@ -259,8 +259,14 @@ def test_hand_map_fold_and_gradient():
 
     dt = result["destination_totals"]
     check(set(dt) >= {"Bun", "Strand_1", "Strand_2"}, "destination_totals missing an expected bone: %r" % dt)
-    for bone in ("Bun", "Strand_1", "Strand_2"):
-        check(abs(dt[bone]["before"] - dt[bone].get("before", 0.0)) >= 0.0, "sanity")  # present, typed
+    # Mass: every fixture vertex sums to 1, so the fold moves weight without losing
+    # any — the survivors' "after" total equals the "before" total over all bones.
+    total_before = sum(r["before"] for r in dt.values())
+    total_after = sum(r["after"] for n, r in dt.items() if n not in doomed)
+    check(abs(total_before - 6.0) < 1e-6 and abs(total_after - total_before) < 1e-6,
+          "mass not conserved: before=%r after=%r (6 unit vertices)" % (total_before, total_after))
+    check(all(dt[n]["after"] == 0.0 for n in doomed if n in dt),
+          "a doomed bone keeps weight in destination_totals: %r" % dt)
     check(result["touched"] == 5 and result["capped"] == 1,
           "expected touched=5 capped=1 on the real run, got touched=%r capped=%r"
           % (result["touched"], result["capped"]))
@@ -387,11 +393,8 @@ def test_gate_zero_sum():
     (sum-to-1) map can no longer zero-sum a touched vertex through the public
     ``fold_bones()`` gate sequence: with every weighted row summing to exactly 1,
     a vertex's post-blend total is algebraically ``sum(w_b for b in its doomed
-    bones)``, which is > 0 for any vertex ``fold_bones`` calls "touched",
-    regardless of how a row's own fractions are signed/split. The zero-sum check
-    survives as a defensive backstop (e.g. catastrophic float cancellation in a
-    row with large opposing fractions that still sums to 1 within tolerance), so
-    this test exercises it directly at the unit the gate reads from —
+    bones)``, which is > 0 for any vertex ``fold_bones`` calls "touched". The
+    zero-sum check survives as a defensive backstop, so this test exercises it directly at the unit the gate reads from —
     ``_fold_mesh`` — rather than fabricating a public-API map that can no longer
     reach it."""
     _repo_root()
@@ -449,12 +452,173 @@ def test_folded_stamp_readable_by_report_stamps():
     from avatarprep.core import scene_utils
 
     arm, ribbon, second = _build_scene()
-    scene_utils.write_stamp(ribbon, scene_utils.STAMP_FOLDED, "fold_bones --in x --bones Ribbon*")
+    line = "fold_bones --targets RibbonMesh --bones 'Ribbon*' --map blend.json"
+    scene_utils.write_stamp(ribbon, scene_utils.STAMP_FOLDED, line)
     rep = scene_utils.report_stamps(bpy.context.scene)
     entries = [m for a in rep["armatures"] for m in a["meshes"]] + rep["unbound"]
     hit = next((e for e in entries if e["name"] == "RibbonMesh"), None)
-    check(hit is not None and hit.get("folded") == "fold_bones --in x --bones Ribbon*",
+    check(hit is not None and hit.get("folded") == line,
           "avatarprep_folded stamp not surfaced by report_stamps: %r" % hit)
+
+
+def _refused(fn, kind, label):
+    """Run ``fn``; return its FoldRefused when it carries ``kind``, else record a
+    failure (a different exception included) and return None."""
+    from avatarprep.core import fold_bones as core
+    try:
+        fn()
+    except core.FoldRefused as refused:
+        if refused.kind == kind:
+            return refused
+        FAILURES.append("%s: wrong gate kind %r (wanted %r)" % (label, refused.kind, kind))
+        return None
+    except Exception as e:
+        FAILURES.append("%s: expected FoldRefused(%s), got %r" % (label, kind, e))
+        return None
+    FAILURES.append("%s: expected FoldRefused(%s), the fold ran" % (label, kind))
+    return None
+
+
+def test_untouched_vertex_over_cap():
+    """An untouched vertex that already carries 5 bone groups is not the fold's to
+    cap: whatif and the real run both succeed and agree, and it is left as it was."""
+    _repo_root()
+    from avatarprep.core import fold_bones as core
+
+    arm, ribbon, second = _build_scene()
+    for name in ("Bun", "Strand_1", "Strand_2", "Extra"):
+        ribbon.vertex_groups[name].add([5], 0.1, 'REPLACE')
+    survivors = {"Hips", "Bun", "Strand_1", "Strand_2", "Extra"}
+    v5_before = _weights_of(ribbon, survivors)[5]
+    doomed = set(core.resolve_doomed(arm, ["Ribbon*"]))
+
+    preview = core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=True)
+    try:
+        result = core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=False)
+    except AssertionError as e:
+        FAILURES.append("real run refused an untouched 5-group vertex whatif passed: %s" % e)
+        return
+    check((preview["touched"], preview["capped"]) == (result["touched"], result["capped"]),
+          "whatif and the real run disagree: %r vs %r" % (preview, result))
+    check(_close(_weights_of(ribbon, survivors).get(5, {}), v5_before),
+          "untouched 5-group vertex changed: %r" % _weights_of(ribbon, survivors).get(5))
+
+
+def test_gate_bad_fraction():
+    _repo_root()
+    from avatarprep.core import fold_bones as core
+
+    rows = {
+        "nan": {"Strand_1": float("nan")},
+        "negative": {"Strand_1": 1.5, "Strand_2": -0.5},   # sums to 1
+        "over-1": {"Strand_1": 2.0},
+        "non-numeric": {"Strand_1": "1.0"},
+    }
+    for label, row in rows.items():
+        arm, ribbon, second = _build_scene()
+        doomed = set(core.resolve_doomed(arm, ["Ribbon*"]))
+        bad_map = dict(HAND_MAP, Ribbon_1=row)
+        refused = _refused(lambda: core.fold_bones(arm, [ribbon], doomed, bad_map, whatif=False),
+                           "bad_fraction", "bad_fraction %s" % label)
+        if refused is not None:
+            check(all(o["bone"] == "Ribbon_1" for o in refused.offenders)
+                  and {o["destination"] for o in refused.offenders} <= set(row),
+                  "bad_fraction %s: expected Ribbon_1 -> its destination named, got %r"
+                  % (label, refused.offenders))
+        check({b.name for b in arm.data.bones} >= doomed,
+              "bad_fraction %s: the armature was written before the refusal" % label)
+
+
+def test_resolve_overlapping_patterns():
+    _repo_root()
+    from avatarprep.core import fold_bones as core
+
+    arm, ribbon, second = _build_scene()
+    try:
+        doomed = core.resolve_doomed(arm, ["Ribbon*", "Ribbon_1"])
+    except core.NoBonesMatched as e:
+        FAILURES.append("a pattern whose bones an earlier pattern already took refused: %s" % e)
+        return
+    check(doomed == ["Ribbon", "Ribbon_1", "Ribbon_2"],
+          "overlapping patterns should list each bone once, got %r" % doomed)
+
+
+def test_gate_bone_parented():
+    _repo_root()
+    from avatarprep.core import fold_bones as core
+
+    arm, ribbon, second = _build_scene()
+    charm = bpy.data.objects.new("CharmEmpty", None)
+    bpy.context.collection.objects.link(charm)
+    charm.parent = arm
+    charm.parent_type = 'BONE'
+    charm.parent_bone = "Ribbon_2"
+    doomed = set(core.resolve_doomed(arm, ["Ribbon*"]))
+    all_names = {b.name for b in arm.data.bones}
+    weights_before = _weights_of(ribbon, all_names)
+
+    refused = _refused(lambda: core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=False),
+                       "bone_parented", "bone_parented")
+    if refused is not None:
+        check(any(o["object"] == "CharmEmpty" and o["bone"] == "Ribbon_2" for o in refused.offenders),
+              "expected CharmEmpty on Ribbon_2 named, got %r" % refused.offenders)
+    check({b.name for b in arm.data.bones} == all_names and _weights_of(ribbon, all_names) == weights_before,
+          "bone_parented: something was written before the refusal")
+
+
+def _door(script, args):
+    import subprocess
+    cmd = [bpy.app.binary_path, "--background", "--factory-startup", "--python",
+           os.path.join(_repo_root(), "cli", script), "--"] + args
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    return p.returncode, p.stdout + p.stderr
+
+
+def test_cli(tmp):
+    """The door end to end: auto writes the table and exits 1; the table replayed as
+    --map exits 0, prints the canonical recipe and stamps it; report_stamps reads it;
+    a target with two Armature modifiers exits 2."""
+    import json
+    import shlex
+    from avatarprep.core import scene_utils
+
+    arm, ribbon, second = _build_scene()
+    src = os.path.join(tmp, "in.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=src)
+    table = os.path.join(tmp, "table.json")
+    out = os.path.join(tmp, "out.blend")
+
+    rc, txt = _door("fold_bones.py", ["--in", src, "--targets", "RibbonMesh", "--bones", "Ribbon*",
+                                      "--map", "auto", "--map-out", table])
+    check(rc == 1 and os.path.isfile(table) and "recipe:" not in txt,
+          "--map auto should exit 1 having written the table, no recipe (rc=%d)\n%s" % (rc, txt))
+    if os.path.isfile(table):
+        with open(table, encoding="utf-8") as fh:
+            check(set(json.load(fh)) == {"Ribbon", "Ribbon_1", "Ribbon_2"}, "auto table rows wrong")
+
+    rc, txt = _door("fold_bones.py", ["--in", src, "--targets", "RibbonMesh", "--bones", "Ribbon*",
+                                      "--map", table, "--report", os.path.join(tmp, "r.json"),
+                                      "--out", out])
+    line = shlex.join(["fold_bones", "--targets", "RibbonMesh", "--bones", "Ribbon*", "--map", table])
+    check(rc == 0 and "=> OK" in txt and ("AVATARPREP: recipe: %s" % line) in txt,
+          "a real run should exit 0 and print the recipe %r (rc=%d)\n%s" % (line, rc, txt))
+    if os.path.isfile(out):
+        bpy.ops.wm.open_mainfile(filepath=out)
+        stamp = bpy.data.objects["RibbonMesh"].get(scene_utils.STAMP_FOLDED)
+        check(stamp == line, "the stamp is the printed recipe: %r" % stamp)
+    rc, txt = _door("report_stamps.py", ["--in", out])
+    check(rc == 0 and "mesh RibbonMesh folded=" in txt and "Traceback" not in txt,
+          "report_stamps should print the folded stamp (rc=%d)\n%s" % (rc, txt))
+
+    arm, ribbon, second = _build_scene()
+    extra = ribbon.modifiers.new("Armature.001", 'ARMATURE')
+    extra.object = arm
+    two = os.path.join(tmp, "two_mods.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=two)
+    rc, txt = _door("fold_bones.py", ["--in", two, "--targets", "RibbonMesh", "--bones", "Ribbon*",
+                                      "--map", table, "--whatif"])
+    check(rc == 2 and "2 ARMATURE modifiers" in txt,
+          "a target with two Armature modifiers should exit 2 (rc=%d)\n%s" % (rc, txt))
 
 
 def main():
@@ -468,6 +632,13 @@ def main():
     test_gate_zero_sum()
     test_rerun_refuses()
     test_folded_stamp_readable_by_report_stamps()
+    test_untouched_vertex_over_cap()
+    test_gate_bad_fraction()
+    test_resolve_overlapping_patterns()
+    test_gate_bone_parented()
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        test_cli(tmp)
 
     if FAILURES:
         for f in FAILURES:
