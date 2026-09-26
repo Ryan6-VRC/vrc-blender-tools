@@ -9,6 +9,7 @@ from . import scene_utils  # noqa: F401
 from . import measure  # noqa: F401
 from . import rest_pose  # noqa: F401
 from . import fbx_export  # noqa: F401
+from . import fold_bones  # noqa: F401
 from . import import_fbx  # noqa: F401
 from . import merge_armatures  # noqa: F401
 from . import prune_bones  # noqa: F401
@@ -17,6 +18,6 @@ from . import render_mesh  # noqa: F401
 from . import shapekey_bake  # noqa: F401
 from . import shapekey_transfer  # noqa: F401
 
-__all__ = ["scene_utils", "measure", "rest_pose", "fbx_export", "import_fbx",
+__all__ = ["scene_utils", "measure", "rest_pose", "fbx_export", "fold_bones", "import_fbx",
            "merge_armatures", "prune_bones", "proportions", "render_mesh",
            "shapekey_bake", "shapekey_transfer"]

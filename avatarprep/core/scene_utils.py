@@ -24,6 +24,9 @@ STAMP_BASE = "avatarprep_base"     # armature: body lineage (str); CREATED via s
 STAMP_STATE = "avatarprep_state"   # armature: proportion state (str); import_fbx seeds the reserved
                                    # 'unproportioned' origin, apply_proportion_edge writes the edge target
 STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake
+STAMP_FOLDED = "avatarprep_folded" # mesh: str, the canonical fold_bones command line; written via
+                                   # write_stamp, so it is a scalar like STAMP_BASE/STAMP_STATE, not
+                                   # a dict like STAMP_BAKED
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
 
 
@@ -144,15 +147,23 @@ def open_policy(kind, *, writes, force_load_repair) -> str:
 
 
 def _baked_entry(ob) -> Dict[str, Any]:
-    """The per-mesh baked entry, AS STORED (unchanged from the pre-grouping flat
-    list). A valid map → ``{name, baked: {shapekey: value}}``; a present-but-non-map
-    ``avatarprep_baked`` → ``{name, baked: None, corrupt: <repr>}`` (flagged, never
-    raised). Only its *placement* — under an owning armature vs. ``unbound`` — is new."""
+    """The per-mesh entry. A valid ``avatarprep_baked`` map → ``{name, baked: {shapekey:
+    value}}``; a present-but-non-map one → ``{name, baked: None, corrupt: <repr>}``
+    (flagged, never raised); no ``avatarprep_baked`` at all → no ``baked``/``corrupt`` key
+    (a mesh can qualify on ``avatarprep_folded`` alone). ``folded`` (the stamped fold_bones
+    command line) is added only when present, so an unfolded mesh's entry shape is
+    unchanged. Only its *placement* — under an owning armature vs. ``unbound`` — is new."""
+    entry: Dict[str, Any] = {"name": ob.name}
     raw = ob.get(STAMP_BAKED)
-    if isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
-        entry = {"name": ob.name, "baked": dict(raw)}
-    else:
-        entry = {"name": ob.name, "baked": None, "corrupt": repr(raw)}
+    if raw is not None:
+        if isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
+            entry["baked"] = dict(raw)
+        else:
+            entry["baked"] = None
+            entry["corrupt"] = repr(raw)
+    folded = ob.get(STAMP_FOLDED)
+    if folded is not None:
+        entry["folded"] = folded
     entry.update(_library_fields(ob))
     return entry
 
@@ -175,8 +186,12 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
 
       {"armatures": [{"name", "base", "state", "state_kind",
                       "meshes": [{"name", "baked": {shapekey: value}}
-                                 | {"name", "baked": None, "corrupt": <repr>} ...]} ...],
+                                 | {"name", "baked": None, "corrupt": <repr>}
+                                 | {"name", "folded": <command line str>} ...]} ...],
        "unbound":   [<same per-mesh entry shape> ...]}
+
+    ``folded`` (the ``avatarprep_folded`` command-line stamp fold_bones writes) appears
+    only on a mesh that carries it, alongside or instead of ``baked``.
 
     Every armature is reported even when unstamped (``base=None``,
     ``state_kind="absent"``) so absent/interrupted/corrupt read honestly, never
@@ -209,9 +224,11 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     objects = list(scene.objects) if scene else list(bpy.data.objects)
 
     armature_objs = [ob for ob in objects if ob is not None and ob.type == 'ARMATURE']
+    # A mesh qualifies on EITHER stamp — ``avatarprep_baked`` (shapekey_bake) or
+    # ``avatarprep_folded`` (fold_bones) — so a folded-only mesh is not invisible here.
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
-                  and ob.get(STAMP_BAKED) is not None]
+                  and (ob.get(STAMP_BAKED) is not None or ob.get(STAMP_FOLDED) is not None)]
     baked_names = {ob.name for ob in baked_objs}
 
     # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.
