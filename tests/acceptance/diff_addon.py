@@ -22,8 +22,10 @@ max |dw| <= 1e-5 off the capped sets. Three design differences are measured, nev
 tolerated: the core clips to [0, 1] before smoothing where the add-on clipped at 0 after it;
 its smoothing walk is independent of seed order where the add-on's is not (the smoothing-set
 line); and it limits per vertex where the add-on's mask dilates into neighbours (the
-capped-set delta). A ``--smooth`` case therefore diverges on vertices the two sets or the
-clip order separate.
+capped-set delta). ``puffed_smooth_4_0.2`` is therefore expected to exceed the tolerance
+(about 1.7e-2): its inpainted region is large enough for the clip order and the smoothing set
+to move weights. The choice and its figure are recorded at ``weight_transfer.smooth``; every
+other case is expected to pass.
 """
 import importlib.util
 import json

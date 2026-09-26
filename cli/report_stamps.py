@@ -5,7 +5,8 @@ Run:
       --in <in.blend> [--shapekeys [SUBSTR]]
 
 The read/query counterpart of stamp_base — inspects a file's avatarprep_base /
-avatarprep_state (per armature) and avatarprep_baked (per baked mesh) in one call.
+avatarprep_state (per armature), avatarprep_baked (per baked mesh) and
+avatarprep_weights (per reweighted mesh) in one call.
 Opens the blend read-only; never saves. A report never "fails" — exit 0 always
 (a bad --in / open failure is the only ERROR exit 2).
 
@@ -61,12 +62,16 @@ def main():
     def _print_mesh(owner, m):
         # A corrupt (non-map) stamp is the one genuine fault → WARNING (greppable,
         # matching the Slice-E CLI family); a clean baked map prints a plain line.
+        # A weights-only mesh has no ``baked`` key.
         if m.get("corrupt") is not None:
             print("AVATARPREP: WARNING mesh %s baked=CORRUPT %s (%s)%s"
                   % (m["name"], m["corrupt"], owner, _linked(m)))
-        else:
+        elif "baked" in m:
             print("AVATARPREP: mesh %s baked=%s (%s)%s"
                   % (m["name"], m["baked"], owner, _linked(m)))
+        if "weights" in m:
+            print("AVATARPREP: mesh %s weights=%s (%s)%s"
+                  % (m["name"], m["weights"], owner, _linked(m)))
 
     for a in report["armatures"]:
         base = a["base"] if a["base"] is not None else "unknown"

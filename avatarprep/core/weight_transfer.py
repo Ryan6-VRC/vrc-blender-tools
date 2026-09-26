@@ -362,7 +362,16 @@ def smooth_band(TV, matched, A, radius):
 
 def smooth(TV, W, matched, A, steps, factor, radius):
     """Step 3. ``steps`` Jacobi passes over self-inclusive adjacency ``A`` on
-    ``smooth_band``; every other row held. Returns ``(W, band)``."""
+    ``smooth_band``; every other row held. Returns ``(W, band)``.
+
+    Two choices depart from the Robust Weight Transfer add-on, whose recorded ``--smooth``
+    lines this form otherwise keeps: the input is already clipped to [0, 1] (the add-on
+    smoothed the raw fill and clipped at 0 afterwards), and the band is order-independent
+    (the add-on's walk stops at vertices an earlier seed marked, so its band depends on
+    vertex order and is a subset of this one). Each alone moves a smoothed weight by about
+    1.5e-2 on a garment with a large inpainted region; together they are the 1.7e-2 the
+    ``puffed_smooth`` case of ``tests/acceptance/diff_addon.py`` reports. With both undone
+    the two agree to 1.6e-9."""
     import scipy.sparse as sp
     band = np.zeros(len(TV), bool)
     if steps <= 0 or matched.all():

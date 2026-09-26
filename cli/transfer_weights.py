@@ -12,7 +12,7 @@ Run:
 
 Runs on the costume blend, where the body is normally a library link and is never written.
 ``--whatif`` runs the whole transfer in memory, asserts included, and saves nothing. A
-saving run stamps each target's mesh datablock with ``avatarprep_weights``, the canonical
+saving run stamps each target object with ``avatarprep_weights``, the canonical
 command line printed as ``recipe:`` (flags in the order above, defaults omitted, no paths
 or mode flags), which reproduces the same weights on a rerun. ``--viz`` saves a copy whose
 targets carry an ``avatarprep_matched`` colour layer (white matched, magenta inpainted) for
@@ -268,7 +268,7 @@ def main():
     saved = None
     if not args.whatif:
         for t in targets:
-            t.data[scene_utils.STAMP_WEIGHTS] = line
+            scene_utils.write_stamp(t, scene_utils.STAMP_WEIGHTS, line)
     viz = None
     if args.viz:
         viz = os.path.abspath(args.viz)

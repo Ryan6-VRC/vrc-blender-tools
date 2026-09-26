@@ -238,10 +238,22 @@ def test_cli(tmp):
     check("recipe: transfer_weights --targets Shorts --max-distance 0.04" in txt, "the recipe line is printed\n%s" % txt)
     check("Traceback" not in txt, "no traceback in a clean run\n%s" % txt)
     bpy.ops.wm.open_mainfile(filepath=out)
-    me = bpy.data.objects["Shorts"].data
-    check(me.get(scene_utils.STAMP_WEIGHTS) == "transfer_weights --targets Shorts --max-distance 0.04",
-          "the mesh datablock carries the recipe: %r" % me.get(scene_utils.STAMP_WEIGHTS))
+    ob = bpy.data.objects["Shorts"]
+    me = ob.data
+    check(ob.get(scene_utils.STAMP_WEIGHTS) == "transfer_weights --targets Shorts --max-distance 0.04",
+          "the target object carries the recipe: %r" % ob.get(scene_utils.STAMP_WEIGHTS))
+    rep = scene_utils.report_stamps(bpy.context.scene)
+    entry = [m for a in rep["armatures"] for m in a["meshes"] if m["name"] == "Shorts"]
+    check(entry and entry[0].get("weights") == ob.get(scene_utils.STAMP_WEIGHTS) and "baked" not in entry[0],
+          "report_stamps lists a weights-only mesh under its armature: %r" % rep)
     check(me.color_attributes.get("avatarprep_matched") is None, "the deliverable carries no review layer")
+    p = subprocess.run([bpy.app.binary_path, "--background", "--factory-startup", "--python",
+                        os.path.join(REPO, "cli", "report_stamps.py"), "--", "--in", out],
+                       capture_output=True, text=True)
+    txt = p.stdout + p.stderr
+    check(p.returncode == 0 and "mesh Shorts weights=transfer_weights --targets Shorts" in txt
+          and "Traceback" not in txt, "report_stamps prints the weights-only mesh
+%s" % txt)
     bpy.ops.wm.open_mainfile(filepath=viz)
     check(bpy.data.objects["Shorts"].data.color_attributes.get("avatarprep_matched") is not None,
           "the --viz copy carries the review layer")

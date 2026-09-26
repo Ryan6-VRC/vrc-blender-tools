@@ -24,8 +24,8 @@ STAMP_BASE = "avatarprep_base"     # armature: body lineage (str); CREATED via s
 STAMP_STATE = "avatarprep_state"   # armature: proportion state (str); import_fbx seeds the reserved
                                    # 'unproportioned' origin, apply_proportion_edge writes the edge target
 STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake
-STAMP_WEIGHTS = "avatarprep_weights"  # mesh DATABLOCK: the canonical transfer_weights command line
-                                   # (str) that last wrote its body weights
+STAMP_WEIGHTS = "avatarprep_weights"  # mesh: the canonical transfer_weights command line (str) that last
+                                   # wrote its body weights; transfer_weights
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
 
 
@@ -151,10 +151,14 @@ def _baked_entry(ob) -> Dict[str, Any]:
     ``avatarprep_baked`` → ``{name, baked: None, corrupt: <repr>}`` (flagged, never
     raised). Only its *placement* — under an owning armature vs. ``unbound`` — is new."""
     raw = ob.get(STAMP_BAKED)
+    entry = {"name": ob.name}
     if isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
-        entry = {"name": ob.name, "baked": dict(raw)}
-    else:
-        entry = {"name": ob.name, "baked": None, "corrupt": repr(raw)}
+        entry["baked"] = dict(raw)
+    elif raw is not None:
+        entry.update({"baked": None, "corrupt": repr(raw)})
+    weights = ob.get(STAMP_WEIGHTS)
+    if weights is not None:
+        entry["weights"] = weights if isinstance(weights, str) else repr(weights)
     entry.update(_library_fields(ob))
     return entry
 
@@ -193,6 +197,8 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
 
     Every entry carries ``library`` / ``data_library`` (the library path as
     stored, or None).
+    A mesh carrying only ``avatarprep_weights`` is listed too, its entry holding
+    ``weights`` (the recipe line) and no ``baked`` key; a mesh with both carries both.
     A linked fit-reference rig (own-mergeable) reports its stamps like any other
     armature — the grouping already keeps its morphs apart — and these two fields
     are how a reader tells the reference from the mergeable when names alone do
@@ -213,7 +219,7 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     armature_objs = [ob for ob in objects if ob is not None and ob.type == 'ARMATURE']
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
-                  and ob.get(STAMP_BAKED) is not None]
+                  and (ob.get(STAMP_BAKED) is not None or ob.get(STAMP_WEIGHTS) is not None)]
     baked_names = {ob.name for ob in baked_objs}
 
     # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.
