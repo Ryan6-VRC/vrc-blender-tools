@@ -8,7 +8,11 @@ FAILS rather than skipping, so an unprovisioned checkout cannot pass the gate.
 
 Fixture: ``tests/_weight_fixture.py``. Each refusal is one tweak of it.
 """
+import hashlib
+import json
 import os
+import shlex
+import shutil
 import site
 import subprocess
 import sys
@@ -198,7 +202,9 @@ def test_refusals():
             vg.add([i for i, v in enumerate(s["garment"].data.vertices)
                     if s["tags"][i] == "band" and v.co.x < -0.05 and v.co.z > 1.0], 1.0, 'REPLACE')
             kw["mask"] = "FrontR"
+        before = F.weights_by_name(s["garment"])
         refuses(lambda: _run(s, **kw), "UpperLeg.L", "target armature missing a body bone (%s)" % variant)
+        check(F.weights_by_name(s["garment"]) == before, "a refusal leaves the weights untouched (%s)" % variant)
 
     s = F.build()
     pelvis = [i for i, v in enumerate(s["body"].data.vertices) if v.co.z > 0.95 and abs(v.co.x) < 0.2
@@ -215,6 +221,95 @@ def test_refusals():
     s["body"][scene_utils.STAMP_BAKED] = {"Bulk": 0.2}
     refuses(lambda: _run(s), "not seated", "baked-map disagreement")
     _run(s, allow_unseated=True)
+
+
+def test_blend_regions():
+    """Past the ramp the blend is exactly one of its two transfers: back-midline vertices
+    draw at most exclude_max from the leg bones, and front vertices and side vertices past
+    the lateral fade equal a plain whole-source run."""
+    import numpy as np
+    import _weight_fixture as F
+    from avatarprep.core import weight_transfer as WT
+    blend, lateral, xmax = ("back", 0.0, 0.04), (0.06, 0.04), 0.35
+    s = F.build()
+    row = WT.transfer_weights(s["body"], [s["garment"]], exclude=["upper*leg*"], exclude_max=xmax,
+                              blend=blend, blend_lateral=lateral)["targets"][0]
+    got = F.weights_by_name(s["garment"])
+    frame = WT.body_frame(s["body_rig"])
+    TV = np.array([tuple(s["garment"].matrix_world @ v.co) for v in s["garment"].data.vertices])
+    mix = WT.blend_mix(TV, frame, *blend, lateral=lateral)
+    s2 = F.build()
+    WT.transfer_weights(s2["body"], [s2["garment"]])
+    whole = F.weights_by_name(s2["garment"])
+    n = len(TV)
+    legs = [k for k in got if k.startswith(("UpperLeg", "LowerLeg", "Foot", "Toes"))]
+    garment = [k for k in got if k.startswith("Flap")]
+    back = [i for i in range(n) if mix[i] >= 0.99 and row["matched_mask"][i] and not any(got[k][i] for k in garment)]
+    check(len(back) > 10, "the back midline has narrowed vertices (%d)" % len(back))
+    worst = max((sum(got[k][i] for k in legs) / (sum(got[k][i] for k in legs) + got["Hips"][i]) for i in back),
+                default=0.0)
+    check(worst <= xmax + 1e-6, "back-midline vertices draw at most %g from the legs (worst %.4f)" % (xmax, worst))
+    d = TV - frame["origin"]
+    front = [i for i in range(n) if d[i] @ frame["back"] < blend[1] - blend[2] / 2]
+    side = [i for i in range(n) if d[i] @ frame["back"] > blend[1] + blend[2] / 2
+            and abs(d[i] @ frame["lateral"]) > lateral[0] + lateral[1] / 2]
+    check(front and side, "front (%d) and side (%d) vertices exist past the ramps" % (len(front), len(side)))
+    diff = max(abs(got.get(k, [0.0] * n)[i] - whole.get(k, [0.0] * n)[i])
+               for i in front + side for k in set(got) | set(whole))
+    check(diff <= 1e-5, "front and side vertices equal the whole-source run (worst %g)" % diff)
+
+
+def test_more_refusals():
+    import _weight_fixture as F
+    from avatarprep.core import weight_transfer as WT
+    s = F.build()
+    s["garment"].hide_viewport = True
+    refuses(lambda: _run(s), "is not evaluated", "a hidden target")
+    s = F.build()
+    s["body"].hide_viewport = True
+    s["body"].data.shape_keys.key_blocks["Bulk"].value = 1.0
+    hidden = _run(s, allow_unseated=True)
+    s = F.build()
+    s["body"].data.shape_keys.key_blocks["Bulk"].value = 1.0
+    shown = _run(s, allow_unseated=True)
+    check(hidden["contact_mean_dw"] == shown["contact_mean_dw"],
+          "a hidden body evaluates with its live keys like a shown one (%r vs %r)"
+          % (hidden["contact_mean_dw"], shown["contact_mean_dw"]))
+    s = F.build()
+    s["garment"].vertex_groups.new(name="Nothing")
+    refuses(lambda: _run(s, mask="Nothing"), "no vertex to write", "an empty write set")
+
+    s = F.build()
+    kb = s["body"].shape_key_add(name="Blink", from_mix=False)
+    kb.value = 1.0
+    _run(s)  # a live key only the body carries is not a seat
+    s = F.build()
+    s["garment"].shape_key_add(name="Basis")
+    s["garment"].shape_key_add(name="Bulk", from_mix=False).value = 0.0
+    s["body"].data.shape_keys.key_blocks["Bulk"].value = 0.5
+    refuses(lambda: _run(s), "not seated", "a live key both carry at different values")
+
+    s = F.build()
+    refuses(lambda: _run(s, exclude=["upper*leg*"], exclude_max=0.35, blend=("back", 0.0, 0.04),
+                         reference_bone="Pelvis"), "--reference-bone Pelvis", "a missing reference bone")
+    for bone in ("Foot.L", "Foot.R"):
+        s["body_rig"].data.bones[bone].use_deform = False
+    rep_ = WT.transfer_weights(s["body"], [s["garment"]], exclude=["upper*leg*"], exclude_max=0.35,
+                               blend=("back", 0.0, 0.04), forward_bone="Foot.L")
+    check(abs(rep_["frame"]["forward"][1] + 1) < 1e-6 and rep_["frame"]["from"] == "--forward Foot.L",
+          "--forward reads the named bone: %r" % rep_["frame"])
+
+
+def test_recipe_round_trip():
+    """A recipe with a negative value re-parses to itself."""
+    from cli import transfer_weights as D
+    a = D._parse_args(["--in", "x.blend", "--targets", "Shorts", "--source-exclude", "upper*leg*",
+                       "--source-exclude-max", "0.35", "--exclude-blend", "back,-0.06,0.03",
+                       "--exclude-blend-lateral=-0.02,0.04", "--whatif"])
+    line = D.recipe(a)
+    check("--exclude-blend-lateral=-0.02,0.04" in line, "a negative value is joined with '=': %s" % line)
+    again = D.recipe(D._parse_args(shlex.split(line)[1:] + ["--in", "x.blend", "--whatif"]))
+    check(again == line, "the recipe re-parses to itself: %s vs %s" % (line, again))
 
 
 def _blender(args, env=None):
@@ -256,6 +351,33 @@ def test_cli(tmp):
     bpy.ops.wm.open_mainfile(filepath=viz)
     check(bpy.data.objects["Shorts"].data.color_attributes.get("avatarprep_matched") is not None,
           "the --viz copy carries the review layer")
+    with open(os.path.join(tmp, "r.json"), encoding="utf-8") as fh:
+        r = json.load(fh)
+    row = r["targets"][0] if r.get("targets") else {}
+    check(r.get("recipe") == "transfer_weights --targets Shorts --max-distance 0.04" and r.get("saved") == out
+          and row.get("mesh") == "Shorts" and row.get("written", 0) > 0 and "matched_mask" not in row
+          and r.get("viz") == viz, "the --report carries the recipe, the paths and the per-mesh row: %r" % r)
+
+    def digest(path):
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+
+    before = digest(src)
+    rc, txt = _blender(["--in", src, "--targets", "Shorts", "--whatif"])
+    check(digest(src) == before, "--whatif leaves --in byte-identical")
+    inplace = os.path.join(tmp, "inplace.blend")
+    shutil.copyfile(src, inplace)
+    rc, txt = _blender(["--in", inplace, "--targets", "Shorts", "--in-place"])
+    check(rc == 0 and "saved=%s" % inplace in txt, "--in-place saves over --in\n%s" % txt)
+    bpy.ops.wm.open_mainfile(filepath=inplace)
+    check(bpy.data.objects["Shorts"].get(scene_utils.STAMP_WEIGHTS) == "transfer_weights --targets Shorts",
+          "the in-place save carries the stamp")
+    rc, txt = _blender(["--in", src, "--targets", "Shorts", "--viz", out, "--out", out])
+    check(rc == 2 and "--viz" in txt, "--viz naming --out is bad args\n%s" % txt)
+    rc, txt = _blender(["--in", src, "--targets", "Shorts", "--source-exclude", "upper*leg*",
+                        "--source-exclude-max", "0.35", "--exclude-blend", "back,0,0.04",
+                        "--exclude-blend-smooth", "2,2.0", "--whatif"])
+    check(rc == 2 and "ALPHA" in txt, "an out-of-range --exclude-blend-smooth alpha is bad args\n%s" % txt)
 
     ghost = os.path.join(tmp, "ghost.blend")
     rc, txt = _blender(["--in", src, "--targets", "Shorts", "--whatif"])
@@ -291,7 +413,10 @@ def main():
     test_no_flip_and_mask_and_smooth()
     test_shapes()
     test_blend_and_frame()
+    test_blend_regions()
     test_refusals()
+    test_more_refusals()
+    test_recipe_round_trip()
     with tempfile.TemporaryDirectory() as tmp:
         test_cli(tmp)
     if FAILURES:
