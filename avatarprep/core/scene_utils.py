@@ -171,6 +171,9 @@ def _baked_entry(ob) -> Dict[str, Any]:
     folded = ob.get(STAMP_FOLDED)
     if folded is not None:
         entry["folded"] = folded
+    pushed = ob.get(STAMP_PUSHED)
+    if pushed is not None:
+        entry["pushed"] = pushed if isinstance(pushed, str) else repr(pushed)
     entry.update(_library_fields(ob))
     return entry
 
@@ -198,11 +201,13 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
       <mesh entry> = {"name", "library", "data_library",
                       ["baked": {shapekey: value} | "baked": None, "corrupt": <repr>],
                       ["weights": <transfer_weights recipe line>],
-                      ["folded": <fold_bones command line>]}
+                      ["folded": <fold_bones command line>],
+                      ["pushed": <push_garment command line>]}
 
-    A mesh qualifies by carrying any of ``avatarprep_baked``, ``avatarprep_weights`` or
-    ``avatarprep_folded``, and its entry holds a key for each stamp it carries: ``baked``,
-    ``weights`` and ``folded`` are the keys a consumer branches on by presence. Every other
+    A mesh qualifies by carrying any of ``avatarprep_baked``, ``avatarprep_weights``,
+    ``avatarprep_folded`` or ``avatarprep_pushed``, and its entry holds a key for each stamp it
+    carries: ``baked``, ``weights``, ``folded`` and ``pushed`` are the keys a consumer branches
+    on by presence. Every other
     key is always present.
 
     Every armature is reported even when unstamped (``base=None``,
@@ -236,12 +241,12 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     objects = list(scene.objects) if scene else list(bpy.data.objects)
 
     armature_objs = [ob for ob in objects if ob is not None and ob.type == 'ARMATURE']
-    # A mesh qualifies on EITHER stamp — ``avatarprep_baked`` (shapekey_bake) or
-    # ``avatarprep_folded`` (fold_bones) — so a folded-only mesh is not invisible here.
+    # A mesh qualifies on any of its stamps (baked, weights, folded, pushed), so a mesh carrying
+    # only one of them is not invisible here.
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
-                  and (ob.get(STAMP_BAKED) is not None or ob.get(STAMP_WEIGHTS) is not None
-                       or ob.get(STAMP_FOLDED) is not None)]
+                  and any(ob.get(k) is not None
+                          for k in (STAMP_BAKED, STAMP_WEIGHTS, STAMP_FOLDED, STAMP_PUSHED))]
     baked_names = {ob.name for ob in baked_objs}
 
     # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.
