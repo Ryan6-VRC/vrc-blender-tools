@@ -282,11 +282,9 @@ def test_auto_map_deterministic_readonly_and_reusable():
     table2, info2 = core.auto_map(arm, [ribbon], doomed)
 
     check(table1 == table2, "auto_map is not deterministic: %r vs %r" % (table1, table2))
-    check({k: {kk: (v["ratio"], v["ambiguous"]) for kk, v in [("x", vv)] for vv in [v]}
-          for k, v in info1.items()}
-          == {k: {kk: (v["ratio"], v["ambiguous"]) for kk, v in [("x", vv)] for vv in [v]}
-              for k, v in info2.items()},
-          "auto_map info not deterministic")
+    info1_cmp = {k: (v["ratio"], v["ambiguous"]) for k, v in info1.items()}
+    info2_cmp = {k: (v["ratio"], v["ambiguous"]) for k, v in info2.items()}
+    check(info1_cmp == info2_cmp, "auto_map info not deterministic: %r vs %r" % (info1_cmp, info2_cmp))
     check({b.name for b in arm.data.bones} == bones_before, "auto_map mutated the armature")
     check(_weights_of(ribbon, all_names) == weights_before, "auto_map mutated the mesh")
 
@@ -424,7 +422,7 @@ def test_folded_stamp_readable_by_report_stamps():
     from avatarprep.core import scene_utils
 
     arm, ribbon, second = _build_scene()
-    scene_utils.write_stamp(ribbon.data, scene_utils.STAMP_FOLDED, "fold_bones --in x --bones Ribbon*")
+    scene_utils.write_stamp(ribbon, scene_utils.STAMP_FOLDED, "fold_bones --in x --bones Ribbon*")
     rep = scene_utils.report_stamps(bpy.context.scene)
     entries = [m for a in rep["armatures"] for m in a["meshes"]] + rep["unbound"]
     hit = next((e for e in entries if e["name"] == "RibbonMesh"), None)

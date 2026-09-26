@@ -210,7 +210,7 @@ def main():
 
     cmdline = "fold_bones " + " ".join(sys.argv[sys.argv.index("--") + 1:])
     for m in targets:
-        scene_utils.write_stamp(m.data, scene_utils.STAMP_FOLDED, cmdline)
+        scene_utils.write_stamp(m, scene_utils.STAMP_FOLDED, cmdline)
 
     out_path = os.path.abspath(args.in_path) if args.in_place else os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
