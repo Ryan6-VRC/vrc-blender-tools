@@ -654,6 +654,186 @@ def test_cli_whatif_writes_nothing_and_reports_geometry():
     check(rc == 2, "--out under --whatif should exit 2, got %s" % rc)
 
 
+# --- absent bones: a mergeable rig pruned to what it skins ---------------------
+
+_ABSENT_RIG = (("Hips", None, (0, 0, 0.9), (0, 0, 1.0)),
+               ("Spine", "Hips", (0, 0, 1.0), (0, 0, 1.3)),
+               ("UpperArm.L", "Spine", (0.1, 0, 1.3), (0.35, 0, 1.3)),
+               ("LowerArm.L", "UpperArm.L", (0.35, 0, 1.3), (0.6, 0, 1.3)),
+               ("Hand.L", "LowerArm.L", (0.6, 0, 1.3), (0.7, 0, 1.3)),
+               ("Breast.L", "Spine", (0.08, 0, 1.15), (0.08, -0.1, 1.15)),
+               ("Breast.R", "Spine", (-0.08, 0, 1.15), (-0.08, -0.1, 1.15)),
+               ("UpperLeg.L", "Hips", (0.1, 0, 0.9), (0.1, 0, 0.5)),
+               ("Toe.L", "UpperLeg.L", (0.1, 0, 0.5), (0.1, -0.1, 0.5)))
+
+# scales[0] partial local/individual once Hand.L is gone; scales[1] all-absent once
+# Toe.L is gone; Toe.L in no_inherit_scale is dropped with it.
+_ABSENT_EDGE = {"source": "s0", "target": "s1", "source_base": "a",
+                "no_inherit_scale": ["UpperArm.L", "Toe.L"],
+                "scales": [{"bones": ["UpperArm.L", "LowerArm.L", "Hand.L"],
+                            "value": [1.0, 1.2, 1.1]},
+                           {"bones": ["Toe.L"], "value": [1.3, 1.3, 1.3]},
+                           {"bones": ["UpperLeg.L"], "value": [1.0, 1.1, 1.0]}]}
+
+
+def _absent_rig(delete=()):
+    """The full rig, minus ``delete`` (leaf bones only, so nothing present loses an
+    ancestor), with a mesh skinned to bones present in every variant."""
+    from avatarprep.core import scene_utils
+    _clear_scene()
+    arm = _make_arm(bones=[(n, h, t) for n, _, h, t in _ABSENT_RIG])
+    with scene_utils.edit_mode(arm) as ebs:
+        for n, parent, _, _ in _ABSENT_RIG:
+            if parent:
+                ebs[n].parent = ebs[parent]
+        for n in delete:
+            check(not ebs[n].children, "fixture deletes leaf bones only, %r has children" % n)
+            ebs.remove(ebs[n])
+    md = bpy.data.meshes.new("SleeveData")
+    verts = [(0.2, 0, 1.3), (0.45, 0, 1.3), (0.55, 0.02, 1.32), (0.1, 0, 0.7), (0, 0, 1.2)]
+    md.from_pydata(verts, [], [])
+    md.update()
+    ob = bpy.data.objects.new("Sleeve", md)
+    bpy.context.collection.objects.link(ob)
+    for g, idx in (("UpperArm.L", [0]), ("LowerArm.L", [1, 2]), ("UpperLeg.L", [3]),
+                   ("Spine", [4])):
+        ob.vertex_groups.new(name=g).add(idx, 1.0, 'REPLACE')
+    ob.modifiers.new("Armature", 'ARMATURE').object = arm
+    ob.parent = arm
+    arm["avatarprep_base"] = "a"
+    arm["avatarprep_state"] = "s0"
+    return arm, ob
+
+
+def _absent_geometry(arm, mesh):
+    bones = {b.name: (tuple(b.head_local), tuple(b.tail_local)) for b in arm.data.bones}
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = mesh.evaluated_get(dg)
+    verts = [tuple(mesh.matrix_world @ v.co) for v in ev.data.vertices]
+    return bones, verts
+
+
+def _close(a, b, tol=1e-6):
+    return all(abs(x - y) < tol for x, y in zip(a, b))
+
+
+def test_absent_bones_drop():
+    from avatarprep.core import proportions as P
+    import copy
+
+    # Full rig: the reference the dropped apply must reproduce on the bones it keeps.
+    arm, mesh = _absent_rig()
+    rep_full = P.apply_proportion_edge(arm, [mesh], copy.deepcopy(_ABSENT_EDGE),
+                                       skip_shapekeys=True)
+    full_bones, full_verts = _absent_geometry(arm, mesh)
+    check(rep_full["scales_applied"] == 3 and rep_full["dropped"] == [],
+          "full rig applies every op and drops nothing: %r" % rep_full["dropped"])
+
+    # Default refuse is unchanged: the absent bones offend, nothing is dropped.
+    arm, mesh = _absent_rig(delete=("Hand.L", "Toe.L"))
+    val = P.validate_proportion_edge(arm, [mesh], P.load_edge(copy.deepcopy(_ABSENT_EDGE)),
+                                     skip_shapekeys=True)
+    joined = " ".join(val["offenders"])
+    check("'Hand.L'" in joined and "'Toe.L'" in joined and not val["dropped"],
+          "refuse must offend on each absent bone and drop nothing: %r" % val["offenders"])
+    expect_raises(lambda: P.apply_proportion_edge(arm, [mesh], copy.deepcopy(_ABSENT_EDGE),
+                                                  skip_shapekeys=True),
+                  "bone not found", "default apply on an absent bone")
+
+    # Drop: the all-absent op and the absent no_inherit_scale entry go, the partial
+    # local/individual op applies to its present bones.
+    arm, mesh = _absent_rig(delete=("Hand.L", "Toe.L"))
+    rep = P.apply_proportion_edge(arm, [mesh], copy.deepcopy(_ABSENT_EDGE),
+                                  skip_shapekeys=True, absent_bones="drop")
+    got = sorted((d["where"], tuple(d["bones"]), d["whole_op"]) for d in rep["dropped"])
+    want = sorted([("scales[0]", ("Hand.L",), False), ("scales[1]", ("Toe.L",), True),
+                   ("no_inherit_scale", ("Toe.L",), False)])
+    check(got == want, "dropped record: got %r, want %r" % (got, want))
+    check(rep["scales_applied"] == 2, "scales_applied counts effective ops, got %d"
+          % rep["scales_applied"])
+    bones, verts = _absent_geometry(arm, mesh)
+    for n, (h, t) in bones.items():
+        fh, ft = full_bones[n]
+        check(_close(h, fh) and _close(t, ft),
+              "present bone %s must match the full-rig apply: %r/%r vs %r/%r"
+              % (n, h, t, fh, ft))
+    for i, (v, fv) in enumerate(zip(verts, full_verts)):
+        check(_close(v, fv), "vertex %d must match the full-rig apply: %r vs %r" % (i, v, fv))
+    check(not _close(full_verts[1], (0.45, 0, 1.3)),
+          "the fixture must actually move the LowerArm vertex, or the equality proves nothing")
+
+    # A partly-absent median op stays an offender under drop, and so does a framed
+    # individual one: both are computed over the whole bone set. The local/median case
+    # keeps two present bones, so only the partial-op rule can refuse it.
+    for space, pivot, names, gone in (
+            ("normal", "median", ["Breast.L", "Breast.R"], "Breast.R"),
+            ("normal", "individual", ["Breast.L", "Breast.R"], "Breast.R"),
+            ("local", "median", ["Breast.L", "Breast.R", "Toe.L"], "Toe.L")):
+        arm, mesh = _absent_rig(delete=(gone,))
+        edge = {"source": "s0", "target": "s1", "source_base": "a",
+                "scales": [{"bones": names, "value": [1.2, 1.2, 1.2],
+                            "space": space, "pivot": pivot}]}
+        val = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge),
+                                         skip_shapekeys=True, absent_bones="drop")
+        check(any(gone in o and "partly-absent" in o for o in val["offenders"])
+              and not val["dropped"],
+              "partial %s/%s op must refuse under drop: %r" % (space, pivot, val["offenders"]))
+
+    # A --bone-override onto an absent bone is never dropped.
+    arm, mesh = _absent_rig(delete=("Hand.L",))
+    edge = {"source": "s0", "target": "s1", "source_base": "a",
+            "scales": [{"bones": ["Paw.L"], "value": [1.1, 1.1, 1.1]}]}
+    val = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge),
+                                     bone_overrides={"Paw.L": "Hand.L"},
+                                     skip_shapekeys=True, absent_bones="drop")
+    check(any("Hand.L" in o and "--bone-override" in o for o in val["offenders"])
+          and not val["dropped"],
+          "an override onto an absent bone must offend under drop: %r" % val["offenders"])
+
+
+def test_cli_whatif_reports_dropped():
+    import json
+    import subprocess
+    import tempfile
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    door = os.path.join(root, "cli", "apply_proportion_edge.py")
+    tmp = tempfile.mkdtemp(prefix="avatarprep_absent_")
+    src = os.path.join(tmp, "src.blend")
+    edge_path = os.path.join(tmp, "edge.json")
+    _absent_rig(delete=("Hand.L", "Toe.L"))
+    bpy.ops.wm.save_as_mainfile(filepath=src)
+    with open(edge_path, "w", encoding="utf-8") as fh:
+        json.dump(_ABSENT_EDGE, fh)
+
+    def run(extra):
+        proc = subprocess.run([bpy.app.binary_path, "--background", "--factory-startup",
+                               "--python", door, "--", "--in", src, "--edge", edge_path,
+                               "--whatif"] + extra,
+                              capture_output=True, text=True, timeout=600)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    rc, out = run([])
+    check(rc == 1 and "bone not found" in out, "default --whatif must refuse, got %s" % rc)
+
+    report = os.path.join(tmp, "r.json")
+    rc, out = run(["--absent-bones", "drop", "--report", report])
+    check(rc == 0, "drop --whatif should exit 0, got %s (%r)" % (rc, out[-600:]))
+    check("AVATARPREP: DROPPED scales[1] 'Toe.L'" in out
+          and "AVATARPREP: DROPPED scales[0] 'Hand.L'" in out
+          and "AVATARPREP: DROPPED no_inherit_scale 'Toe.L'" in out,
+          "one DROPPED line per dropped op or bone, got %r" % out[-900:])
+    data = json.load(open(report, encoding="utf-8"))
+    check(len(data.get("dropped", [])) == 3, "report should carry dropped: %r"
+          % data.get("dropped"))
+    ops = data["geometry"]["scale_ops"]
+    check([o["index"] for o in ops] == [0, 2],
+          "geometry should list effective ops under their edge index, got %r"
+          % [o["index"] for o in ops])
+    check(ops and ops[0]["bones"] == ["UpperArm.L", "LowerArm.L"],
+          "the partial op should list its present bones only, got %r"
+          % (ops[0]["bones"] if ops else None))
+
+
 def test_bbox_center_skips_empty_meshes():
     """pivot 'bbox_center' scales about the meshes' own centre. A mesh with no geometry
     must contribute nothing: counting it drags that centre toward the object's origin
@@ -926,6 +1106,8 @@ def main():
     test_collateral_lengths()
     test_local_scale_op_does_not_compound_down_a_chain()
     test_cli_whatif_writes_nothing_and_reports_geometry()
+    test_absent_bones_drop()
+    test_cli_whatif_reports_dropped()
     test_bbox_center_skips_empty_meshes()
     test_bbox_center_refuses_unevaluated_meshes()
     test_world_bounds_reads_the_evaluated_result()
