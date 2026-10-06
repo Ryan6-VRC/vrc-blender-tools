@@ -3,14 +3,14 @@
 Run:
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --out <out.blend> --edge <edge.json> [--skip-shapekeys] \
-      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...]       [--absent-bones refuse|drop] [--report <report.json>]
+      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \n      [--absent-bones refuse|drop] [--report <report.json>]
 
   # Preview: validate the edge, then report the geometry it would produce. Writes
   # nothing; --out must be omitted (passing it errors — a preview never writes a
   # deliverable).
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --edge <edge.json> --whatif [--skip-shapekeys] \
-      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...]       [--absent-bones refuse|drop] [--report <report.json>]
+      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \n      [--absent-bones refuse|drop] [--report <report.json>]
 
 --whatif mutates nothing ON DISK. Once the validate gate is clean it trial-applies the
 real engine in memory and measures the result at each stage boundary, then discards it

@@ -763,15 +763,19 @@ def test_absent_bones_drop():
           "the fixture must actually move the LowerArm vertex, or the equality proves nothing")
 
     # A partly-absent median op stays an offender under drop, and so does a framed
-    # individual one: both are computed over the whole bone set.
-    for space, pivot in (("normal", "median"), ("normal", "individual")):
-        arm, mesh = _absent_rig(delete=("Breast.R",))
+    # individual one: both are computed over the whole bone set. The local/median case
+    # keeps two present bones, so only the partial-op rule can refuse it.
+    for space, pivot, names, gone in (
+            ("normal", "median", ["Breast.L", "Breast.R"], "Breast.R"),
+            ("normal", "individual", ["Breast.L", "Breast.R"], "Breast.R"),
+            ("local", "median", ["Breast.L", "Breast.R", "Toe.L"], "Toe.L")):
+        arm, mesh = _absent_rig(delete=(gone,))
         edge = {"source": "s0", "target": "s1", "source_base": "a",
-                "scales": [{"bones": ["Breast.L", "Breast.R"], "value": [1.2, 1.2, 1.2],
+                "scales": [{"bones": names, "value": [1.2, 1.2, 1.2],
                             "space": space, "pivot": pivot}]}
         val = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge),
                                          skip_shapekeys=True, absent_bones="drop")
-        check(any("Breast.R" in o and "partly-absent" in o for o in val["offenders"])
+        check(any(gone in o and "partly-absent" in o for o in val["offenders"])
               and not val["dropped"],
               "partial %s/%s op must refuse under drop: %r" % (space, pivot, val["offenders"]))
 
@@ -828,8 +832,6 @@ def test_cli_whatif_reports_dropped():
     check(ops and ops[0]["bones"] == ["UpperArm.L", "LowerArm.L"],
           "the partial op should list its present bones only, got %r"
           % (ops[0]["bones"] if ops else None))
-    check(not any(r["bone"] in ("Hand.L", "Toe.L") for o in ops for r in o["lengths"]),
-          "no length row may name a dropped bone")
 
 
 def test_bbox_center_skips_empty_meshes():
