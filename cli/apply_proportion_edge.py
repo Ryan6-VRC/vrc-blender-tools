@@ -3,14 +3,14 @@
 Run:
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --out <out.blend> --edge <edge.json> [--skip-shapekeys] \
-      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
+      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...]       [--absent-bones refuse|drop] [--report <report.json>]
 
   # Preview: validate the edge, then report the geometry it would produce. Writes
   # nothing; --out must be omitted (passing it errors — a preview never writes a
   # deliverable).
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --edge <edge.json> --whatif [--skip-shapekeys] \
-      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] [--report <report.json>]
+      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...]       [--absent-bones refuse|drop] [--report <report.json>]
 
 --whatif mutates nothing ON DISK. Once the validate gate is clean it trial-applies the
 real engine in memory and measures the result at each stage boundary, then discards it
@@ -64,6 +64,12 @@ def _parse_args():
                         "edge, and a NAME the edge does not carry is ADDED to it — an added "
                         "key must exist on some bound mesh or the run refuses, so a typo'd "
                         "name surfaces as 'shapekey not found on any mesh'. Repeatable")
+    p.add_argument("--absent-bones", choices=("refuse", "drop"), default="refuse",
+                   help="What a bone the edge names but the rig lacks does. 'refuse' "
+                        "(default) offends. 'drop' leaves it out, for a mergeable pruned "
+                        "to what it skins, and prints one DROPPED line per op or bone left "
+                        "out; core proportions.effective_edge owns the rules and the "
+                        "caveat on an absent bone with a present descendant")
     p.add_argument("--report", dest="report", default=None,
                    help="Write the full result dict here as JSON")
     add_force_load_repair(p)
@@ -100,6 +106,13 @@ def _resolve_armature(name):
     return arms[0]
 
 
+def _print_dropped(dropped):
+    for d in dropped:
+        print("AVATARPREP: DROPPED %s %s: %s" % (
+            d["where"], ", ".join(repr(b) for b in d["bones"]),
+            "every bone of the op is absent" if d["whole_op"] else "absent from the rig"))
+
+
 def _geometry_report(stages, edge, bone_overrides, repair):
     """Assemble the staged geometry block from the trial's measurements.
 
@@ -129,11 +142,11 @@ def _geometry_report(stages, edge, bone_overrides, repair):
     # |UpperArm.head - Hand.head|); measure.py owns why it isn't pre-chosen here.
     out["bones"] = {"pre": pre["bones"], "post": final["bones"]}
     named = set()
-    for i, op in enumerate(edge["scales"]):
+    for op in edge["scales"]:
         names = [bone_overrides.get(b, b) for b in op["bones"]]
         named.update(names)
         out["scale_ops"].append({
-            "index": i, "value": op["value"], "space": op["space"],
+            "index": op["index"], "value": op["value"], "space": op["space"],
             "pivot": op["pivot"], "bones": names,
             "lengths": measure.bone_length_deltas(pre, final, names)})
     out["collateral_lengths"] = measure.collateral_lengths(pre, final, named)
@@ -214,7 +227,8 @@ def main():
         meshes = scene_utils.get_bound_meshes(armature)
         report = proportions.validate_proportion_edge(
             armature, meshes, edge, bone_overrides=bone_overrides,
-            shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys)
+            shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys,
+            absent_bones=args.absent_bones)
 
         offenders = report["offenders"]
         warnings = report["warnings"]
@@ -225,6 +239,7 @@ def main():
             print("AVATARPREP: OFFENDER", o)
         for w in warnings:
             print("AVATARPREP: WARNING", w)
+        _print_dropped(report["dropped"])
 
         if offenders:
             if args.report:
@@ -240,10 +255,10 @@ def main():
         proportions.apply_proportion_edge(
             armature, meshes, edge, bone_overrides=bone_overrides,
             shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys,
-            stage_hook=lambda name: stages.append(
+            absent_bones=args.absent_bones, stage_hook=lambda name: stages.append(
                 (name, measure.measure_geometry(armature, meshes))))
 
-        geometry = _geometry_report(stages, edge, bone_overrides, repair)
+        geometry = _geometry_report(stages, report["effective_edge"], bone_overrides, repair)
         report["geometry"] = geometry
         _print_geometry(geometry, repair)
 
@@ -266,7 +281,7 @@ def main():
         report = proportions.apply_proportion_edge(
             armature, None, args.edge, bone_overrides=bone_overrides,
             shapekey_overrides=shapekey_overrides,
-            skip_shapekeys=args.skip_shapekeys)
+            skip_shapekeys=args.skip_shapekeys, absent_bones=args.absent_bones)
     except proportions.EdgeError as e:
         print("AVATARPREP: ERROR", e)
         sys.exit(1)
@@ -275,6 +290,7 @@ def main():
              len(report["shapekeys"]), len(report["bakes"]), len(report["warnings"])))
     for w in report["warnings"]:
         print("AVATARPREP: WARNING", w)
+    _print_dropped(report["dropped"])
 
     if args.report:
         write_report(args.report, report)

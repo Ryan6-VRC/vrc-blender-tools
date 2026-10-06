@@ -121,6 +121,96 @@ def _resolve_bone(name, bone_overrides):
     return bone_overrides.get(name, name)
 
 
+ABSENT_BONES_MODES = ("refuse", "drop")
+
+
+def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -> Dict[str, Any]:
+    """The edge as it will apply to this rig: the one answer validate, apply and the
+    ``--whatif`` geometry report all read, so what is checked is what is applied.
+
+    Returns ``{"edge", "dropped", "refused"}``. ``edge`` is a copy whose ops carry
+    ``index``, their position in the source edge. Under ``absent_bones="refuse"`` it is
+    the source edge unchanged and the other two are empty, so an absent bone offends.
+
+    Under ``"drop"``, for a rig that lacks body bones the edge names (a mergeable pruned
+    to what it skins), a bone is judged absent after ``--bone-override`` resolution:
+
+    - an op whose bones are all absent is dropped;
+    - a ``space="local"``, ``pivot="individual"`` op applies to its present bones;
+    - any other partly-absent op is kept whole, so it still offends: a median pivot and
+      a normal frame are computed over the whole bone set, and a subset moves the bones
+      it keeps differently from the body;
+    - ``no_inherit_scale`` names for absent bones are dropped;
+    - a bone whose ``--bone-override`` target is absent is kept, so it still offends.
+
+    ``dropped`` holds one record per dropped op, or per dropped bone of a partial op or
+    of ``no_inherit_scale``, with the edge's name and the resolved name. ``refused`` maps
+    a resolved bone the drop mode kept to the reason, for the offender text.
+
+    Dropping is exact only where every absent bone's subtree is absent too. A rig that
+    lacks a bone the edge scales but keeps a descendant of it (pruned of ``Hand`` but
+    keeping a finger) does not reproduce the body: that descendant never inherits the
+    dropped scale, and nothing reports it."""
+    if absent_bones not in ABSENT_BONES_MODES:
+        raise EdgeError("absent_bones must be one of %s, got %r"
+                        % (ABSENT_BONES_MODES, absent_bones))
+    bone_overrides = bone_overrides or {}
+    out = dict(edge)
+    out["scales"] = [dict(op, bones=list(op["bones"]), index=i)
+                     for i, op in enumerate(edge["scales"])]
+    out["no_inherit_scale"] = list(edge["no_inherit_scale"])
+    result = {"edge": out, "dropped": [], "refused": {}}
+    if absent_bones == "refuse":
+        return result
+
+    bone_names = {b.name for b in armature.data.bones}
+    refused = result["refused"]
+
+    def absent(name):
+        rn = _resolve_bone(name, bone_overrides)
+        if rn in bone_names:
+            return False
+        if name in bone_overrides:
+            refused[rn] = "it is a --bone-override target, which is never dropped"
+            return False
+        return True
+
+    kept_ops = []
+    for op in out["scales"]:
+        gone = [b for b in op["bones"] if absent(b)]
+        where = "scales[%d]" % op["index"]
+        if not gone:
+            kept_ops.append(op)
+        elif len(gone) == len(op["bones"]):
+            result["dropped"].append({"where": where, "whole_op": True, "bones": gone,
+                                      "resolved": [_resolve_bone(b, bone_overrides)
+                                                   for b in gone]})
+        elif op["space"] == "local" and op["pivot"] == "individual":
+            for b in gone:
+                result["dropped"].append({"where": where, "whole_op": False, "bones": [b],
+                                          "resolved": [_resolve_bone(b, bone_overrides)]})
+            op["bones"] = [b for b in op["bones"] if b not in gone]
+            kept_ops.append(op)
+        else:
+            for b in gone:
+                refused[_resolve_bone(b, bone_overrides)] = (
+                    "%s is a partly-absent %s/%s op, whose result depends on its whole "
+                    "bone set" % (where, op["space"], op["pivot"]))
+            kept_ops.append(op)
+    out["scales"] = kept_ops
+
+    kept_nis = []
+    for b in out["no_inherit_scale"]:
+        if absent(b):
+            result["dropped"].append({"where": "no_inherit_scale", "whole_op": False,
+                                      "bones": [b],
+                                      "resolved": [_resolve_bone(b, bone_overrides)]})
+        else:
+            kept_nis.append(b)
+    out["no_inherit_scale"] = kept_nis
+    return result
+
+
 def _effective_shapekeys(edge, shapekey_overrides):
     eff = dict(edge["shapekeys"])
     for k, v in shapekey_overrides.items():
@@ -132,11 +222,15 @@ def _effective_shapekeys(edge, shapekey_overrides):
 
 
 def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
-                           shapekey_overrides=None, skip_shapekeys=False) -> Dict[str, Any]:
+                           shapekey_overrides=None, skip_shapekeys=False,
+                           absent_bones="refuse") -> Dict[str, Any]:
     """Read-only check of a loaded ``edge`` against the rig, before any mutation.
 
-    Returns ``{"offenders": [...], "warnings": [...]}`` — offenders are hard blockers
-    (missing bones/shapekeys, state mismatch) named for the fix; warnings are softer.
+    Returns ``{"offenders": [...], "warnings": [...], "dropped": [...],
+    "effective_edge": {...}}`` — offenders are hard blockers (missing bones/shapekeys,
+    state mismatch) named for the fix; warnings are softer. Bones are checked on
+    ``effective_edge`` (see that function for ``absent_bones``), which is what an apply
+    would scale.
     apply_proportion_edge calls this and aborts on offenders. Faces: pure core
     (agent/MCP) + the ``apply_proportion_edge --whatif`` headless CLI; no operator/UI
     by design — it is an agent-side gate, not a human N-panel button.
@@ -145,6 +239,10 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
     shapekey_overrides = shapekey_overrides or {}
     offenders: List[str] = []
     warnings: List[str] = []
+
+    effective = effective_edge(armature, edge, bone_overrides, absent_bones)
+    refused = effective["refused"]
+    edge = effective["edge"]
 
     bone_names = {b.name for b in armature.data.bones}
 
@@ -192,9 +290,12 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
         seen.add(name)
         rn = _resolve_bone(name, bone_overrides)
         if rn not in bone_names:
-            offenders.append("bone not found: %r (resolved from %r)" % (rn, name))
+            offenders.append("bone not found: %r (resolved from %r)%s"
+                             % (rn, name, "; --absent-bones drop keeps it: " + refused[rn]
+                                if rn in refused else ""))
 
-    for i, op in enumerate(edge["scales"]):
+    for op in edge["scales"]:
+        i = op["index"]
         resolved = [_resolve_bone(b, bone_overrides) for b in op["bones"]]
         present = [r for r in resolved if r in bone_names]
         if op["pivot"] == "median" and len(present) < 2:
@@ -268,7 +369,8 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
         offenders.append("mesh %r is not evaluated (%s); the rest-pose bake would write "
                          "it UNDEFORMED" % (name, rest_pose.UNEVALUATED_STATES))
 
-    return {"offenders": offenders, "warnings": warnings}
+    return {"offenders": offenders, "warnings": warnings, "dropped": effective["dropped"],
+            "effective_edge": edge}
 
 
 def apply_local_scale(pose_bone, value) -> None:
@@ -474,10 +576,13 @@ def _set_no_inherit_scale(armature, bone_names):
 
 def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_overrides=None,
                   shapekey_overrides=None, skip_shapekeys=False,
-                  stage_hook=None) -> Dict[str, Any]:
-    """Apply one edge. ``stage_hook(name)``, when given, is called at each stage
-    boundary — ``'pre'``, then ``'object'`` / ``'scales'`` / ``'shapekeys'`` for the
-    stages this edge actually has.
+                  stage_hook=None, absent_bones="refuse") -> Dict[str, Any]:
+    """Apply one edge, as ``effective_edge`` filters it for ``absent_bones``; the
+    report's ``dropped`` lists what that left out.
+
+    ``stage_hook(name)``, when given, is called at each stage boundary — ``'pre'``,
+    then ``'object'`` / ``'scales'`` / ``'shapekeys'`` for the stages this edge
+    actually has.
 
     The hook exists so ``--whatif`` can measure the real transform at each boundary
     instead of predicting it: a second implementation of this engine, however careful,
@@ -492,14 +597,16 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
     edge = load_edge(edge_src)
 
     val = validate_proportion_edge(armature, meshes, edge, bone_overrides=bone_overrides,
-                                 shapekey_overrides=shapekey_overrides, skip_shapekeys=skip_shapekeys)
+                                 shapekey_overrides=shapekey_overrides, skip_shapekeys=skip_shapekeys,
+                                 absent_bones=absent_bones)
     if val["offenders"]:
         raise EdgeError("apply_proportion_edge aborted; offenders:\n  - "
                         + "\n  - ".join(val["offenders"]))
+    edge = val["effective_edge"]
 
     report = {"source": edge["source"], "target": edge["target"],
-              "warnings": val["warnings"], "bakes": [], "scales_applied": 0,
-              "shapekeys": [], "base": None, "state": None}
+              "warnings": val["warnings"], "dropped": val["dropped"], "bakes": [],
+              "scales_applied": 0, "shapekeys": [], "base": None, "state": None}
 
     # Mark the rig mid-apply. A value left at this sentinel == a crash between here
     # and the success stamp below → the geometry is half-transformed.
