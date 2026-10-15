@@ -954,7 +954,10 @@ def plan_push(data, gi, the_plan, *, amount, near=0.0005, falloff=0.025, rim_hol
             s = n.copy()
             np.add.at(s, E[:, 0], n[E[:, 1]])
             np.add.at(s, E[:, 1], n[E[:, 0]])
-            n = np.nan_to_num(_unit(s))
+            u = _unit(s)
+            # a neighbourhood that cancels to zero keeps its last direction, so no push is lost
+            ok = np.isfinite(u).all(1) & (np.linalg.norm(s, axis=1) > 1e-12)
+            n = np.where(ok[:, None], u, n)
     dw = n * (amount * f)[:, None]
     M3 = np.array(g["object"].matrix_world.to_3x3(), np.float64)
     return {"delta": dw @ np.linalg.inv(M3).T, "seeded": seeds, "kind": kind, "rest_seeds": int(rest.sum()),
