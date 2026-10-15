@@ -21,7 +21,9 @@ into the garment blend afterwards. Reads its inputs and never writes them.
   shape. A garment rig of its own keeps its bones, not its object: every bone a garment
   vertex group weights that the body rig lacks is copied onto the body rig at its rest,
   with its garment-only ancestors. A weighted group naming a bone on neither rig refuses
-  by name.
+  by name. The garment rig's bone constraints are not carried, and a modifier whose
+  target the scene does not carry (a Mirror modifier's mirror object, say) keeps a
+  dangling target; each is named on a WARNING line.
 - **The row**: ``--set MESH:KEY=VALUE`` (repeatable) sets a shape-key value on the body
   mesh or a garment mesh, in Blender's 0..1 (a Unity weight of 20 is 0.2); pass every
   key the row's prefab sets, since a garment edited off its row is fixed against the
@@ -34,7 +36,10 @@ into the garment blend afterwards. Reads its inputs and never writes them.
   and each rotation is rebuilt on the body's bone carrying its world-space rotation
   across both rests. ``--bone-override OLD=NEW`` maps a corpus bone onto the body's
   spelling; a corpus bone the body lacks refuses unless ``--absent-bones drop`` leaves
-  it out, named on a ``DROPPED`` line. Without ``--poses`` the scene opens at rest.
+  it out, named on a ``DROPPED`` line, and one the body carries under another spelling
+  (case, ``_``, ``.``) refuses even then. The body reproduces the corpus's world pose
+  where the mapped bones' parent chains match; a mapped bone below a dropped one misses
+  the dropped bone's rotation. Without ``--poses`` the scene opens at rest.
 
 Bone locations are locked on every bone with a parent, and the pivot is individual
 origins, so a multi-bone rotation does not pull bones out of their sockets. The door
@@ -83,7 +88,11 @@ def _parse_args():
                    help="map a pose-corpus bone onto the body's spelling. Repeatable")
     p.add_argument("--absent-bones", choices=("refuse", "drop"), default=None,
                    help="what a corpus bone the body lacks does: 'refuse' (default) or 'drop', "
-                        "which leaves its rotation out and names it")
+                        "which leaves its rotation out and names it on a DROPPED line. A bone "
+                        "the body carries under another spelling (case, '_', '.') still "
+                        "refuses: map it with --bone-override. A mapped bone below a dropped "
+                        "one keeps its own rotation but not the dropped bone's, so its world "
+                        "pose differs from the corpus's")
     p.add_argument("--set", dest="sets", action="append", default=[], metavar="MESH:KEY=VALUE",
                    help="set a shape-key value (0..1) on the body mesh or a garment mesh. "
                         "Repeatable")

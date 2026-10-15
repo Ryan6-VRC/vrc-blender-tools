@@ -24,7 +24,9 @@ every vertex. A weighted garment vertex group naming a bone on neither rig refus
 name: the harvest renormalises each vertex over all its groups, so a non-bone group
 would come back rescaled. Shape-key actions on the body and garment meshes are cleared,
 the row's key values are set, the body opens at its rest pose, and every garment
-mesh's active key is parked on Basis.
+mesh's active key is parked on Basis. The garment rig's bone constraints do not come
+along, and a modifier pointing at an object the scene does not carry keeps a dangling
+target; both are named as warnings.
 
 **Poses.** With a pose corpus, the corpus's one animated armature is the pose rig and
 only the channels in its own action slot are read. Every channel must be a bone's
@@ -32,9 +34,18 @@ only the channels in its own action slot are read. Every channel must be a bone'
 Each timeline marker is one pose; frame 0 is added as the rest pose, and the markers
 carry over. Each pose bone's rotation is rebuilt on the body bone of the same name
 (or the ``bone_overrides`` spelling) by carrying its world-space rotation across both
-rests, so rigs whose bone rolls differ still agree; for two armature objects with equal
-rotation that is the armature-space rotation. A corpus bone the body lacks refuses
-unless ``absent_bones='drop'``, which leaves its rotation out and names it.
+rests; for two armature objects with equal rotation that is the armature-space rotation.
+Each bone's rotation is carried as its own local delta, so the body reproduces the
+corpus's world pose wherever the mapped bones' parent chains match, whatever their rolls;
+where a chain differs (a dropped bone between two mapped ones) the bones below it miss
+that bone's rotation. A corpus bone the body lacks refuses unless
+``absent_bones='drop'``, which leaves its rotation out and names it; a dropped bone whose
+name matches a body bone but for case, ``_`` and ``.`` still refuses, since it is that
+bone spelled differently and wants ``--bone-override``.
+
+**Editing aids.** Every bone with a parent is location-locked and the pivot is
+individual origins, so a multi-bone rotation does not pull bones out of their sockets;
+a root bone keeps its location free. Proportional editing is on, smooth, 0.02 m.
 """
 import array
 import re
@@ -58,12 +69,11 @@ _BONE_PATH = re.compile(r'pose\.bones\["(.+?)"\]')
 
 
 class HandEditRefused(ValueError):
-    """A stage or harvest gate. ``kind`` tags which one; ``offenders`` names what
-    tripped it, one entry per ``OFFENDER`` line. Nothing on disk is written when this
-    raises; the doors save only after every gate has passed."""
+    """A stage or harvest gate. ``offenders`` names what tripped it, one entry per
+    ``OFFENDER`` line. Nothing on disk is written when this raises; the doors save
+    only after every gate has passed."""
 
-    def __init__(self, kind, message, offenders=()):
-        self.kind = kind
+    def __init__(self, message, offenders=()):
         self.offenders = list(offenders)
         super().__init__(message)
 
@@ -90,11 +100,9 @@ def world_matrix(obj) -> mathutils.Matrix:
         return obj.matrix_basis.copy()
     if obj.parent_type != 'OBJECT':
         raise HandEditRefused(
-            "parent_type",
-            "%s is parented to %s by %s; only object parenting is carried — parent it "
-            "to the object, keeping its transform, in a copy" % (obj.name, obj.parent.name,
-                                                                 obj.parent_type),
-            [obj.name])
+            "%s is parented to %s by %s; only object parenting is carried — parent it to the "
+            "object, keeping its transform, in a copy"
+            % (obj.name, obj.parent.name, obj.parent_type), [obj.name])
     return world_matrix(obj.parent) @ obj.matrix_parent_inverse @ obj.matrix_basis
 
 
@@ -107,6 +115,12 @@ def _weighted_groups(obj) -> Dict[str, int]:
             if ge.weight > 0.0 and ge.group in names:
                 out[names[ge.group]] = out.get(names[ge.group], 0) + 1
     return out
+
+
+def _spelling(name: str) -> str:
+    """A bone name with case, ``_`` and ``.`` ignored: ``Upper_leg.L`` and ``UpperLeg.L``
+    are one spelling."""
+    return name.casefold().replace("_", "").replace(".", "")
 
 
 def _key_names(obj) -> List[str]:
@@ -127,20 +141,18 @@ def read_body(body_mesh: Optional[str] = None) -> Dict[str, Any]:
     if body_mesh:
         mo = _local(body_mesh)
         if mo is None or mo.type != 'MESH':
-            raise HandEditRefused("body_mesh", "--body-mesh %r is not a local mesh in the body "
+            raise HandEditRefused("--body-mesh %r is not a local mesh in the body "
                                   "blend" % body_mesh, [body_mesh])
         arms = _armature_objects(mo)
         if len(arms) != 1:
-            raise HandEditRefused(
-                "body_mesh", "body mesh %s has %d Armature modifier(s) (%s); the stage poses "
+            raise HandEditRefused("body mesh %s has %d Armature modifier(s) (%s); the stage poses "
                 "one rig" % (mo.name, len(arms), ", ".join(a.name for a in arms) or "none"),
                 [mo.name])
         arm = arms[0]
     else:
         arms = [o for o in local if o.type == 'ARMATURE']
         if len(arms) != 1:
-            raise HandEditRefused(
-                "body_discovery", "the body blend holds %d local armatures (%s); pass "
+            raise HandEditRefused("the body blend holds %d local armatures (%s); pass "
                 "--body-mesh NAME and its Armature modifier names the rig"
                 % (len(arms), ", ".join(sorted(a.name for a in arms)) or "none"),
                 sorted(a.name for a in arms))
@@ -148,15 +160,13 @@ def read_body(body_mesh: Optional[str] = None) -> Dict[str, Any]:
         bound = sorted((o for o in local if o.type == 'MESH' and arm in _armature_objects(o)),
                        key=lambda o: o.name)
         if len(bound) != 1:
-            raise HandEditRefused(
-                "body_discovery", "%d meshes deform with %s (%s); pass --body-mesh NAME"
+            raise HandEditRefused("%d meshes deform with %s (%s); pass --body-mesh NAME"
                 % (len(bound), arm.name, ", ".join(o.name for o in bound) or "none"),
                 [o.name for o in bound])
         mo = bound[0]
     for o in (arm, mo):
         if not scene_utils.is_editable(o):
-            raise HandEditRefused(
-                "body_library", "%s is library data in the body blend (linked or an "
+            raise HandEditRefused("%s is library data in the body blend (linked or an "
                 "override); stage from the blend that owns it" % o.name, [o.name])
     return {
         "armature": arm.name,
@@ -176,12 +186,11 @@ def read_garment(names: Sequence[str], body: Dict[str, Any]) -> Dict[str, Any]:
     world matrix, key names, and the garment-only bones to copy onto the body rig."""
     offenders = [n for n in names if _local(n) is None or _local(n).type != 'MESH']
     if offenders:
-        raise HandEditRefused("garment_mesh", "--meshes names no local mesh in the garment "
+        raise HandEditRefused("--meshes names no local mesh in the garment "
                               "blend: %s" % ", ".join(offenders), offenders)
     clash = [n for n in names if n in (body["armature"], body["mesh"])]
     if clash:
-        raise HandEditRefused(
-            "name_collision", "garment mesh(es) %s share a name with the body's %s/%s; append "
+        raise HandEditRefused("garment mesh(es) %s share a name with the body's %s/%s; append "
             "would rename one and the harvest finds meshes by name — rename the garment mesh "
             "in a copy" % (", ".join(clash), body["armature"], body["mesh"]), clash)
     objs = [_local(n) for n in names]
@@ -189,15 +198,13 @@ def read_garment(names: Sequence[str], body: Dict[str, Any]) -> Dict[str, Any]:
     for o in objs:
         arms = _armature_objects(o)
         if len(arms) != 1:
-            raise HandEditRefused(
-                "armature_modifier", "%s has %d Armature modifier(s) (%s); a staged mesh "
+            raise HandEditRefused("%s has %d Armature modifier(s) (%s); a staged mesh "
                 "follows the pose through exactly one" % (o.name, len(arms),
                                                           ", ".join(a.name for a in arms) or "none"),
                 [o.name])
         rigs[o.name] = arms[0]
     if len({r.name for r in rigs.values()}) != 1:
-        raise HandEditRefused(
-            "garment_rigs", "the garment meshes deform with different armatures (%s); stage "
+        raise HandEditRefused("the garment meshes deform with different armatures (%s); stage "
             "each rig's meshes separately" % ", ".join("%s->%s" % (m, r.name)
                                                       for m, r in sorted(rigs.items())),
             sorted(rigs))
@@ -216,8 +223,7 @@ def read_garment(names: Sequence[str], body: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 neither.append("%s: %s" % (o.name, g))
     if neither:
-        raise HandEditRefused(
-            "unbound_group", "garment vertex group(s) carry weight on no bone of either rig, and "
+        raise HandEditRefused("garment vertex group(s) carry weight on no bone of either rig, and "
             "the harvest renormalises each vertex over every group, so they would come back "
             "rescaled; stage a copy without them: %s" % ", ".join(neither), neither)
 
@@ -229,7 +235,7 @@ def read_garment(names: Sequence[str], body: Dict[str, Any]) -> Dict[str, Any]:
             needed.add(p.name)
             p = p.parent
     bones = []
-    for b in rig_bones:  # armature order is parent-before-child
+    for b in rig_bones:
         if b.name in needed:
             bones.append({
                 "name": b.name,
@@ -242,9 +248,12 @@ def read_garment(names: Sequence[str], body: Dict[str, Any]) -> Dict[str, Any]:
                 "use_inherit_rotation": b.use_inherit_rotation,
                 "use_local_location": b.use_local_location,
             })
+    constrained = sorted("%s (%s)" % (pb.name, ", ".join(c.type for c in pb.constraints))
+                         for pb in (rig.pose.bones if rig.pose else []) if pb.constraints)
     return {
         "meshes": list(names),
         "rig": rig.name,
+        "constrained": constrained,
         "rig_world": world_matrix(rig),
         "world": {o.name: world_matrix(o) for o in objs},
         "keys": {o.name: _key_names(o) for o in objs},
@@ -263,7 +272,7 @@ def check_sets(sets: Sequence[Tuple[str, str, float]], body, garment) -> None:
         elif key not in keys[mesh]:
             bad.append("%s:%s (no such shape key on %s)" % (mesh, key, mesh))
     if bad:
-        raise HandEditRefused("set", "--set names what the scene does not carry: %s"
+        raise HandEditRefused("--set names what the scene does not carry: %s"
                               % "; ".join(bad), bad)
 
 
@@ -280,14 +289,14 @@ def read_poses(body: Dict[str, Any], bone_overrides: Optional[Dict[str, str]] = 
                    if o.library is None and o.type == 'ARMATURE' and o.animation_data
                    and o.animation_data.action), key=lambda o: o.name)
     if len(rigs) != 1:
-        raise HandEditRefused(
-            "pose_rig", "the pose corpus holds %d animated armatures (%s); it carries one"
+        raise HandEditRefused("the pose corpus holds %d animated armatures (%s); it carries one"
             % (len(rigs), ", ".join(o.name for o in rigs) or "none"), [o.name for o in rigs])
     pr = rigs[0]
     ad = pr.animation_data
     act, slot = ad.action, ad.action_slot
     if slot is None:
-        raise HandEditRefused("pose_slot", "pose rig %s's action %s has no slot assigned to it"
+        raise HandEditRefused("pose rig %s's action %s has no slot assigned to it; assign "
+                              "the action's slot to the rig in the corpus"
                               % (pr.name, act.name), [pr.name])
     fcurves = []
     for layer in act.layers:
@@ -307,27 +316,25 @@ def read_poses(body: Dict[str, Any], bone_overrides: Optional[Dict[str, str]] = 
             continue
         channels.setdefault(m.group(1), {})[fc.array_index] = fc
     if other:
-        raise HandEditRefused(
-            "pose_channel", "pose rig %s keys channels other than rotation_quaternion; the "
+        raise HandEditRefused("pose rig %s keys channels other than rotation_quaternion; the "
             "stage carries rotations only — key the corpus in quaternions with no location, "
             "scale or Euler channels: %s" % (pr.name, ", ".join(sorted(other))), sorted(other))
     partial = sorted("%s has components %s" % (b, sorted(ch)) for b, ch in channels.items()
                      if set(ch) != {0, 1, 2, 3})
     if partial:
-        raise HandEditRefused(
-            "pose_partial", "pose bone(s) key part of rotation_quaternion; key all four "
+        raise HandEditRefused("pose bone(s) key part of rotation_quaternion; key all four "
             "components: %s" % "; ".join(partial), partial)
     off_rig = sorted(b for b in channels if b not in pr.data.bones)
     if off_rig:
-        raise HandEditRefused("pose_channel", "pose rig %s's action keys bones it lacks: %s"
+        raise HandEditRefused("pose rig %s's action keys bones it lacks: %s; remove "
+                              "those channels from the corpus"
                               % (pr.name, ", ".join(off_rig)), off_rig)
 
     body_bones = body["rests"]
     unknown = sorted(o for o in bone_overrides if o not in channels)
     bad_new = sorted("%s=%s" % (o, n) for o, n in bone_overrides.items() if n not in body_bones)
     if unknown or bad_new:
-        raise HandEditRefused(
-            "bone_override", "--bone-override names %s" % "; ".join(
+        raise HandEditRefused("--bone-override names %s" % "; ".join(
                 (["no keyed pose bone: %s" % ", ".join(unknown)] if unknown else [])
                 + (["a body bone %s lacks: %s" % (body["armature"], ", ".join(bad_new))]
                    if bad_new else [])), unknown + bad_new)
@@ -338,9 +345,15 @@ def read_poses(body: Dict[str, Any], bone_overrides: Optional[Dict[str, str]] = 
             dropped.append(b)
         else:
             mapped[b] = t
-    if dropped and absent_bones != "drop":
+    norm = {_spelling(n): n for n in body_bones}
+    respelled = ["%s (the body has %s)" % (b, norm[_spelling(b)]) for b in dropped
+                 if _spelling(b) in norm]
+    if respelled:
         raise HandEditRefused(
-            "absent_bone", "pose bone(s) %s have no bone on %s; map each with --bone-override "
+            "pose bone(s) the body carries under another spelling would be dropped: %s; map "
+            "each with --bone-override OLD=NEW" % ", ".join(respelled), respelled)
+    if dropped and absent_bones != "drop":
+        raise HandEditRefused("pose bone(s) %s have no bone on %s; map each with --bone-override "
             "OLD=NEW onto the body's spelling, or pass --absent-bones drop to leave its rotation "
             "out" % (", ".join(dropped), body["armature"]), dropped)
     seen: Dict[str, str] = {}
@@ -350,17 +363,17 @@ def read_poses(body: Dict[str, Any], bone_overrides: Optional[Dict[str, str]] = 
             clash.append("%s and %s -> %s" % (seen[t], b, t))
         seen[t] = b
     if clash:
-        raise HandEditRefused("bone_override", "two pose bones land on one body bone: %s"
+        raise HandEditRefused("two pose bones land on one body bone: %s"
                               % "; ".join(clash), clash)
 
     scenes = [s for s in bpy.data.scenes if pr.name in s.objects]
     markers = sorted(((m.frame, m.name) for m in scenes[0].timeline_markers) if scenes else [])
     if not markers:
-        raise HandEditRefused("pose_markers", "the pose corpus scene has no timeline markers; "
+        raise HandEditRefused("the pose corpus scene has no timeline markers; "
                               "each pose is the frame a marker names", [pr.name])
     early = ["%s@%d" % (n, f) for f, n in markers if f <= 0]
     if early:
-        raise HandEditRefused("pose_markers", "marker(s) at or before frame 0, which the stage "
+        raise HandEditRefused("marker(s) at or before frame 0, which the stage "
                               "keeps for the rest pose: %s" % ", ".join(early), early)
     frames = sorted({f for f, _ in markers})
 
@@ -392,13 +405,13 @@ def _append(path, names):
         missing = [n for n in names if n not in src.objects]
         dst.objects = [n for n in names if n in src.objects]
     if missing:
-        raise HandEditRefused("append", "%s carries no object %s" % (path, ", ".join(missing)),
+        raise HandEditRefused("%s carries no object %s" % (path, ", ".join(missing)),
                               missing)
     out = {}
     for want, o in zip(names, dst.objects):
         bpy.context.scene.collection.objects.link(o)
         if o.name != want:
-            raise HandEditRefused("name_collision", "%s appended as %s, so the harvest would not "
+            raise HandEditRefused("%s appended as %s, so the harvest would not "
                                   "find it by name" % (want, o.name), [want])
         out[want] = o
     return out
@@ -416,8 +429,11 @@ def _copy_bones(arm, aw, garment) -> List[str]:
     t = aw.inverted() @ garment["rig_world"]
     t3 = t.to_3x3()
     with scene_utils.edit_mode(arm) as ebs:
+        # Create every bone first, then set frames and parents, so a parent never has
+        # to precede its child in the list.
+        made = {s["name"]: ebs.new(s["name"]) for s in specs}
         for s in specs:
-            eb = ebs.new(s["name"])
+            eb = made[s["name"]]
             eb.head = t @ s["head"]
             eb.tail = t @ s["tail"]
             eb.align_roll(t3 @ s["matrix"].col[2].to_3d())
@@ -438,8 +454,7 @@ def _copy_bones(arm, aw, garment) -> List[str]:
         if not ok:
             skewed.append(s["name"])
     if skewed:
-        raise HandEditRefused(
-            "bone_frame", "copied bone(s) %s did not land on the garment rig's frame; the two "
+        raise HandEditRefused("copied bone(s) %s did not land on the garment rig's frame; the two "
             "armature objects' transforms differ by a shear or non-uniform scale — apply it on "
             "a copy of the garment first" % ", ".join(skewed), skewed)
     return [s["name"] for s in specs]
@@ -451,8 +466,8 @@ def build_scene(body_path: str, garment_path: str, body: Dict[str, Any],
     """Build the edit scene into the open (empty) file from the read inputs.
 
     Appends, rebinds, sets and poses as the module docstring states; saves nothing.
-    Returns what it did: copied bones, cleared actions, warnings for modifiers whose
-    target the scene does not carry, and the pose rows written."""
+    Returns what it did: copied bones, cleared actions, and warnings for dropped bone
+    constraints and for modifiers whose target the scene does not carry."""
     sc = bpy.context.scene
     b = _append(body_path, [body["armature"], body["mesh"]])
     arm, bm = b[body["armature"]], b[body["mesh"]]
@@ -476,7 +491,8 @@ def build_scene(body_path: str, garment_path: str, body: Dict[str, Any],
     copied = _copy_bones(arm, aw, garment)
 
     garment_rig = None
-    warnings = []
+    warnings = ["garment rig %s's bone constraints are not carried: %s" % (
+        garment["rig"], ", ".join(garment["constrained"]))] if garment["constrained"] else []
     kept = {arm.name, bm.name, *garment["meshes"]}
     for t in meshes:
         old_rig = _armature_objects(t)[0]
@@ -492,7 +508,7 @@ def build_scene(body_path: str, garment_path: str, body: Dict[str, Any],
                 m.show_in_editmode = True
                 m.show_on_cage = True
             else:
-                for attr in ("object", "target"):
+                for attr in ("object", "target", "mirror_object"):
                     o = getattr(m, attr, None)
                     if isinstance(o, bpy.types.Object) and o.name not in kept:
                         warnings.append("%s modifier %s targets %s, which the scene does not "
@@ -517,9 +533,8 @@ def build_scene(body_path: str, garment_path: str, body: Dict[str, Any],
         if t.data.shape_keys:
             t.active_shape_key_index = 0
 
-    rows = 0
     if poses:
-        rows = _write_poses(sc, arm, poses)
+        _write_poses(sc, arm, poses)
 
     ts = sc.tool_settings
     ts.use_proportional_edit = True
@@ -534,21 +549,19 @@ def build_scene(body_path: str, garment_path: str, body: Dict[str, Any],
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
     return {"armature": arm.name, "body_mesh": bm.name, "meshes": list(garment["meshes"]),
             "garment_rig": garment["rig"], "copied_bones": copied, "cleared": cleared,
-            "warnings": warnings, "pose_rows": rows}
+            "warnings": warnings}
 
 
-def _write_poses(sc, arm, poses) -> int:
+def _write_poses(sc, arm, poses) -> None:
     act = bpy.data.actions.new("HandEditPoses")
     arm.animation_data_create()
     arm.animation_data.action = act
-    rows = 0
     for name, samples in sorted(poses["poses"].items()):
         pb = arm.pose.bones[name]
         pb.rotation_mode = 'QUATERNION'
         for f, q in [(0, (1.0, 0.0, 0.0, 0.0))] + list(samples):
             pb.rotation_quaternion = q
             pb.keyframe_insert('rotation_quaternion', frame=f)
-            rows += 1
     # Constant interpolation: each frame is one pose, never a blend of two.
     for layer in act.layers:
         for strip in layer.strips:
@@ -561,7 +574,6 @@ def _write_poses(sc, arm, poses) -> int:
         sc.timeline_markers.new(n, frame=f)
     sc.frame_start = 0
     sc.frame_end = max(poses["frames"])
-    return rows
 
 
 # --- harvest -------------------------------------------------------------------
@@ -595,8 +607,7 @@ def _bools(me, name, domain_len):
     return buf
 
 
-_CN_FIELD = {'INT16_2D': ('value', 2, 'h'), 'FLOAT_VECTOR': ('vector', 3, 'f'),
-             'FLOAT2': ('vector', 2, 'f')}
+_CN_FIELD = {'INT16_2D': ('value', 2, 'h'), 'FLOAT_VECTOR': ('vector', 3, 'f')}
 
 
 def _custom_normals(me):
@@ -604,8 +615,9 @@ def _custom_normals(me):
     if a is None:
         return None
     if a.data_type not in _CN_FIELD:
-        raise HandEditRefused("custom_normal", "%s's custom_normal is %s, a type the harvest "
-                              "does not copy" % (me.name, a.data_type), [me.name])
+        raise HandEditRefused("%s's custom_normal is %s, a type the harvest does not copy; "
+                              "set the normals in the garment blend" % (me.name, a.data_type),
+                              [me.name])
     field, width, code = _CN_FIELD[a.data_type]
     buf = array.array(code, [0]) * (len(a.data) * width)
     a.data.foreach_get(field, buf)
@@ -645,7 +657,8 @@ def read_edit(names: Sequence[str]) -> Dict[str, Dict[str, Any]]:
     _leave_edit_mode()
     missing = [n for n in names if _local(n) is None or _local(n).type != 'MESH']
     if missing:
-        raise HandEditRefused("scene_mesh", "the edit scene has no mesh %s" % ", ".join(missing),
+        raise HandEditRefused("the edit scene has no mesh %s; --meshes names the meshes "
+                              "the stage put there" % ", ".join(missing),
                               missing)
     return {n: _snapshot(_local(n)) for n in names}
 
@@ -680,7 +693,11 @@ def check_harvest(snaps: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str
     edge and loop topology, polygon sizes, key names in order with each key's
     ``relative_key``, ``matrix_world``, custom-normal attribute presence, domain and
     type, ``sharp_edge`` and ``sharp_face``, single-user local mesh data, and every
-    group the edit weights present on the garment mesh."""
+    group the edit weights present on the garment mesh.
+
+    Leaves Edit Mode first: a garment blend saved in it reopens there, and the edit
+    mesh would otherwise be flushed over the copy at save."""
+    _leave_edit_mode()
     offenders: List[str] = []
     changes: Dict[str, Any] = {}
     for n, s in snaps.items():
@@ -692,25 +709,29 @@ def check_harvest(snaps: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str
         users = [o.name for o in bpy.data.objects if o.data == me]
         if not scene_utils.is_editable(t) or len(users) > 1:
             offenders.append("%s: mesh data %s is library data or shared by %s; the copy would "
-                             "reach every user" % (n, me.name, ", ".join(users)))
+                             "reach every user — make it local and single-user in the garment "
+                             "blend first" % (n, me.name, ", ".join(users)))
             continue
         mine = []
         if any(abs(x - y) > MATRIX_TOL for r1, r2 in zip(s["matrix_world"], t.matrix_world)
                for x, y in zip(r1, r2)):
-            mine.append("matrix_world differs from the garment mesh's")
+            mine.append("matrix_world differs from the garment mesh's: the rig or garment was "
+                        "moved in the scene or in the garment blend; move it back or re-stage")
         # The copy is by vertex index, valid only on identical topology; an added or
         # removed vertex would scramble the mesh.
         if (s["verts"] != len(me.vertices) or s["edges"] != _ints(me.edges, 'vertices', 2)
                 or s["loops"] != _ints(me.loops, 'vertex_index')
                 or s["polys"] != _ints(me.polygons, 'loop_total')):
             mine.append("topology changed (vertices %d -> %d, edges %d -> %d, loops %d -> %d); "
-                        "the index copy is invalid" % (len(me.vertices), s["verts"], len(me.edges),
+                        "the index copy is invalid — re-stage and edit without adding or removing "
+                        "geometry" % (len(me.vertices), s["verts"], len(me.edges),
                                                        len(s["edges"]) // 2, len(me.loops),
                                                        len(s["loops"])))
         theirs = ([(kb.name, kb.relative_key.name) for kb in me.shape_keys.key_blocks]
                   if me.shape_keys else [])
         if [(k[0], k[1]) for k in s["keys"]] != theirs:
-            mine.append("shape keys or their relative_key differ: edit %s, garment %s"
+            mine.append("shape keys or their relative_key differ: edit %s, garment %s; undo the "
+                        "key rename, reorder, addition or removal in the scene, or re-stage"
                         % ([(k[0], k[1]) for k in s["keys"]], theirs))
         groups = {g.name for g in t.vertex_groups}
         lacking = sorted({g for w in s["weights"] for g in w} - groups)
@@ -720,10 +741,13 @@ def check_harvest(snaps: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str
         cn = _custom_normals(me)
         scn = s["custom_normal"]
         if (cn is None) != (scn is None):
-            mine.append("custom_normal present on one side only")
+            mine.append("custom_normal present on %s only; custom normals added or cleared in "
+                        "the scene do not travel — re-stage, or set them in the garment blend"
+                        % ("the edit" if scn is not None else "the garment"))
         elif cn is not None and (cn["domain"], cn["type"]) != (scn["domain"], scn["type"]):
-            mine.append("custom_normal is %s/%s in the edit, %s/%s in the garment"
-                        % (scn["domain"], scn["type"], cn["domain"], cn["type"]))
+            mine.append("custom_normal is %s/%s in the edit, %s/%s in the garment; raw values "
+                        "of one kind cannot be copied onto the other — re-stage, or set them in "
+                        "the garment blend" % (scn["domain"], scn["type"], cn["domain"], cn["type"]))
         if not mine:
             # Sharp flags shape the custom-normal spaces, so raw normals copied over a
             # different set would shade differently; they do not travel, so they must match.

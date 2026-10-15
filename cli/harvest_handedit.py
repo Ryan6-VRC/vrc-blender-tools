@@ -27,7 +27,9 @@ assertion and writes nothing. ``--whatif`` runs every gate, reports what the cop
 rewrite (vertices moved on Basis, per key, weights rewritten, normals changed), and
 writes nothing.
 
-The save is compressed, and writes no ``.blend1``: Blender's backup rotation is off for
+A garment blend saved in Edit Mode reopens in it; the door leaves Edit Mode before the
+gates, so the gates read and the copy writes the saved mesh, and the save carries the
+copy. The save is compressed, and writes no ``.blend1``: Blender's backup rotation is off for
 it, so an existing ``.blend1`` beside ``--in`` is left as it was. A garment blend
 Blender repaired as it read it refuses the write unless ``--force-load-repair``.
 
@@ -74,6 +76,14 @@ def _parse_args():
     return a
 
 
+def _refused(line, offenders):
+    print("AVATARPREP:", line)
+    for o in offenders:
+        print("AVATARPREP: OFFENDER", o)
+    print("AVATARPREP: nothing was written; --in NOT saved.")
+    sys.exit(1)
+
+
 def main():
     args = _parse_args()
     import bpy
@@ -85,19 +95,13 @@ def main():
     from avatarprep.core import handedit as core
     try:
         snaps = core.read_edit(args.mesh_names)
+        open_blend(in_path, writes=not args.whatif, force_load_repair=args.force_load_repair)
+        offenders, changes = core.check_harvest(snaps)
     except core.HandEditRefused as refused:
-        print("AVATARPREP: %s %s => FAIL: %s" % (TOOL, label, refused))
-        sys.exit(1)
-
-    open_blend(in_path, writes=not args.whatif, force_load_repair=args.force_load_repair)
-    offenders, changes = core.check_harvest(snaps)
+        _refused("%s %s => FAIL: %s" % (TOOL, label, refused), refused.offenders)
     if offenders:
-        print("AVATARPREP: %s %s => FAIL: %d gate(s) failed; the index copy would be invalid"
-              % (TOOL, label, len(offenders)))
-        for o in offenders:
-            print("AVATARPREP: OFFENDER", o)
-        print("AVATARPREP: nothing was written; --in NOT saved.")
-        sys.exit(1)
+        _refused("%s %s => FAIL: %d gate(s) failed; the index copy would be invalid"
+                 % (TOOL, label, len(offenders)), offenders)
     for n in args.mesh_names:
         c = changes[n]
         keys = ", ".join("%s %d" % kv for kv in sorted(c["keys"].items())) or "none"
