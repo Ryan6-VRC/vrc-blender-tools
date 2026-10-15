@@ -4,7 +4,7 @@ Run:
   blender --background --factory-startup --python cli/push_garment.py -- \
       --in <costume.blend> --targets A,B --amount M (--sweep BONE[:AXIS][:MIN..MAX[:STEPS]] | --region KIND:NAME)... \
       [--source Body_Base] [--shape K=V | MESH:K=V]... [--cut-shape K]... [--cut-threshold-m 0.01] \
-      [--near 0.0005] [--falloff 0.025] [--rim-hold 0] [--allow-static] [--reference-bone Hips] \
+      [--near 0.0005] [--falloff 0.025] [--rim-hold 0] [--smooth 0] [--allow-static] [--reference-bone Hips] \
       [--forward BONE] [--report JSON] (--whatif | --out <out.blend> | --in-place) [--force-load-repair]
 
 Seeds come from the same sweep ``report_fit`` runs (``--sweep`` bones, or the set derived
@@ -19,7 +19,10 @@ Every vertex within ``--falloff`` metres of a seed (rest, straight line) moves o
 its rest normal, turned to face away from the nearest body triangle, by
 ``amount * smoothstep(1 - d / falloff)``; ``--rim-hold R`` multiplies that by
 ``smoothstep(e / R)``, e the distance to the nearest boundary vertex, so open edges stay on
-the skin. The same object-space delta goes onto the mesh, Basis and every shape key.
+the skin. ``--smooth N`` averages each moved vertex's direction with its moved edge neighbours'
+N times and keeps every magnitude: a rolled hem's normals lie near the skin's tangent and turn
+from vertex to vertex, so an unsmoothed push zigzags the hem it moves. The same object-space
+delta goes onto the mesh, Basis and every shape key.
 
 A saving run stamps each target object with ``avatarprep_pushed``, the canonical command
 line printed as ``recipe:`` (defaults omitted, no paths or mode flags); a stamped mesh
@@ -41,7 +44,7 @@ from cli._common import enable_avatarprep, open_blend, run_cli, add_force_load_r
 from cli import _fit
 
 TOOL = "push_garment"
-DEFAULTS = {"near": 0.0005, "falloff": 0.025, "rim_hold": 0.0}
+DEFAULTS = {"near": 0.0005, "falloff": 0.025, "rim_hold": 0.0, "smooth": 0}
 
 
 class _Parser(argparse.ArgumentParser):
@@ -60,6 +63,9 @@ def _parse_args(argv):
     p.add_argument("--falloff", type=float, default=DEFAULTS["falloff"], help="metres around a seed the push fades over")
     p.add_argument("--rim-hold", dest="rim_hold", type=float, default=DEFAULTS["rim_hold"],
                    help="metres from a boundary vertex over which the push fades in (0 holds nothing)")
+    p.add_argument("--smooth", type=int, default=DEFAULTS["smooth"], metavar="N",
+                   help="passes averaging each moved vertex's push direction with its moved neighbours' "
+                        "(magnitudes kept); 0 pushes along each vertex's own normal")
     p.add_argument("--allow-static", dest="allow_static", action="store_true",
                    help="push the rest contact when the sweep adds none")
     p.add_argument("--report", dest="report_path", default=None, help="JSON report path")
@@ -74,8 +80,8 @@ def _parse_args(argv):
     if not a.sweeps and not a.regions:
         p.error("name the motion with --sweep or the spot with --region; a push over every bone the garment "
                 "touches would move contact nobody asked about")
-    if not (a.amount > 0 and a.falloff > 0 and a.near >= 0 and a.rim_hold >= 0):
-        p.error("--amount and --falloff must be positive, --near and --rim-hold not negative")
+    if not (a.amount > 0 and a.falloff > 0 and a.near >= 0 and a.rim_hold >= 0 and a.smooth >= 0):
+        p.error("--amount and --falloff must be positive, --near, --rim-hold and --smooth not negative")
     if a.amount > a.falloff:
         p.error("--amount %g m is more than --falloff %g m; both are metres (0.0005 is half a millimetre)"
                 % (a.amount, a.falloff))
@@ -86,7 +92,7 @@ def _parse_args(argv):
 
 def recipe(a) -> str:
     out = [TOOL, "--targets", ",".join(a.target_list), "--amount", str(a.amount)] + _fit.recipe_measure(a)
-    for flag, key in (("--near", "near"), ("--falloff", "falloff"), ("--rim-hold", "rim_hold")):
+    for flag, key in (("--near", "near"), ("--falloff", "falloff"), ("--rim-hold", "rim_hold"), ("--smooth", "smooth")):
         if getattr(a, key) != DEFAULTS[key]:
             out += [flag, str(getattr(a, key))]
     if a.allow_static:
@@ -140,7 +146,7 @@ def main():
         the_plan = fit.plan(data, a.sweep_list, focus)
         _fit.print_context(data, the_plan)
         plans = [fit.plan_push(data, i, the_plan, amount=a.amount, near=a.near, falloff=a.falloff,
-                               rim_hold=a.rim_hold, allow_static=a.allow_static,
+                               rim_hold=a.rim_hold, smooth=a.smooth, allow_static=a.allow_static,
                                focus=None if focus is None else focus[i])
                  for i in range(len(targets))]
     except fit.FitError as e:
@@ -151,9 +157,9 @@ def main():
     for t, pl in zip(targets, plans):
         busiest = sorted((s for s in pl["per_step"] if s["dynamic"]), key=lambda s: -s["dynamic"])[:3]
         print("AVATARPREP: %s seeds: rest %d, any step %d, dynamic %d; pushing %d %s seeds: moved %d (full %d), "
-              "max %.3f mm, rim vertices moved %d, normals turned outward %d"
+              "max %.3f mm, rim vertices moved %d, normals turned outward %d, facing the body after smoothing %d"
               % (t.name, pl["rest_seeds"], pl["posed_seeds"], pl["dynamic_seeds"], pl["seeds"], pl["kind"],
-                 pl["moved"], pl["full"], pl["max_mm"], pl["rim_moved"], pl["turned"]))
+                 pl["moved"], pl["full"], pl["max_mm"], pl["rim_moved"], pl["turned"], pl["facing_in"]))
         if busiest:
             print("AVATARPREP: %s most dynamic seeds at: %s" % (
                 t.name, ", ".join("%s (%d)" % (s["step"], s["dynamic"]) for s in busiest)))

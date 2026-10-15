@@ -473,6 +473,42 @@ def test_push_profile():
     check(corner_only, "a coarse band seeds the corners of a triangle the body comes through between its vertices")
 
 
+def test_push_smooth():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    s = F.build()
+    d = fit.load(s["body"], [F.add_band(s, "HipsBand", {"Hips": 1.0})])
+    g = d["garments"][0]
+    p = fit.plan(d, [("UpperLeg.L", "lateral", None, None)])
+    plain = fit.plan_push(d, 0, p, amount=0.0005)
+    check(np.array_equal(fit.plan_push(d, 0, p, amount=0.0005, smooth=0)["delta"], plain["delta"]),
+          "smooth=0 is the default push")
+    # a rolled hem: each normal tipped toward the skin's tangent, alternating side to side
+    rng = np.random.default_rng(3)
+    n = g["N"] / np.linalg.norm(g["N"], axis=1)[:, None]
+    tangent = np.cross(n, rng.normal(size=n.shape))
+    tangent /= np.linalg.norm(tangent, axis=1)[:, None]
+    g["N"] = n + 1.5 * tangent * np.where(np.arange(len(n)) % 2, 1.0, -1.0)[:, None]
+    noisy = fit.plan_push(d, 0, p, amount=0.0005)
+    smooth = fit.plan_push(d, 0, p, amount=0.0005, smooth=8)
+
+    def spread(delta):
+        u = delta / np.maximum(np.linalg.norm(delta, axis=1), 1e-12)[:, None]
+        mv = np.linalg.norm(delta, axis=1) > 0
+        E = g["E"][mv[g["E"]].all(1)]
+        return np.degrees(np.arccos(np.clip((u[E[:, 0]] * u[E[:, 1]]).sum(1), -1, 1))).mean()
+
+    check(np.allclose(np.linalg.norm(smooth["delta"], axis=1), np.linalg.norm(noisy["delta"], axis=1), atol=1e-12),
+          "smoothing keeps every vertex's push magnitude")
+    check(spread(smooth["delta"]) < spread(noisy["delta"]) / 4,
+          "smoothing evens neighbouring directions: %.1f deg -> %.1f deg"
+          % (spread(noisy["delta"]), spread(smooth["delta"])))
+    radial = g["V"][:, :2] - np.array([F.LX, 0.0])
+    mv = np.linalg.norm(smooth["delta"], axis=1) > 0
+    check(smooth["facing_in"] == 0 and ((smooth["delta"][:, :2] * radial).sum(1)[mv] > 0).all(),
+          "the smoothed push still moves outward: %d facing in" % smooth["facing_in"])
+
+
 def test_apply_push_units():
     from avatarprep.core import fit
     me = bpy.data.meshes.new("CmMesh")
@@ -636,6 +672,13 @@ def test_cli(tmp):
                                         "UpperLeg.L", "--whatif"])
     check(rc == 2 and "metres" in txt, "an --amount over --falloff is bad args naming metres\n%s" % txt)
 
+    rc, txt = _blender("push_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.0005",
+                                        "--sweep", "UpperLeg.L:lateral", "--smooth", "4", "--whatif"])
+    check(rc == 0 and "recipe: push_garment --targets Band --amount 0.0005 --sweep UpperLeg.L:lateral --smooth 4"
+          in txt, "--smooth lands in the recipe\n%s" % txt)
+    rc, txt = _blender("push_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.0005",
+                                        "--sweep", "UpperLeg.L:lateral", "--smooth", "-1", "--whatif"])
+    check(rc == 2 and "--smooth" in txt, "a negative --smooth is bad args\n%s" % txt)
     before_mtime = os.path.getmtime(a_blend)
     rc, txt = _blender("push_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.0005",
                                         "--sweep", "UpperLeg.L:lateral", "--whatif"])
@@ -698,6 +741,7 @@ def main():
     test_body_through()
     test_push_seeds_follow_contact()
     test_push_profile()
+    test_push_smooth()
     test_apply_push_units()
     test_sweep_grammar()
     test_joint_rows()
