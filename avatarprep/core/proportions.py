@@ -121,7 +121,8 @@ def _resolve_bone(name, bone_overrides):
     return bone_overrides.get(name, name)
 
 
-ABSENT_BONES_MODES = ("refuse", "drop")
+ABSENT_BONES_MODES = ("refuse", "drop", "stub")
+STUB_TOL = 1e-3  # m: how far a stub's parent head may sit from the same bone's head on the fit reference
 
 
 def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -> Dict[str, Any]:
@@ -130,7 +131,8 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
 
     Returns ``{"edge", "dropped", "refused"}``. ``edge`` is a copy whose ops carry
     ``index``, their position in the source edge. Under ``absent_bones="refuse"`` it is
-    the source edge unchanged and the other two are empty, so an absent bone offends.
+    the source edge unchanged and the other two are empty, so an absent bone offends; under
+    ``"stub"`` it is the same, the absent bones being ``plan_stubs``' to supply.
 
     Under ``"drop"``, for a rig that lacks body bones the edge names (a mergeable pruned
     to what it skins), a bone is judged absent after ``--bone-override`` resolution:
@@ -160,7 +162,7 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
                      for i, op in enumerate(edge["scales"])]
     out["no_inherit_scale"] = list(edge["no_inherit_scale"])
     result = {"edge": out, "dropped": [], "refused": {}}
-    if absent_bones == "refuse":
+    if absent_bones in ("refuse", "stub"):
         return result
 
     bone_names = {b.name for b in armature.data.bones}
@@ -211,6 +213,135 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
     return result
 
 
+def edge_bones(edge) -> List[str]:
+    """Every bone name the edge reads, in first-use order: its ops' bones, then
+    ``no_inherit_scale``."""
+    out = []
+    for name in [b for op in edge["scales"] for b in op["bones"]] + list(edge["no_inherit_scale"]):
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def plan_stubs(armature, edge, reference, bone_overrides=None) -> Dict[str, Any]:
+    """The stubs ``--absent-bones stub`` adds, read-only: for each bone the edge names that
+    the rig lacks after ``--bone-override`` resolution, the fit reference's bone of that name
+    (the edge's spelling first, then the resolved one), parented to its nearest ancestor in
+    the reference hierarchy that the rig carries or an earlier stub supplies.
+
+    Returns ``{"stubs": [{"name", "reference_bone", "parent"}], "offenders": [...]}``, the
+    stubs ordered parents first. A stub is non-deforming and only ever a leaf or a parent of
+    other stubs, so no bone the rig carries changes parent; what it gives the apply is the
+    bone set a median pivot or a normal frame is computed over. Two shapes refuse, because a
+    stub would not stand in for the bone there: an absent bone with a descendant the rig
+    carries (a leaf stub scales nothing below it, so ``drop``, or a ``--bone-override`` naming
+    the rig's own spelling, is the fix), and a stub whose parent's head sits more than
+    ``STUB_TOL`` from the same bone's head on the reference (the stub sits where the
+    reference's bone rests, so the rig must coincide with the reference there)."""
+    bone_overrides = bone_overrides or {}
+    offenders: List[str] = []
+    if reference is None:
+        return {"stubs": [], "offenders": [
+            "--absent-bones stub needs the fit reference linked, and no linked armature is in the "
+            "scene; re-import with import_fbx --fit-reference BLEND, or link the reference's rig into "
+            "this blend by hand as an object"]}
+    rig = {b.name for b in armature.data.bones}
+    absent = [n for n in edge_bones(edge) if _resolve_bone(n, bone_overrides) not in rig]
+    planned = {}
+    for name in absent:
+        rn = _resolve_bone(name, bone_overrides)
+        if name in bone_overrides:
+            offenders.append("bone not found: %r (resolved from %r); --absent-bones stub never stubs a "
+                             "--bone-override target, which names a bone this rig should carry"
+                             % (rn, name))
+            continue
+        rb = reference.data.bones.get(name) or reference.data.bones.get(rn)
+        if rb is None:
+            offenders.append("bone not found: %r is on neither this rig nor the fit reference %s, so "
+                             "--absent-bones stub has nothing to copy" % (rn, reference.name))
+            continue
+        planned[rn] = rb
+    inverse = {v: k for k, v in bone_overrides.items()}
+
+    def on_rig(ref_name, extra=()):
+        for cand in (bone_overrides.get(ref_name, ref_name), inverse.get(ref_name)):
+            if cand and (cand in rig or cand in extra):
+                return cand
+        return None
+
+    stubs = []
+    placed = set()
+    for rn, rb in sorted(planned.items(), key=lambda kv: len(kv[1].parent_recursive)):
+        kept = [on_rig(d.name) for d in rb.children_recursive if on_rig(d.name)]
+        if kept:
+            offenders.append("bone not found: %r, and its descendant %r is on this rig, so a stub (a leaf) "
+                             "would scale nothing below it; pass --absent-bones drop, or --bone-override %s=<the "
+                             "rig's bone> if the rig spells it otherwise" % (rn, kept[0], rn))
+            continue
+        parent = ref_parent = None
+        for a in rb.parent_recursive:
+            parent = on_rig(a.name, placed)
+            if parent:
+                ref_parent = a
+                break
+        if parent is None:
+            offenders.append("stub %r has no ancestor in the fit reference that this rig carries, so it "
+                             "would be a second root bone; the edge's object transform needs one" % rn)
+            continue
+        if parent in rig:
+            here = armature.matrix_world @ armature.data.bones[parent].head_local
+            there = reference.matrix_world @ ref_parent.head_local
+            off = (here - there).length
+            if off > STUB_TOL:
+                offenders.append("stub %r would hang off %r, whose head sits %.4f m from the fit reference's "
+                                 "%r, so a stub at the reference's rest would not sit where this rig's bone "
+                                 "would; apply the edges that bring the rig onto the reference first, or pass "
+                                 "--absent-bones drop" % (rn, parent, off, ref_parent.name))
+                continue
+        placed.add(rn)
+        stubs.append({"name": rn, "reference_bone": rb.name, "parent": parent})
+    return {"stubs": stubs, "offenders": offenders}
+
+
+def add_stubs(armature, reference, stubs, names=None) -> List[str]:
+    """Add ``plan_stubs``' stubs to ``armature`` at the reference bones' rest head, tail and
+    roll, carried from the reference's world space into the rig's; returns their names,
+    appending each to ``names`` as it is made so a failure part-way leaves the caller the
+    list to remove."""
+    A = armature.matrix_world.inverted()
+    R = reference.matrix_world
+    names = [] if names is None else names
+    with scene_utils.edit_mode(armature) as ebs:
+        for st in stubs:
+            rb = reference.data.bones[st["reference_bone"]]
+            eb = ebs.new(st["name"])
+            eb.head = A @ (R @ rb.head_local)
+            eb.tail = A @ (R @ rb.tail_local)
+            z = A.to_3x3() @ (R.to_3x3() @ (rb.matrix_local.to_3x3() @ mathutils.Vector((0.0, 0.0, 1.0))))
+            eb.align_roll(z)
+            eb.use_deform = False
+            eb.use_connect = False
+            eb.parent = ebs[st["parent"]]
+            names.append(eb.name)
+            y = eb.matrix.to_3x3().col[1]
+            want = (eb.tail - eb.head).normalized()
+            if eb.name != st["name"] or (y - want).length > 1e-4:
+                raise EdgeError("stub %r did not take its frame (got name %r); nothing is saved"
+                                % (st["name"], eb.name))
+    return names
+
+
+def remove_stubs(armature, names) -> None:
+    """Remove the stubs ``add_stubs`` made, children before parents."""
+    if not names:
+        return
+    with scene_utils.edit_mode(armature) as ebs:
+        for n in reversed(names):
+            eb = ebs.get(n)
+            if eb is not None:
+                ebs.remove(eb)
+
+
 def _effective_shapekeys(edge, shapekey_overrides):
     eff = dict(edge["shapekeys"])
     for k, v in shapekey_overrides.items():
@@ -223,10 +354,10 @@ def _effective_shapekeys(edge, shapekey_overrides):
 
 def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
                            shapekey_overrides=None, skip_shapekeys=False,
-                           absent_bones="refuse") -> Dict[str, Any]:
+                           absent_bones="refuse", reference=None) -> Dict[str, Any]:
     """Read-only check of a loaded ``edge`` against the rig, before any mutation.
 
-    Returns ``{"offenders": [...], "warnings": [...], "dropped": [...],
+    Returns ``{"offenders": [...], "warnings": [...], "dropped": [...], "stubs": [...],
     "effective_edge": {...}}`` — offenders are hard blockers (missing bones/shapekeys,
     state mismatch) named for the fix; warnings are softer. Bones are checked on
     ``effective_edge`` (see that function for ``absent_bones``), which is what an apply
@@ -244,7 +375,14 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
     refused = effective["refused"]
     edge = effective["edge"]
 
-    bone_names = {b.name for b in armature.data.bones}
+    rig_bones = {b.name for b in armature.data.bones}
+    stubs = []
+    if absent_bones == "stub":
+        planned = plan_stubs(armature, edge, reference, bone_overrides)
+        offenders.extend(planned["offenders"])
+        stubs = planned["stubs"]
+    # a planned stub counts as present: the apply adds it before the first op reads it
+    bone_names = rig_bones | {st["name"] for st in stubs}
 
     # An object transform is applied via the sole root bone (see pose_object_transform);
     # check the count here so a multi-/no-root rig fails before any mutation.
@@ -289,7 +427,7 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
             continue
         seen.add(name)
         rn = _resolve_bone(name, bone_overrides)
-        if rn not in bone_names:
+        if rn not in bone_names and absent_bones != "stub":
             offenders.append("bone not found: %r (resolved from %r)%s"
                              % (rn, name, "; --absent-bones drop keeps it: " + refused[rn]
                                 if rn in refused else ""))
@@ -306,10 +444,10 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
             if pb and pb.constraints:
                 warnings.append("scales[%d] bone %r has constraints; matrix set solves "
                                 "visual transform only" % (i, r))
-        lefts = [r for r in present if r.endswith(".L")]
+        lefts = [r for r in present if r.endswith(".L") and r in rig_bones]
         for lb in lefts:
             rb = lb[:-2] + ".R"
-            if rb in bone_names:
+            if rb in rig_bones:
                 hb = armature.data.bones[lb].head_local
                 hr = armature.data.bones[rb].head_local
                 # 1e-4 is ABSOLUTE and head_local is armature-local, whose
@@ -370,7 +508,7 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
                          "it UNDEFORMED" % (name, rest_pose.UNEVALUATED_STATES))
 
     return {"offenders": offenders, "warnings": warnings, "dropped": effective["dropped"],
-            "effective_edge": edge}
+            "stubs": stubs, "effective_edge": edge}
 
 
 def apply_local_scale(pose_bone, value) -> None:
@@ -576,9 +714,12 @@ def _set_no_inherit_scale(armature, bone_names):
 
 def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_overrides=None,
                   shapekey_overrides=None, skip_shapekeys=False,
-                  stage_hook=None, absent_bones="refuse") -> Dict[str, Any]:
+                  stage_hook=None, absent_bones="refuse", reference=None) -> Dict[str, Any]:
     """Apply one edge, as ``effective_edge`` filters it for ``absent_bones``; the
-    report's ``dropped`` lists what that left out.
+    report's ``dropped`` lists what that left out. Under ``"stub"`` the bones
+    ``plan_stubs`` names are added from ``reference`` (the linked fit reference's
+    armature) before the first mutation and removed after the last, and the report's
+    ``stubs`` lists them.
 
     ``stage_hook(name)``, when given, is called at each stage boundary — ``'pre'``,
     then ``'object'`` / ``'scales'`` / ``'shapekeys'`` for the stages this edge
@@ -598,7 +739,7 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
 
     val = validate_proportion_edge(armature, meshes, edge, bone_overrides=bone_overrides,
                                  shapekey_overrides=shapekey_overrides, skip_shapekeys=skip_shapekeys,
-                                 absent_bones=absent_bones)
+                                 absent_bones=absent_bones, reference=reference)
     if val["offenders"]:
         raise EdgeError("apply_proportion_edge aborted; offenders:\n  - "
                         + "\n  - ".join(val["offenders"]))
@@ -606,7 +747,22 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
 
     report = {"source": edge["source"], "target": edge["target"],
               "warnings": val["warnings"], "dropped": val["dropped"], "bakes": [],
-              "scales_applied": 0, "shapekeys": [], "base": None, "state": None}
+              "scales_applied": 0, "shapekeys": [], "base": None, "state": None,
+              "stubs": [st["name"] for st in val["stubs"]]}
+    stubs = []
+    try:
+        if val["stubs"]:
+            add_stubs(armature, reference, val["stubs"], stubs)
+        _apply(armature, meshes, edge, report, bone_overrides, shapekey_overrides,
+               skip_shapekeys, stage_hook)
+    finally:
+        remove_stubs(armature, stubs)
+    return report
+
+
+def _apply(armature, meshes, edge, report, bone_overrides, shapekey_overrides, skip_shapekeys,
+           stage_hook):
+    """The mutating body of ``apply_proportion_edge``, on a validated effective edge."""
 
     # Mark the rig mid-apply. A value left at this sentinel == a crash between here
     # and the success stamp below → the geometry is half-transformed.
@@ -660,4 +816,3 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
     scene_utils.write_stamp(armature, scene_utils.STAMP_STATE, stamp)
     report["base"] = edge["target_base"]
     report["state"] = stamp
-    return report

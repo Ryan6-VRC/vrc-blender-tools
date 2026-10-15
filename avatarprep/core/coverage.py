@@ -535,7 +535,7 @@ def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: b
     """Add the carrier shape key to mesh ``me`` (the body's own, editable datablock):
     relative to Basis, value 0, each carrier vertex displaced ``delta`` along its inverted
     normal so the consumer's threshold catches it. Refuses a vertex-count or basis-hash
-    mismatch against the measurement, and a same-named key unless ``replace``."""
+    mismatch against the measurement; ``add_key`` owns the rest of the writer's rules."""
     if not me.is_editable or me.library is not None:
         raise CoverageError("%s is library data and cannot take a shape key" % me.name)
     if len(me.vertices) != result["vertex_count"]:
@@ -547,23 +547,61 @@ def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: b
     ob = next((o for o in bpy.data.objects if o.data == me), None)
     if ob is None:
         raise CoverageError("no object uses mesh %s; a shape key needs one" % me.name)
+    offsets = {i: -me.vertices[i].normal * delta for i in result["carrier"]}
+    return add_key(ob, shape_name, offsets, replace=replace)
+
+
+def check_key(ob, shape_name: str, *, replace: bool = False):
+    """The writer's refusals, read-only, so a preview refuses what the write would: library
+    data, the Basis's own name, an existing key without ``replace``, and ``replace`` on a key
+    another key's ``relative_key`` names. Returns the existing key block or ``None``."""
+    me = ob.data
+    if not me.is_editable or me.library is not None:
+        raise CoverageError("%s is library data and cannot take a shape key" % me.name)
+    if me.shape_keys is None:
+        if shape_name == "Basis":
+            raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, ob.name))
+        return None
+    blocks = me.shape_keys.key_blocks
+    if shape_name == blocks[0].name:
+        raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, ob.name))
+    existing = blocks.get(shape_name)
+    if existing is None:
+        return None
+    if not replace:
+        raise CoverageError("shape key %r already exists on %s (pass --replace)" % (shape_name, ob.name))
+    dependants = [k.name for k in blocks if k != existing and k.relative_key == existing]
+    if dependants:
+        raise CoverageError("--replace would rewrite %r on %s, which %s %s relative to, so %s would "
+                            "move with it; author the key under a new name instead"
+                            % (shape_name, ob.name, ", ".join(dependants),
+                               "is" if len(dependants) == 1 else "are",
+                               "it" if len(dependants) == 1 else "they"))
+    return existing
+
+
+def add_key(ob, shape_name: str, offsets: Dict[int, Vector], *, replace: bool = False):
+    """The carrier writer every door that authors a Delete or Hide key shares (``mark_coverage``,
+    ``mark_parts``): a shape key on ``ob``'s mesh, relative to Basis, value 0, each vertex in
+    ``offsets`` moved by its object-space vector from Basis and every other vertex at Basis.
+
+    A new key is appended last in the key order, so an exported FBX extends every renderer's
+    blendshape list at its end and index-addressed weight overrides keep their meaning; a mesh
+    with no keys gets its Basis first. ``replace`` rewrites a same-named key where it stands,
+    keeping its index, and refuses when another key's ``relative_key`` names it, since every such
+    key would move with the rewrite. Keys are created with ``from_mix=False``, so whatever other
+    keys are set to never leaks into the new one."""
+    me = ob.data
+    existing = check_key(ob, shape_name, replace=replace)
     if me.shape_keys is None:
         ob.shape_key_add(name="Basis", from_mix=False)
-    if shape_name == me.shape_keys.key_blocks[0].name:
-        raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, me.name))
-    existing = me.shape_keys.key_blocks.get(shape_name)
-    if existing is not None:
-        if not replace:
-            raise CoverageError("shape key %r already exists on %s (pass --replace)"
-                                % (shape_name, me.name))
-        kb = existing
-    else:
-        kb = ob.shape_key_add(name=shape_name, from_mix=False)
-    basis = me.shape_keys.key_blocks[0]
+    blocks = me.shape_keys.key_blocks
+    kb = existing if existing is not None else ob.shape_key_add(name=shape_name, from_mix=False)
+    basis = blocks[0]
     kb.relative_key = basis
     kb.value = 0.0
     for i in range(len(me.vertices)):
         kb.data[i].co = basis.data[i].co
-    for i in result["carrier"]:
-        kb.data[i].co = basis.data[i].co - me.vertices[i].normal * delta
+    for i, d in offsets.items():
+        kb.data[i].co = basis.data[i].co + d
     return kb

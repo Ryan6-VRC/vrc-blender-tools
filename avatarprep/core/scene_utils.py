@@ -32,6 +32,9 @@ STAMP_FOLDED = "avatarprep_folded" # mesh: str, the canonical fold_bones command
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
 STAMP_PUSHED = "avatarprep_pushed"  # mesh OBJECT: the canonical push_garment command line (str);
                                    # a stamped mesh refuses a second push
+STAMP_AUTHORED = "avatarprep_authored"  # mesh OBJECT: {shapekey: canonical mark_parts command line}
+                                   # dict, one entry per key the door authored; a dict like
+                                   # STAMP_BAKED, written directly, not through write_stamp
 
 
 def write_stamp(obj, key, value) -> None:
@@ -174,6 +177,10 @@ def _baked_entry(ob) -> Dict[str, Any]:
     pushed = ob.get(STAMP_PUSHED)
     if pushed is not None:
         entry["pushed"] = pushed if isinstance(pushed, str) else repr(pushed)
+    authored = ob.get(STAMP_AUTHORED)
+    if authored is not None:
+        entry["authored"] = (dict(authored) if isinstance(authored, (dict, idprop.types.IDPropertyGroup))
+                             else repr(authored))
     entry.update(_library_fields(ob))
     return entry
 
@@ -202,12 +209,13 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
                       ["baked": {shapekey: value} | "baked": None, "corrupt": <repr>],
                       ["weights": <transfer_weights recipe line>],
                       ["folded": <fold_bones command line>],
-                      ["pushed": <push_garment command line>]}
+                      ["pushed": <push_garment command line>],
+                      ["authored": {shapekey: <mark_parts command line>}]}
 
     A mesh qualifies by carrying any of ``avatarprep_baked``, ``avatarprep_weights``,
-    ``avatarprep_folded`` or ``avatarprep_pushed``, and its entry holds a key for each stamp it
-    carries: ``baked``, ``weights``, ``folded`` and ``pushed`` are the keys a consumer branches
-    on by presence. Every other
+    ``avatarprep_folded``, ``avatarprep_pushed`` or ``avatarprep_authored``, and its entry holds a
+    key for each stamp it carries: ``baked``, ``weights``, ``folded``, ``pushed`` and ``authored``
+    are the keys a consumer branches on by presence (a non-map ``authored`` reads as its repr). Every other
     key is always present.
 
     Every armature is reported even when unstamped (``base=None``,
@@ -241,12 +249,13 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     objects = list(scene.objects) if scene else list(bpy.data.objects)
 
     armature_objs = [ob for ob in objects if ob is not None and ob.type == 'ARMATURE']
-    # A mesh qualifies on any of its stamps (baked, weights, folded, pushed), so a mesh carrying
+    # A mesh qualifies on any of its stamps (baked, weights, folded, pushed, authored), so a mesh carrying
     # only one of them is not invisible here.
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
                   and any(ob.get(k) is not None
-                          for k in (STAMP_BAKED, STAMP_WEIGHTS, STAMP_FOLDED, STAMP_PUSHED))]
+                          for k in (STAMP_BAKED, STAMP_WEIGHTS, STAMP_FOLDED, STAMP_PUSHED,
+                                    STAMP_AUTHORED))]
     baked_names = {ob.name for ob in baked_objs}
 
     # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.
@@ -334,6 +343,93 @@ def library_path(idblock) -> Optional[str]:
     if idblock is None or idblock.library is None:
         return None
     return idblock.library.filepath
+
+
+class FitReferenceError(ValueError):
+    """A fit reference that cannot be linked or found; names the fix."""
+
+
+def fit_reference_armatures(scene: Optional[bpy.types.Scene] = None) -> List[bpy.types.Object]:
+    """The scene's linked armatures: the fit reference's rig, when one is linked. An
+    override armature is local and is not one."""
+    if scene is None:
+        scene = bpy.context.scene
+    return [o for o in scene.objects if o is not None and o.type == 'ARMATURE' and is_linked(o)]
+
+
+def link_fit_reference(path: str, scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
+    """Link a base blend's rig and the meshes it carries into ``scene`` as **objects**, in a
+    new local collection ``<blend stem>_ref``: the sanctioned linked-reference shape
+    (``fbx_export.py`` **Linked data**), never a collection instance.
+
+    The rig is the blend's one armature object, else the one named ``Armature``; the meshes
+    are the objects parented to it or carrying an Armature modifier that targets it. Every
+    other object the blend holds (a second rig, a camera, a light) is not linked. Returns
+    ``{"library", "armature", "meshes", "collection"}``, ``library`` the ``bpy.types.Library``.
+
+    ``bpy.data.libraries.load`` stores the library's absolute path whatever it is handed, and
+    an unsaved file has no ``//`` to be relative to, so the caller saves and then calls
+    ``relative_library_path``. Raises ``FitReferenceError`` before linking anything into the
+    scene; what the load brought into ``bpy.data`` is unused and is not saved."""
+    import os
+    if scene is None:
+        scene = bpy.context.scene
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise FitReferenceError("--fit-reference %s is not a file; name the base body's .blend" % path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    coll_name = stem + "_ref"
+    if bpy.data.collections.get(coll_name) is not None:
+        raise FitReferenceError("a collection %r is already in this file; a fit reference is linked once"
+                                % coll_name)
+    before = set(bpy.data.objects)
+    with bpy.data.libraries.load(path, link=True, relative=True) as (src, dst):
+        dst.objects = list(src.objects)
+    # Loading the blend's objects also brings in what they depend on from a library the blend
+    # itself links (a base taking a part from a sibling base); those arrive under that nested
+    # library, may share the rig's name, and are never the reference. Nothing loaded is removed:
+    # an object no collection holds is not written on save, and a kept mesh may depend on one.
+    lib = next((l for l in bpy.data.libraries
+                if os.path.normcase(os.path.abspath(bpy.path.abspath(l.filepath))) == os.path.normcase(path)),
+               None)
+    linked = [o for o in dst.objects if o is not None and o.library == lib]
+    arms = [o for o in linked if o.type == 'ARMATURE']
+    rig = arms[0] if len(arms) == 1 else next((o for o in arms if o.name == "Armature"), None)
+    if rig is not None and rig in before:
+        raise FitReferenceError("%s's rig %s is already linked in this file, but no %s collection holds it; "
+                                "link the reference's objects back into a collection by hand rather than "
+                                "linking it again" % (path, rig.name, coll_name))
+    if rig is None:
+        names = sorted(o.name for o in arms)
+        raise FitReferenceError("%s holds %s; a fit reference is the blend's one armature or the one named "
+                                "Armature" % (path, ("armatures %s" % ", ".join(names)) if names
+                                              else "no armature object"))
+    meshes = [o for o in linked if o.type == 'MESH' and (
+        o.parent == rig or any(m.type == 'ARMATURE' and m.object == rig for m in o.modifiers))]
+    coll = bpy.data.collections.new(coll_name)
+    scene.collection.children.link(coll)
+    for o in [rig] + sorted(meshes, key=lambda o: o.name):
+        coll.objects.link(o)
+    return {"library": lib, "armature": rig.name, "meshes": sorted(o.name for o in meshes),
+            "collection": coll.name}
+
+
+def relative_library_path(lib) -> str:
+    """Make ``lib.filepath`` ``//``-relative to the saved file and return it; the caller saves
+    again when it changed. Raises ``FitReferenceError`` when no relative path exists (the
+    library on another drive than the file)."""
+    import os
+    if lib.filepath.startswith("//"):
+        return lib.filepath
+    if not bpy.data.filepath:
+        raise FitReferenceError("the file is unsaved, so a library path cannot be made relative yet")
+    absolute = bpy.path.abspath(lib.filepath)
+    if os.path.splitdrive(absolute)[0].lower() != os.path.splitdrive(bpy.data.filepath)[0].lower():
+        raise FitReferenceError("the fit reference %s is on another drive than %s, so no // path reaches "
+                                "it; keep the base blend and the output on one drive"
+                                % (absolute, bpy.data.filepath))
+    lib.filepath = bpy.path.relpath(absolute)
+    return lib.filepath
 
 
 def _is_descendant(obj, ancestor) -> bool:

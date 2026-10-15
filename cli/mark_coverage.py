@@ -100,7 +100,9 @@ def _parse_args():
                       help="where to save the body's blend with the carrier key added")
     mode.add_argument("--in-place", dest="in_place", action="store_true",
                       help="save over the body's own blend instead of --out")
-    p.add_argument("--replace", action="store_true", help="overwrite a same-named shape key")
+    p.add_argument("--replace", action="store_true",
+                   help="rewrite a same-named shape key where it stands; refused when another key is "
+                        "relative to it")
     add_force_load_repair(p)
     a = p.parse_args(argv)
     a.shape_values = _parse_shapes(a.shapes, p)

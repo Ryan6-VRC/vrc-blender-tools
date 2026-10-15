@@ -45,13 +45,15 @@ The `avatarprep.core` package is a plain Python package (no operator/UI context)
 A line each on the ops with the least obvious behavior (not the full set — that's the meta-repo `TOOLS.md`); behavior lives in the meta-repo `docs/blender.md`, and the callable surface (entry points, flags) in `TOOLS.md`.
 
 - **Apply Pose as Rest Pose** (`core.rest_pose.apply_pose`) — shape-key-safe bake of the current pose into the rest pose.
-- **Proportion edges** (`core.proportions.apply_proportion_edge`) — apply a proportion **edge** (a JSON file mapping one named proportion state to another); the agent chains edges to walk a path. `--whatif` validates the edge and reports the geometry it would produce, measured by an in-memory trial that is never saved. Bundled `edges/` is a curated sample library (migrated real edges plus known base-equivalency samples) that doubles as this repo's test-fixture corpus — it is not packaged into the extension build, and real per-avatar edges live at the Unity-project level (see `docs/LAYOUT.md`).
+- **Proportion edges** (`core.proportions.apply_proportion_edge`) — apply a proportion **edge** (a JSON file mapping one named proportion state to another); the agent chains edges to walk a path. `--whatif` validates the edge and reports the geometry it would produce, measured by an in-memory trial that is never saved. Bundled `edges/` is a curated sample library (migrated real edges plus known base-equivalency samples) that doubles as this repo's test-fixture corpus — it is not packaged into the extension build, and real per-avatar edges live at the Unity-project level (see `docs/LAYOUT.md`). `--absent-bones stub` copies each bone the edge names and the rig lacks from the linked fit reference as a non-deforming stub for the apply, and removes it after.
 - **Stamp Base** (`core.scene_utils.write_stamp` via the `stamp_base` door) — stamps the avatar body lineage on an armature as a deliberate agent assertion.
 - **Report Stamps** (`core.scene_utils.report_stamps`) — read-only query of every armature's base/state stamps and, grouped under each armature, its bound meshes' baked-morph maps (plus an `unbound` bucket for meshes owned by no single armature).
 - **Bake Shape Key to Basis** (`core.shapekey_bake.bake_shapekey_to_basis`) — folds one body-shape morph into Basis and records the reversible fold.
 - **Stage Hand Edit** (`core.handedit.build_scene` via the `stage_handedit` door) — builds a scratch scene where a garment rides a posable body at the row's shape-key values, optionally posed one pose per timeline marker from a pose corpus, for the operator to fix a spot by hand; the weighted garment-only bones and their garment-only ancestors are copied onto the body rig, and every bone with a parent is location-locked.
 - **Harvest Hand Edit** (`core.handedit.apply_harvest` via the `harvest_handedit` door) — copies that edit back into the garment blend by vertex index (Basis, every key, normalised weights, custom normals) after asserting the topology, keys, placement and sharp flags still match; UVs and other attributes do not travel.
 - **Rename Objects** (`core.rename_objects.rename_objects`) — renames scene objects as a **set**, so `Face=Body Body=Body_Base` is a legal swap rather than a silent `Body.001`, and emits the `{ourName: sourceName}` map a downstream by-name material copy needs. Object names only; the mesh datablock name is left alone.
+- **Import FBX** (`core.import_fbx.import_fbx`) — `--fit-reference BLEND` links the base body's rig and its meshes as objects by a `//`-relative path, which the doors that pick an armature unnamed skip.
+- **Mark Parts** (`core.parts`, door `mark_parts`) — authors a Delete or Hide carrier key that moves the edge-linked islands a `--region` selection takes past the ShapeChanger threshold, rigidly or (`--collapse`) collapsed to a point, through the key writer `mark_coverage` shares, and records each key's recipe in `avatarprep_authored`.
 
 ## 4. Verification
 
@@ -74,7 +76,7 @@ blender --background --factory-startup --python tests/verify.py -- --asset path/
 avatarprep/            # the extension package
   core/                # pure logic (no Operator/UI): scene_utils, import_fbx, prune_bones,
                        #   rest_pose, merge_armatures, proportions, shapekey_bake, fbx_export,
-                       #   render_mesh, measure, rename_objects
+                       #   render_mesh, measure, rename_objects, coverage, fit, parts
   operators.py         # thin operator wrappers
   ui.py                # N-panel (category "AvatarPrep")
   __init__.py          # register()/unregister() — NO upper version guard
@@ -87,5 +89,5 @@ tests/                 # verify.py + committed Felis fixture (per-avatar blends 
 
 ## Known limitations
 - `apply_pose` requires the armature to be in **Pose mode** (same as CATS). The CLI handles this automatically.
-- Multi-armature scenes: the proportion CLI (`apply_proportion_edge`, incl. `--whatif`) scopes to a named rig via `--armature` and **fails loud** on ambiguity.
+- Multi-armature scenes: the proportion CLI (`apply_proportion_edge`, incl. `--whatif`) scopes to a named rig via `--armature` and **fails loud** on ambiguity among local rigs; a library-linked fit reference is never its pick.
 - FBX export defaults to the whole scene (matching CATS); `--armature` exports one rig and the meshes it deforms, selection-only. A multi-armature scene **refuses** a whole-scene export — so a disposable reference body can't ship through the gated path by accident. Pass `--armature` to scope to one rig, merge the rigs first, or pass `--keep-object-rotation` to export rotations as-is (the permanent object-scale bake still runs; add `--no-bake-scale` to skip that too).

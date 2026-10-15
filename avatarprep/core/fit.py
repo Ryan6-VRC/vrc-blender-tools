@@ -59,6 +59,8 @@ SEED_THROUGH = 0.005    # m: push_garment's body-vertex reach for the through te
 
 AXIS_WORDS = ("forward", "back", "lateral", "up", "own", "a", "b")
 ZONE_WORDS = ("front", "back", "left", "right")
+ZONE_FORMS = "front, back, left, right, midline:M, above:BONE, below:BONE"
+REGION_KINDS = ("group", "bone", "slot", "zone")
 
 # row, globs (matched against the whole lowercased bone name, so a side or rig prefix still
 # matches; ``head`` alone is exact), axes: (axis, +max, -max, flexion test)
@@ -348,16 +350,13 @@ def load(source, targets: Sequence, *, shapes=(), cut_shapes=(), cut_threshold=0
             garments.append(_garment(t, per_mesh[t.name], names, cut[t.name]))
     except WT.WeightTransferError as e:
         raise FitError(str(e))
-    missing = [n for n in groups if not any(n in t.vertex_groups for t in targets)]
+    missing = [n for n in groups if not any(_matching([vg.name for vg in t.vertex_groups], n) for t in targets)]
     if missing:
         raise FitError("group:%s is a vertex group on none of %s" % (",".join(missing),
                                                                      ", ".join(t.name for t in targets)))
     for g, t in zip(garments, targets):
         if groups:
-            gnames, GW = WT.group_matrix(t)
-            for n in groups:
-                if n in gnames:
-                    g["groups"][n] = GW[:, gnames.index(n)]
+            g["groups"] = group_weights(t, groups)
     data = {"body": body, "garments": garments, "frame": frame, "cut_threshold": cut_threshold}
     for g in garments:
         _rest(data, g)
@@ -434,57 +433,118 @@ def extents(data, g) -> Dict[str, List[float]]:
 
 def parse_region(text) -> List[Tuple[str, str]]:
     """``[(kind, value), ...]`` from ``KIND:VALUE[+KIND:VALUE]...``; raises ``ValueError`` naming
-    the form. The terms intersect."""
+    the form. The terms intersect. ``group:``, ``bone:`` and ``slot:`` names are ``fnmatch``
+    globs, matched case-sensitively, except that a name present exactly is taken literally
+    (``_matching``)."""
     terms = []
     for part in text.split("+"):
         kind, sep, value = part.partition(":")
         kind = kind.strip().lower()
-        if not sep or not value or kind not in ("group", "bone", "zone"):
-            raise ValueError("--region wants group:NAME, bone:NAME or zone:NAME (terms joined by + "
-                             "intersect), got %r" % text)
+        if not sep or not value or kind not in REGION_KINDS:
+            raise ValueError("--region wants group:NAME, bone:NAME, slot:MATERIAL or zone:NAME (terms joined "
+                             "by + intersect), got %r" % text)
         if kind == "zone":
-            word, _, bone = value.partition(":")
+            word, _, arg = value.partition(":")
             word = word.lower()
             if word.strip("+-") in ("x", "y", "z"):
                 raise ValueError("zone:%s is a world axis, which reads differently on a rig facing -Y than "
-                                 "+Y; zones are front, back, left, right, above:BONE, below:BONE" % value)
-            if not ((word in ZONE_WORDS and not bone) or (word in ("above", "below") and bone)):
-                raise ValueError("zone:%s is not one of front, back, left, right, above:BONE, below:BONE"
-                                 % value)
+                                 "+Y; zones are %s" % (value, ZONE_FORMS))
+            if word == "midline":
+                try:
+                    ok = float(arg) > 0
+                except ValueError:
+                    ok = False
+                if not ok:
+                    raise ValueError("zone:%s wants midline:M, M the metres either side of the lateral "
+                                     "midline, e.g. zone:midline:0.02" % value)
+            elif not ((word in ZONE_WORDS and not arg) or (word in ("above", "below") and arg)):
+                raise ValueError("zone:%s is not one of %s" % (value, ZONE_FORMS))
         terms.append((kind, value))
     return terms
 
 
+def _matching(names, pattern):
+    """The names ``pattern`` names: itself when a name is exactly ``pattern``, so a literal name
+    holding ``[`` or ``*`` means that name; else every name it matches as a case-sensitive glob."""
+    names = list(names)
+    if pattern in names:
+        return [pattern]
+    return [n for n in names if fnmatch.fnmatchcase(n, pattern)]
+
+
+def slot_mask(ob, pattern) -> np.ndarray:
+    """Vertices of mesh object ``ob`` every polygon of which sits in a material slot whose
+    material (or, when the slot is empty, slot) name matches ``pattern``; a vertex no polygon
+    touches is never in a slot. The polygon rule mark_coverage's carrier uses."""
+    me = ob.data
+    names = [(s.material.name if s.material else s.name) for s in ob.material_slots]
+    matched = set(_matching(names, pattern))
+    hit = np.array([n in matched for n in names] or [False], bool)
+    mi = np.empty(len(me.polygons), np.int64)
+    me.polygons.foreach_get("material_index", mi)
+    pin = hit[np.clip(mi, 0, len(hit) - 1)] if len(names) else np.zeros(len(mi), bool)
+    lv = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    lt = np.empty(len(me.polygons), np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    poly = np.repeat(np.arange(len(lt)), lt)
+    touched = np.zeros(len(me.vertices), bool)
+    touched[lv] = True
+    outside = np.zeros(len(me.vertices), bool)
+    np.logical_or.at(outside, lv, ~pin[poly])
+    return touched & ~outside
+
+
 def region_mask(data, g, terms) -> np.ndarray:
-    """Vertices of ``g`` in the region: ``group:`` weight over 0.5; ``bone:`` largest influence
-    on the named garment-armature bone or a bone under it; ``zone:`` rest position on that side
-    of the reference bone's head (front/back along forward, left/right along lateral) or above
-    or below the named body bone's head. Cut vertices are never in a region."""
-    f = data["frame"]
-    d = g["V"] - f["origin"]
+    """Vertices of ``g`` in the region: ``group:`` weight over 0.5, summed over the groups the
+    glob matches; ``bone:`` largest influence on a garment-armature bone the glob matches or a
+    bone under one; ``slot:`` every polygon touching the vertex in a matching material slot
+    (``slot_mask``); ``zone:`` rest position on that side of the reference bone's head
+    (front/back along forward, left/right along lateral), within M metres of it along lateral
+    (``midline:M``), or above or below the named body bone's head. Cut vertices are never in
+    a region."""
     m = ~g["cut"]
     for kind, value in terms:
         if kind == "group":
             w = g["groups"].get(value)
             m = m & (w > 0.5) if w is not None else np.zeros_like(m)
         elif kind == "bone":
-            under = g["under"].get(value)
+            under = set().union(*[g["under"][b] for b in _matching(g["under"], value)])
             m = m & np.array([x in under for x in g["dominant"]], bool) if under else np.zeros_like(m)
+        elif kind == "slot":
+            m = m & slot_mask(g["object"], value)
         else:
-            word, _, bone = value.partition(":")
+            f = data["frame"]
+            d = g["V"] - f["origin"]
+            word, _, arg = value.partition(":")
             word = word.lower()
             if word in ZONE_WORDS:
                 axis, sign = {"front": ("forward", 1), "back": ("forward", -1),
                               "left": ("lateral", 1), "right": ("lateral", -1)}[word]
                 m = m & (sign * (d @ f[axis]) > 0)
+            elif word == "midline":
+                m = m & (np.abs(d @ f["lateral"]) <= float(arg))
             else:
-                b = data["body"]["bones"].get(bone)
+                b = data["body"]["bones"].get(arg)
                 if b is None:
                     raise FitError("zone:%s names no bone of %s; name one of its bones (the frame's origin "
                                    "is %s)" % (value, data["body"]["armature"], f["reference_bone"]))
                 up = (g["V"] - b["head"]) @ f["up"]
                 m = m & ((up > 0) if word == "above" else (up < 0))
     return m
+
+
+def group_weights(ob, patterns) -> Dict[str, np.ndarray]:
+    """``{pattern: per-vertex weight}`` for each ``group:`` glob, summed over the vertex groups of
+    ``ob`` it matches; a pattern matching none is left out."""
+    gnames, GW = WT.group_matrix(ob)
+    out = {}
+    for n in patterns:
+        matched = set(_matching(gnames, n))
+        cols = [j for j, name in enumerate(gnames) if name in matched]
+        if cols:
+            out[n] = GW[:, cols].sum(1)
+    return out
 
 
 def region_groups(specs) -> List[str]:
@@ -499,7 +559,7 @@ def resolve_regions(data, specs: Sequence[str]) -> Dict[str, List[np.ndarray]]:
     for spec in specs:
         terms = parse_region(spec)
         for kind, value in terms:
-            if kind == "bone" and not any(value in g["under"] for g in data["garments"]):
+            if kind == "bone" and not any(_matching(g["under"], value) for g in data["garments"]):
                 raise FitError("--region %s: %s is a bone of none of the garments' armatures (%s)"
                                % (spec, value, ", ".join(sorted({g["armature"] for g in data["garments"]}))))
         masks = [region_mask(data, g, terms) for g in data["garments"]]
