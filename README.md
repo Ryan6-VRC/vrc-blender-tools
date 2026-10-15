@@ -49,6 +49,8 @@ A line each on the ops with the least obvious behavior (not the full set — tha
 - **Stamp Base** (`core.scene_utils.write_stamp` via the `stamp_base` door) — stamps the avatar body lineage on an armature as a deliberate agent assertion.
 - **Report Stamps** (`core.scene_utils.report_stamps`) — read-only query of every armature's base/state stamps and, grouped under each armature, its bound meshes' baked-morph maps (plus an `unbound` bucket for meshes owned by no single armature).
 - **Bake Shape Key to Basis** (`core.shapekey_bake.bake_shapekey_to_basis`) — folds one body-shape morph into Basis and records the reversible fold.
+- **Stage Hand Edit** (`core.handedit.build_scene` via the `stage_handedit` door) — builds a scratch scene where a garment rides a posable body at the row's shape-key values, optionally posed one pose per timeline marker from a pose corpus, for the operator to fix a spot by hand; the weighted garment-only bones and their garment-only ancestors are copied onto the body rig, and every bone with a parent is location-locked.
+- **Harvest Hand Edit** (`core.handedit.apply_harvest` via the `harvest_handedit` door) — copies that edit back into the garment blend by vertex index (Basis, every key, normalised weights, custom normals) after asserting the topology, keys, placement and sharp flags still match; UVs and other attributes do not travel.
 - **Rename Objects** (`core.rename_objects.rename_objects`) — renames scene objects as a **set**, so `Face=Body Body=Body_Base` is a legal swap rather than a silent `Body.001`, and emits the `{ourName: sourceName}` map a downstream by-name material copy needs. Object names only; the mesh datablock name is left alone.
 
 ## 4. Verification
