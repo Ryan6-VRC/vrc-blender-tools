@@ -895,15 +895,19 @@ def _seeds(data, g, step, near, focus):
     return hit
 
 
-def plan_push(data, gi, the_plan, *, amount, near=0.0005, falloff=0.025, rim_hold=0.0,
+def plan_push(data, gi, the_plan, *, amount, near=0.0005, falloff=0.025, rim_hold=0.0, smooth=0,
               allow_static=False, focus=None) -> Dict:
     """Seeds and the per-vertex push for one garment; nothing is written. Dynamic seeds are the
     seeds of any step minus the rest seeds; none refuses unless ``allow_static``, which pushes
     the rest seeds instead. Every vertex within ``falloff`` (rest, straight line) of a seed moves
     along its rest normal, turned to face away from its nearest body triangle, by
     ``amount * smoothstep(1 - d / falloff)``, times ``smoothstep(e / rim_hold)`` when set (``e``
-    its distance to the nearest boundary vertex). Returns the object-space delta, the seed mask
-    (``seeded``) and counts."""
+    its distance to the nearest boundary vertex). ``smooth`` N > 0 then averages each moved
+    vertex's direction with its moved edge neighbours' N times, renormalising each pass, and
+    keeps every magnitude: a rolled hem's normals lie near the skin's tangent and turn from one
+    vertex to the next, so unsmoothed directions zigzag the hem. Returns the object-space delta,
+    the seed mask (``seeded``) and counts; ``facing_in`` counts moved vertices whose final
+    direction faces their nearest body triangle."""
     g = data["garments"][gi]
     focus = (~g["cut"]) if focus is None else focus
     rest = _seeds(data, g, None, near, focus)
@@ -943,15 +947,25 @@ def plan_push(data, gi, the_plan, *, amount, near=0.0005, falloff=0.025, rim_hol
     turned = (n * g["bn0"]).sum(1) < 0
     n[turned] *= -1.0
     n = np.nan_to_num(n)
+    moved = f > 0
+    if smooth > 0:
+        E = g["E"][moved[g["E"]].all(1)]
+        for _ in range(int(smooth)):
+            s = n.copy()
+            np.add.at(s, E[:, 0], n[E[:, 1]])
+            np.add.at(s, E[:, 1], n[E[:, 0]])
+            u = _unit(s)
+            # a neighbourhood that cancels to zero keeps its last direction, so no push is lost
+            ok = np.isfinite(u).all(1) & (np.linalg.norm(s, axis=1) > 1e-12)
+            n = np.where(ok[:, None], u, n)
     dw = n * (amount * f)[:, None]
     M3 = np.array(g["object"].matrix_world.to_3x3(), np.float64)
-    moved = f > 0
     return {"delta": dw @ np.linalg.inv(M3).T, "seeded": seeds, "kind": kind, "rest_seeds": int(rest.sum()),
             "posed_seeds": int(posed_any.sum()), "dynamic_seeds": int(dynamic.sum()), "seeds": int(seeds.sum()),
             "moved": int(moved.sum()), "full": int((f >= 0.99).sum()),
             "max_mm": round(float(np.linalg.norm(dw, axis=1).max()) * 1000.0, 4),
             "rim_moved": int((moved & g["boundary"]).sum()), "turned": int((turned & moved).sum()),
-            "per_step": per}
+            "facing_in": int((moved & ((n * g["bn0"]).sum(1) < 0)).sum()), "per_step": per}
 
 
 def apply_push(ob, delta) -> int:
