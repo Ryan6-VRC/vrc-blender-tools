@@ -3,14 +3,16 @@
 Run:
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --out <out.blend> --edge <edge.json> [--skip-shapekeys] \
-      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \n      [--absent-bones refuse|drop] [--report <report.json>]
+      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \
+      [--absent-bones refuse|drop|stub] [--report <report.json>]
 
   # Preview: validate the edge, then report the geometry it would produce. Writes
   # nothing; --out must be omitted (passing it errors — a preview never writes a
   # deliverable).
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --edge <edge.json> --whatif [--skip-shapekeys] \
-      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \n      [--absent-bones refuse|drop] [--report <report.json>]
+      [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \
+      [--absent-bones refuse|drop|stub] [--report <report.json>]
 
 --whatif mutates nothing ON DISK. Once the validate gate is clean it trial-applies the
 real engine in memory and measures the result at each stage boundary, then discards it
@@ -22,6 +24,11 @@ Aggregate extremes answer the HEIGHT question and nothing wider: a morph that re
 mid-body without reaching the feet or the crown legitimately moves min-z and max-z by
 zero, so a 0.000 delta is not evidence that a shapekeys block did nothing. Per-mesh
 bounds in --report are the next place to look.
+
+``--absent-bones stub`` gives each bone the edge names and the rig lacks a non-deforming stub
+copied from the linked fit reference's rest bone (``import_fbx --fit-reference`` links one),
+parented to its nearest ancestor the rig carries, applies the edge, and removes the stubs;
+core ``proportions.plan_stubs`` owns the rules.
 
 Exit codes: 0 = would apply (with numbers) · 1 = offenders, would not apply ·
 2 = ERROR (bad edge path, unopenable --in, --out combined with --whatif).
@@ -64,12 +71,15 @@ def _parse_args():
                         "edge, and a NAME the edge does not carry is ADDED to it — an added "
                         "key must exist on some bound mesh or the run refuses, so a typo'd "
                         "name surfaces as 'shapekey not found on any mesh'. Repeatable")
-    p.add_argument("--absent-bones", choices=("refuse", "drop"), default="refuse",
+    p.add_argument("--absent-bones", choices=("refuse", "drop", "stub"), default="refuse",
                    help="What a bone the edge names but the rig lacks does. 'refuse' "
                         "(default) offends. 'drop' leaves it out, for a mergeable pruned "
                         "to what it skins, and prints one DROPPED line per op or bone left "
                         "out; core proportions.effective_edge owns the rules and the "
-                        "caveat on an absent bone with a present descendant")
+                        "caveat on an absent bone with a present descendant. 'stub' copies "
+                        "it from the linked fit reference for the apply and removes it after, "
+                        "printing one STUB line per bone; it refuses when no fit reference "
+                        "is linked")
     p.add_argument("--report", dest="report", default=None,
                    help="Write the full result dict here as JSON")
     add_force_load_repair(p)
@@ -84,18 +94,24 @@ def _parse_args():
 def _resolve_armature(name):
     """Resolve the target armature at the CLI boundary — fail loud, never guess.
 
-    A named ``--armature`` must exist and be an armature; with no name the scene
-    must hold exactly one armature (>1 aborts naming them, so an owned .blend that
-    appended a base-body reference can't silently target the wrong rig). The core
+    A named ``--armature`` must exist and be an armature, a local one first where a
+    linked one shares its name; with no name the scene must hold exactly one local
+    armature (>1 aborts naming them, so an owned .blend that appended a base-body
+    reference can't silently target the wrong rig). A library-linked armature (a fit
+    reference) is never the unnamed pick, since no edge can be applied to it. The core
     ``find_armature`` stays permissive for its operator callers by design."""
     import bpy
-    arms = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
+    from avatarprep.core import scene_utils
+    arms = [o for o in bpy.context.scene.objects
+            if o.type == 'ARMATURE' and not scene_utils.is_linked(o)]
     if name:
-        obj = bpy.context.scene.objects.get(name)
-        if obj is None or obj.type != 'ARMATURE':
+        named = sorted((o for o in bpy.context.scene.objects
+                        if o.name == name and o.type == 'ARMATURE'),
+                       key=scene_utils.is_linked)
+        if not named:
             print("AVATARPREP: ERROR --armature %r is not an armature in this scene" % name)
             sys.exit(1)
-        return obj
+        return named[0]
     if not arms:
         print("AVATARPREP: ERROR no armature found")
         sys.exit(1)
@@ -104,6 +120,28 @@ def _resolve_armature(name):
               % ", ".join(sorted(a.name for a in arms)))
         sys.exit(1)
     return arms[0]
+
+
+def _reference(args):
+    """The linked fit reference's armature under ``--absent-bones stub``, else None; the
+    core names the fix when none is linked."""
+    if args.absent_bones != "stub":
+        return None
+    from avatarprep.core import scene_utils
+    refs = scene_utils.fit_reference_armatures()
+    if len(refs) > 1:
+        print("AVATARPREP: ERROR --absent-bones stub reads one fit reference and %d are linked "
+              "(%s); unlink all but the base body this rig is fitted to"
+              % (len(refs), ", ".join("%s from %s" % (r.name, scene_utils.library_path(r))
+                                      for r in refs)))
+        sys.exit(1)
+    return refs[0] if refs else None
+
+
+def _print_stubs(stubs):
+    for st in stubs:
+        name = st["name"] if isinstance(st, dict) else st
+        print("AVATARPREP: STUB %r%s" % (name, " under %r" % st["parent"] if isinstance(st, dict) else ""))
 
 
 def _print_dropped(dropped):
@@ -209,6 +247,7 @@ def main():
     from avatarprep.core import scene_utils, proportions, measure
 
     armature = _resolve_armature(args.armature)
+    reference = _reference(args)
 
     bone_overrides = kv(args.bone_override)
     sk_raw = kv(args.shapekey_override)
@@ -228,7 +267,7 @@ def main():
         report = proportions.validate_proportion_edge(
             armature, meshes, edge, bone_overrides=bone_overrides,
             shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys,
-            absent_bones=args.absent_bones)
+            absent_bones=args.absent_bones, reference=reference)
 
         offenders = report["offenders"]
         warnings = report["warnings"]
@@ -240,6 +279,7 @@ def main():
         for w in warnings:
             print("AVATARPREP: WARNING", w)
         _print_dropped(report["dropped"])
+        _print_stubs(report["stubs"])
 
         if offenders:
             if args.report:
@@ -255,7 +295,7 @@ def main():
         proportions.apply_proportion_edge(
             armature, meshes, edge, bone_overrides=bone_overrides,
             shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys,
-            absent_bones=args.absent_bones, stage_hook=lambda name: stages.append(
+            absent_bones=args.absent_bones, reference=reference, stage_hook=lambda name: stages.append(
                 (name, measure.measure_geometry(armature, meshes))))
 
         geometry = _geometry_report(stages, report["effective_edge"], bone_overrides, repair)
@@ -281,7 +321,8 @@ def main():
         report = proportions.apply_proportion_edge(
             armature, None, args.edge, bone_overrides=bone_overrides,
             shapekey_overrides=shapekey_overrides,
-            skip_shapekeys=args.skip_shapekeys, absent_bones=args.absent_bones)
+            skip_shapekeys=args.skip_shapekeys, absent_bones=args.absent_bones,
+            reference=reference)
     except proportions.EdgeError as e:
         print("AVATARPREP: ERROR", e)
         sys.exit(1)
@@ -291,6 +332,7 @@ def main():
     for w in report["warnings"]:
         print("AVATARPREP: WARNING", w)
     _print_dropped(report["dropped"])
+    _print_stubs(report["stubs"])
 
     if args.report:
         write_report(args.report, report)

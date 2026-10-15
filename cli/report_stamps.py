@@ -6,7 +6,8 @@ Run:
 
 The read/query counterpart of stamp_base — inspects a file's avatarprep_base /
 avatarprep_state (per armature), avatarprep_baked (per baked mesh), avatarprep_weights,
-avatarprep_folded and avatarprep_pushed (per reweighted, folded or pushed mesh) in one call.
+avatarprep_folded and avatarprep_pushed (per reweighted, folded or pushed mesh) and
+avatarprep_authored (one line per key mark_parts authored) in one call.
 Opens the blend read-only; never saves. A report never "fails" — exit 0 always
 (a bad --in / open failure is the only ERROR exit 2).
 
@@ -61,7 +62,7 @@ def main():
 
     def _print_mesh(owner, m):
         # A mesh qualifies on any stamp (avatarprep_baked / _weights / _folded /
-        # _pushed), so any key may be absent — print only what the entry
+        # _pushed / _authored), so any key may be absent — print only what the entry
         # carries. A corrupt (non-map) baked stamp is the one genuine fault → WARNING
         # (greppable, matching the Slice-E CLI family); everything else is a plain line.
         if m.get("corrupt") is not None:
@@ -79,6 +80,14 @@ def main():
         if "pushed" in m:
             print("AVATARPREP: mesh %s pushed=%s (%s)%s"
                   % (m["name"], m["pushed"], owner, _linked(m)))
+        if "authored" in m:
+            if isinstance(m["authored"], dict):
+                for key, line in sorted(m["authored"].items()):
+                    print("AVATARPREP: mesh %s authored %s=%s (%s)%s"
+                          % (m["name"], key, line, owner, _linked(m)))
+            else:
+                print("AVATARPREP: WARNING mesh %s authored=CORRUPT %s (%s)%s"
+                      % (m["name"], m["authored"], owner, _linked(m)))
 
     for a in report["armatures"]:
         base = a["base"] if a["base"] is not None else "unknown"
