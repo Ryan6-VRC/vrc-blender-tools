@@ -118,7 +118,7 @@ def _weighted_groups(obj) -> Dict[str, int]:
 
 
 def _spelling(name: str) -> str:
-    """A bone name with case, ``_`` and ``.`` ignored: ``Upper_leg.L`` and ``UpperLeg.L``
+    """A bone name with case, ``_`` and ``.`` ignored: ``Upper_Arm.L`` and ``UpperArm.L``
     are one spelling."""
     return name.casefold().replace("_", "").replace(".", "")
 
