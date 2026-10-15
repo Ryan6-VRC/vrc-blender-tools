@@ -368,6 +368,14 @@ def test_write_carrier_and_gates():
     except coverage.CoverageError:
         pass
     coverage.write_carrier(body.data, r, shape_name="Cover_T", delta=0.02, replace=True)
+    dep = body.shape_key_add(name="Dep", from_mix=False)
+    dep.relative_key = body.data.shape_keys.key_blocks["Cover_T"]
+    try:
+        coverage.write_carrier(body.data, r, shape_name="Cover_T", delta=0.02, replace=True)
+        check(False, "--replace on a key another key is relative to should refuse")
+    except coverage.CoverageError as e:
+        check("Dep is relative" in str(e), "the refusal should name the dependant, got %s" % e)
+    body.shape_key_remove(dep)
     basis.data[0].co = basis.data[0].co + Vector((0.001, 0, 0))
     try:
         coverage.write_carrier(body.data, r, shape_name="Cover_U", delta=0.02)

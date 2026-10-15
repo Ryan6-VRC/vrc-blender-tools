@@ -50,8 +50,8 @@ A line each on the ops with the least obvious behavior (not the full set — tha
 - **Report Stamps** (`core.scene_utils.report_stamps`) — read-only query of every armature's base/state stamps and, grouped under each armature, its bound meshes' baked-morph maps (plus an `unbound` bucket for meshes owned by no single armature).
 - **Bake Shape Key to Basis** (`core.shapekey_bake.bake_shapekey_to_basis`) — folds one body-shape morph into Basis and records the reversible fold.
 - **Rename Objects** (`core.rename_objects.rename_objects`) — renames scene objects as a **set**, so `Face=Body Body=Body_Base` is a legal swap rather than a silent `Body.001`, and emits the `{ourName: sourceName}` map a downstream by-name material copy needs. Object names only; the mesh datablock name is left alone.
-- **Import FBX** (`core.import_fbx.import_fbx`) — `--fit-reference BLEND` links the base body's rig and its meshes as objects by a `//`-relative path, which the doors that pick an armature skip.
-- **Mark Parts** (`core.parts`, door `mark_parts`) — authors a Delete or Hide carrier key that moves the edge-linked islands a `--region` selection takes rigidly past the ShapeChanger threshold, through the key writer `mark_coverage` shares, and records each key's recipe in `avatarprep_authored`.
+- **Import FBX** (`core.import_fbx.import_fbx`) — `--fit-reference BLEND` links the base body's rig and its meshes as objects by a `//`-relative path, which the doors that pick an armature unnamed skip.
+- **Mark Parts** (`core.parts`, door `mark_parts`) — authors a Delete or Hide carrier key that moves the edge-linked islands a `--region` selection takes past the ShapeChanger threshold, rigidly or (`--collapse`) collapsed to a point, through the key writer `mark_coverage` shares, and records each key's recipe in `avatarprep_authored`.
 
 ## 4. Verification
 

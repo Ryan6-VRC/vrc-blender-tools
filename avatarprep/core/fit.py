@@ -434,7 +434,8 @@ def extents(data, g) -> Dict[str, List[float]]:
 def parse_region(text) -> List[Tuple[str, str]]:
     """``[(kind, value), ...]`` from ``KIND:VALUE[+KIND:VALUE]...``; raises ``ValueError`` naming
     the form. The terms intersect. ``group:``, ``bone:`` and ``slot:`` names are ``fnmatch``
-    globs, matched case-sensitively."""
+    globs, matched case-sensitively, except that a name present exactly is taken literally
+    (``_matching``)."""
     terms = []
     for part in text.split("+"):
         kind, sep, value = part.partition(":")
@@ -463,7 +464,11 @@ def parse_region(text) -> List[Tuple[str, str]]:
 
 
 def _matching(names, pattern):
-    """The names ``pattern`` matches as a case-sensitive glob (a plain name matches itself)."""
+    """The names ``pattern`` names: itself when a name is exactly ``pattern``, so a literal name
+    holding ``[`` or ``*`` means that name; else every name it matches as a case-sensitive glob."""
+    names = list(names)
+    if pattern in names:
+        return [pattern]
     return [n for n in names if fnmatch.fnmatchcase(n, pattern)]
 
 
@@ -473,7 +478,8 @@ def slot_mask(ob, pattern) -> np.ndarray:
     touches is never in a slot. The polygon rule mark_coverage's carrier uses."""
     me = ob.data
     names = [(s.material.name if s.material else s.name) for s in ob.material_slots]
-    hit = np.array([fnmatch.fnmatchcase(n, pattern) for n in names] or [False], bool)
+    matched = set(_matching(names, pattern))
+    hit = np.array([n in matched for n in names] or [False], bool)
     mi = np.empty(len(me.polygons), np.int64)
     me.polygons.foreach_get("material_index", mi)
     pin = hit[np.clip(mi, 0, len(hit) - 1)] if len(names) else np.zeros(len(mi), bool)
@@ -534,7 +540,8 @@ def group_weights(ob, patterns) -> Dict[str, np.ndarray]:
     gnames, GW = WT.group_matrix(ob)
     out = {}
     for n in patterns:
-        cols = [j for j, name in enumerate(gnames) if fnmatch.fnmatchcase(name, n)]
+        matched = set(_matching(gnames, n))
+        cols = [j for j, name in enumerate(gnames) if name in matched]
         if cols:
             out[n] = GW[:, cols].sum(1)
     return out

@@ -1,4 +1,4 @@
-"""Mark a part of a garment as a Delete or Hide carrier: a shape key that moves the part rigidly past the ShapeChanger threshold.
+"""Mark a part of a garment as a Delete or Hide carrier: a shape key that moves the part past the ShapeChanger threshold, rigidly or collapsed to a point.
 
 A **selection** is the fit family's ``--region`` grammar (``fit.parse_region``), read on the
 mesh's Basis in world space: ``group:``, ``bone:``, ``slot:`` and ``zone:`` terms, ``+``
@@ -8,20 +8,23 @@ that armature (``weight_transfer.body_frame``).
 
 The selection is then quantified over **islands**, the mesh's edge-linked parts: an island
 is taken whole when ``any``, at least ``half``, or ``all`` of its vertices are in the
-selection, and no vertex outside a taken island moves. Each taken island moves **rigidly**:
-every vertex by the one vector that carries the island's centroid to its target, the head of
-the deform bone carrying the island's largest summed weight unless ``to`` names a bone or a
-world point for every island.
+selection, and no vertex outside a taken island moves. Each taken island moves **rigidly** by
+default, every vertex by the one vector that carries the island's centroid to its target, or
+with ``collapse`` every vertex onto the target point. The target is the head of the island's
+dominant bone, the deform bone carrying its largest summed weight (a tie going to the first in
+the mesh's vertex-group order), unless ``to`` names a bone or a world point for every island.
 
 The consumer is a Modular Avatar ShapeChanger Delete, which keeps a vertex its shape moves by
-the threshold or less, so an island whose move is at or under ``threshold`` (world metres,
-what the export's scale bake leaves the mesh in) refuses rather than authoring a key that
-would leave it standing. A Hide toggle animating the same key moves the part to its target,
-which is why the default target is a bone head inside the body; a part on a PhysBone chain is
-carried away by the chain wherever the key moves it, so its key only marks it for deletion.
+the threshold or less, so a key moving any vertex at or under ``threshold`` (world metres,
+what the export's scale bake leaves the mesh in) refuses rather than leaving it standing. A
+Hide toggle animating the same key shows the part wherever the key puts it: a rigid move keeps
+the part's shape around its target, so a part larger than the body there stays visible, and
+``collapse`` is the form that hides it. A part on a PhysBone chain is carried away by the
+chain wherever the key moves it, so its key only marks it for deletion.
 
 The key is written by ``coverage.add_key``, the carrier writer ``mark_coverage`` shares, and
-each target object records ``{key: recipe}`` in ``avatarprep_authored``.
+each target object records ``{key: recipe}`` in ``avatarprep_authored``. ``replace`` rewrites
+only a key that stamp lists: a vendor key, or another door's, is never overwritten.
 
 Pure ``bpy`` data access, no operators beyond leaving Edit Mode. Door: ``cli/mark_parts.py``.
 """
@@ -67,9 +70,10 @@ def check_target(ob) -> None:
     if scene_utils.is_linked(ob) or not scene_utils.is_editable(ob):
         raise PartsError("%s is linked or override data and cannot take a shape key; mark the local "
                          "garment this costume owns (own-mergeable makes one)" % ob.name)
-    if ob.data.users > 1:
+    others = ob.data.users - (1 if ob.data.use_fake_user else 0) - 1
+    if others > 0:
         raise PartsError("%s shares its mesh with %d other user(s), so a key on it would land on them "
-                         "too; make it single-user first" % (ob.name, ob.data.users - 1))
+                         "too; make it single-user first" % (ob.name, others))
     arm, _ = _armature(ob)
     if arm is not None:
         ident = Matrix.Identity(4)
@@ -78,6 +82,24 @@ def check_target(ob) -> None:
                 raise PartsError("%s is posed (bone %s); the key is read off rest positions and bone heads "
                                  "at rest, so clear the pose, or bake it with apply_pose, first"
                                  % (arm.name, pb.name))
+
+
+def check_key(ob, key: str, *, replace: bool = False) -> None:
+    """Every refusal the write makes about the key, read-only, so ``--whatif`` refuses it too:
+    the writer's (``coverage.check_key``), a non-map ``avatarprep_authored`` stamp, and
+    ``replace`` on a key the stamp does not list."""
+    stamp = ob.get(scene_utils.STAMP_AUTHORED)
+    if stamp is not None and not hasattr(stamp, "keys"):
+        raise PartsError("%s's avatarprep_authored is %r, not a {key: recipe} map; delete the property "
+                         "before authoring, since this door will not overwrite it" % (ob.name, stamp))
+    try:
+        existing = coverage.check_key(ob, key, replace=replace)
+    except coverage.CoverageError as e:
+        raise PartsError(str(e))
+    if existing is not None and key not in (stamp or {}):
+        raise PartsError("--replace would overwrite %r on %s, which mark_parts did not author (it is not in "
+                         "avatarprep_authored); a vendor key or another door's is never overwritten, so "
+                         "author the part under a new name" % (key, ob.name))
 
 
 def basis_world(ob) -> np.ndarray:
@@ -198,12 +220,16 @@ def _target_point(arm, to) -> Tuple[np.ndarray, str]:
 
 
 def plan(ob, selection: Dict, *, to: Union[None, str, Sequence[float]] = None,
-         threshold: float = 0.01) -> Dict:
+         threshold: float = 0.01, collapse: bool = False, key: Optional[str] = None,
+         replace: bool = False) -> Dict:
     """Where each taken island moves. Returns ``{"islands": [...], "offsets", "vertices",
-    "min_delta", "max_delta"}``: per island its vertex count, dominant bone, target and world
-    delta; ``offsets`` the object-space ``{vertex: Vector}`` ``coverage.add_key`` writes.
-    Refuses an empty selection, an island with no deform weight and no ``to``, and any island
-    whose move is at or under ``threshold``."""
+    "min_delta", "max_delta"}``: per island its vertex count, dominant bone, target and its
+    vertices' smallest and largest world move (equal under a rigid move); ``offsets`` the
+    object-space ``{vertex: Vector}`` ``coverage.add_key`` writes. Refuses an empty selection,
+    an island with no deform weight and no ``to``, any vertex whose move is at or under
+    ``threshold``, and, when ``key`` is named, whatever ``check_key`` refuses."""
+    if key is not None:
+        check_key(ob, key, replace=replace)
     taken = selection["taken"]
     if not taken:
         best = max(selection["islands"], key=lambda r: r["qualifying"] / r["vertices"], default=None)
@@ -231,24 +257,28 @@ def plan(ob, selection: Dict, *, to: Union[None, str, Sequence[float]] = None,
             point, label = _target_point(arm, dom)
         else:
             point, label = fixed
-        centroid = V[idx].mean(0)
-        delta = point - centroid
-        length = float(np.linalg.norm(delta))
-        local = Vector(inv @ delta)
-        for v in idx:
-            offsets[int(v)] = local
+        if collapse:
+            moves = point - V[idx]
+        else:
+            moves = np.repeat((point - V[idx].mean(0))[None, :], len(idx), 0)
+        lengths = np.linalg.norm(moves, axis=1)
+        local = moves @ inv.T
+        for v, d in zip(idx, local):
+            offsets[int(v)] = Vector(d)
         row = {"island": int(i), "vertices": int(len(idx)), "dominant": dom, "target": label,
-               "delta": [round(float(x), 6) + 0.0 for x in delta], "delta_m": round(length, 6)}
+               "min_m": round(float(lengths.min()), 6), "max_m": round(float(lengths.max()), 6),
+               "short": int((lengths <= threshold).sum())}
         rows.append(row)
-        if length <= threshold:
+        if row["short"]:
             short.append(row)
     if short:
-        listed = "; ".join("island at vertex %d (%d vertices) moves %.4f m to %s"
-                           % (r["island"], r["vertices"], r["delta_m"], r["target"]) for r in short[:5])
-        raise PartsError("%d island(s) of %s would move %g m or less, which the Delete keeps standing: %s%s. "
-                         "Pass --to a bone or a point farther from them"
+        listed = "; ".join("island at vertex %d (%d vertices, %d of them) moves %.4f m to %s"
+                           % (r["island"], r["vertices"], r["short"], r["min_m"], r["target"])
+                           for r in short[:5])
+        raise PartsError("%d island(s) of %s would move a vertex %g m or less, which the Delete keeps "
+                         "standing: %s%s. Pass --to a bone or a point farther from them"
                          % (len(short), ob.name, threshold, listed, ", ..." if len(short) > 5 else ""))
-    deltas = [r["delta_m"] for r in rows]
+    deltas = [r["min_m"] for r in rows] + [r["max_m"] for r in rows]
     return {"islands": rows, "offsets": offsets, "vertices": len(offsets),
             "min_delta": min(deltas), "max_delta": max(deltas)}
 
@@ -256,12 +286,13 @@ def plan(ob, selection: Dict, *, to: Union[None, str, Sequence[float]] = None,
 def write(ob, key: str, the_plan: Dict, *, recipe: str, replace: bool = False):
     """Write the key through ``coverage.add_key`` and record ``{key: recipe}`` in the object's
     ``avatarprep_authored``; parks the active key on Basis. Raises ``PartsError``."""
+    check_key(ob, key, replace=replace)
     try:
         kb = coverage.add_key(ob, key, the_plan["offsets"], replace=replace)
     except coverage.CoverageError as e:
         raise PartsError(str(e))
     stamp = ob.get(scene_utils.STAMP_AUTHORED)
-    stamp = dict(stamp) if stamp is not None and hasattr(stamp, "keys") else {}
+    stamp = dict(stamp) if stamp is not None else {}
     stamp[key] = recipe
     ob[scene_utils.STAMP_AUTHORED] = stamp
     ob.active_shape_key_index = 0

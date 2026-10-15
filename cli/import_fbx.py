@@ -2,14 +2,16 @@
 
 Run with::
 
-    blender --background --factory-startup         --python cli/import_fbx.py -- --fbx <in.fbx> --out <out.blend> [--global-scale N]         [--fit-reference <base.blend>]
+    blender --background --factory-startup \
+        --python cli/import_fbx.py -- --fbx <in.fbx> --out <out.blend> [--global-scale N] \
+        [--fit-reference <base.blend>]
 
 Wraps avatarprep.core.import_fbx (Blender's current importer — never the legacy one,
 which reorients bones ~90deg). Prints the observe_import sanity snapshot.
 
 ``--fit-reference`` links the base body the import will be fitted to, as objects by a
 ``//``-relative path (``scene_utils.link_fit_reference``): its rig and the meshes it carries,
-in a local collection ``<stem>_ref``. The doors that pick an armature skip it, so the vendor
+in a local collection ``<stem>_ref``. The doors that pick an armature unnamed skip it, so the vendor
 rig keeps its ``Armature`` name through the edge and the rename, and
 ``apply_proportion_edge --absent-bones stub`` reads its bones.
 

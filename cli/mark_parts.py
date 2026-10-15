@@ -1,9 +1,9 @@
-"""Headless CLI: author a Delete or Hide carrier key that moves a selected part of a garment rigidly out of sight.
+"""Headless CLI: author a Delete or Hide carrier key that moves a selected part of a garment past the Delete threshold, rigidly or collapsed to a point.
 
 Run:
   blender --background --factory-startup --python cli/mark_parts.py -- \
       --in <costume.blend> --targets MESH[,MESH] --key NAME --region KIND:NAME... \
-      [--islands any|half|all] [--to BONE|x,y,z] [--threshold 0.01] \
+      [--islands any|half|all] [--to BONE|x,y,z] [--collapse] [--threshold 0.01] \
       [--reference-bone Hips] [--forward BONE] [--replace] \
       (--whatif | --out <out.blend>) [--force-load-repair]
 
@@ -19,21 +19,26 @@ Names are case-sensitive globs.
 ``--islands`` takes each edge-linked island whole when ``any``, at least ``half`` (the
 default) or ``all`` of its vertices are in the regions, and nothing outside a taken island
 moves. Each taken island moves rigidly, its centroid to the head of the deform bone carrying
-its largest summed weight, or to ``--to`` (a bone's head, or a world point ``x,y,z``) for every
-island. An island moving ``--threshold`` metres or less refuses: Modular Avatar's ShapeChanger
-keeps a vertex its shape moves by its threshold or less (0.01, ``VertexFilterByShape``'s
-default; pass the component's when it differs).
+its largest summed weight (a tie goes to the first in the mesh's vertex-group order), or to
+``--to`` (a bone's head, or a world point ``x,y,z``) for every island; ``--collapse`` instead
+puts every vertex on that point. A rigid move keeps the part's shape around its target, so a
+Hide toggle of a part larger than the body there still shows it; collapse a part a toggle
+hides. A key moving any vertex ``--threshold`` metres or less refuses: Modular Avatar's
+ShapeChanger keeps a vertex its shape moves by its threshold or less (0.01,
+``VertexFilterByShape``'s default; pass the component's when it differs).
 
 ``--whatif`` prints every island taken, the vertex count and the smallest and largest move,
-and writes nothing. A saving run adds the key at value 0, appended last in each target's key
-order (``--replace`` rewrites a same-named key where it stands and refuses one another key is
-relative to), stamps ``avatarprep_authored`` ``{key: recipe}`` on each target with the
+and writes nothing, refusing everything the write would. A saving run adds the key at value 0,
+appended last in each target's key order (``--replace`` rewrites a same-named key where it
+stands, only one ``avatarprep_authored`` lists, and refuses one another key is relative to),
+stamps ``avatarprep_authored`` ``{key: recipe}`` on each target with the
 canonical command line printed as ``recipe:`` (defaults omitted, no paths or mode flags),
 leaves Object Mode with the active key on Basis, and saves to ``--out`` (which may be ``--in``).
 
 Refuses (exit 1, nothing saved): zero vertices selected, a linked or override target, a
-target sharing its mesh, a posed armature, an island under the threshold, an existing key
-without ``--replace``. Exit 2 on bad args, a mesh not in the file, or a crash. Core:
+target sharing its mesh, a posed armature, a vertex under the threshold, an existing key
+without ``--replace``, ``--replace`` on a key this door did not author, a non-map
+``avatarprep_authored``. Exit 2 on bad args, a mesh not in the file, or a crash. Core:
 ``avatarprep/core/parts.py``; the key writer is ``coverage.add_key``, shared with
 ``mark_coverage``.
 """
@@ -84,8 +89,11 @@ def _parse_args(argv):
     p.add_argument("--to", dest="to", default=None, metavar="BONE|x,y,z",
                    help="move every island's centroid to this bone's head or world point, instead of "
                         "each island's dominant bone head")
+    p.add_argument("--collapse", action="store_true",
+                   help="put every vertex of an island on the target point instead of moving the island "
+                        "rigidly; the form a Hide toggle needs for a part larger than the body there")
     p.add_argument("--threshold", type=float, default=0.01,
-                   help="the Delete threshold in metres; an island moving this far or less refuses")
+                   help="the Delete threshold in metres; a vertex moving this far or less refuses")
     p.add_argument("--reference-bone", dest="reference_bone", default="Hips",
                    help="bone whose head is the zone: frame's origin")
     p.add_argument("--forward", dest="forward_bone", default=None, metavar="BONE",
@@ -122,6 +130,8 @@ def recipe(a) -> str:
         out += ["--islands", a.islands]
     if a.to is not None:
         out += ["--to", a.to]
+    if a.collapse:
+        out += ["--collapse"]
     if a.threshold != 0.01:
         out += ["--threshold", str(a.threshold)]
     if a.reference_bone != "Hips":
@@ -160,14 +170,16 @@ def main():
             parts.check_target(ob)
             sel = parts.select(ob, a.regions, islands=a.islands, reference_bone=a.reference_bone,
                                forward_bone=a.forward_bone)
-            plans.append((ob, sel, parts.plan(ob, sel, to=a.to_value, threshold=a.threshold)))
+            plans.append((ob, sel, parts.plan(ob, sel, to=a.to_value, threshold=a.threshold,
+                                              collapse=a.collapse, key=a.key, replace=a.replace)))
     except parts.PartsError as e:
         refuse(str(e))
 
     for ob, sel, pl in plans:
         for r in pl["islands"][:SHOWN]:
-            print("AVATARPREP: %s island at vertex %d: %d vertices, dominant %s, to %s, moves %.4f m"
-                  % (ob.name, r["island"], r["vertices"], r["dominant"] or "-", r["target"], r["delta_m"]))
+            moves = ("%.4f m" % r["min_m"]) if r["min_m"] == r["max_m"] else "%.4f..%.4f m" % (r["min_m"], r["max_m"])
+            print("AVATARPREP: %s island at vertex %d: %d vertices, dominant %s, to %s, moves %s"
+                  % (ob.name, r["island"], r["vertices"], r["dominant"] or "-", r["target"], moves))
         if len(pl["islands"]) > SHOWN:
             print("AVATARPREP: %s ... %d more islands taken" % (ob.name, len(pl["islands"]) - SHOWN))
         left = len(sel["islands"]) - len(sel["taken"])

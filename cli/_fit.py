@@ -31,7 +31,8 @@ def add_measure_args(p, *, sweep_help=None):
     p.add_argument("--region", dest="regions", action="append", default=[], metavar="KIND:NAME",
                    help="group:NAME (weight over 0.5), bone:NAME (largest influence at or under it), "
                         "slot:MATERIAL (every polygon touching the vertex in that slot), or "
-                        "zone:front|back|left|right|midline:M|above:BONE|below:BONE; names are globs; "
+                        "zone:front|back|left|right|midline:M|above:BONE|below:BONE; names are globs unless a "
+                        "name matches exactly; "
                         "terms joined by + intersect (repeatable)")
     p.add_argument("--reference-bone", dest="reference_bone", default="Hips",
                    help="body bone whose head is the frame's origin")

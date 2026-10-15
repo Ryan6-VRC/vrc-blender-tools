@@ -392,9 +392,13 @@ def link_fit_reference(path: str, scene: Optional[bpy.types.Scene] = None) -> Di
     lib = next((l for l in bpy.data.libraries
                 if os.path.normcase(os.path.abspath(bpy.path.abspath(l.filepath))) == os.path.normcase(path)),
                None)
-    linked = [o for o in bpy.data.objects if o not in before and o is not None and o.library == lib]
+    linked = [o for o in dst.objects if o is not None and o.library == lib]
     arms = [o for o in linked if o.type == 'ARMATURE']
     rig = arms[0] if len(arms) == 1 else next((o for o in arms if o.name == "Armature"), None)
+    if rig is not None and rig in before:
+        raise FitReferenceError("%s's rig %s is already linked in this file, but no %s collection holds it; "
+                                "link the reference's objects back into a collection by hand rather than "
+                                "linking it again" % (path, rig.name, coll_name))
     if rig is None:
         names = sorted(o.name for o in arms)
         raise FitReferenceError("%s holds %s; a fit reference is the blend's one armature or the one named "

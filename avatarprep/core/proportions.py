@@ -122,6 +122,7 @@ def _resolve_bone(name, bone_overrides):
 
 
 ABSENT_BONES_MODES = ("refuse", "drop", "stub")
+STUB_TOL = 1e-3  # m: how far a stub's parent head may sit from the same bone's head on the fit reference
 
 
 def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -> Dict[str, Any]:
@@ -231,15 +232,19 @@ def plan_stubs(armature, edge, reference, bone_overrides=None) -> Dict[str, Any]
     Returns ``{"stubs": [{"name", "reference_bone", "parent"}], "offenders": [...]}``, the
     stubs ordered parents first. A stub is non-deforming and only ever a leaf or a parent of
     other stubs, so no bone the rig carries changes parent; what it gives the apply is the
-    whole bone set a median pivot or a normal frame is computed over. It sits where the
-    reference's bone rests, so a pivot or frame over it reads the reference's proportions,
-    whatever state the rig is in."""
+    bone set a median pivot or a normal frame is computed over. Two shapes refuse, because a
+    stub would not stand in for the bone there: an absent bone with a descendant the rig
+    carries (a leaf stub scales nothing below it, so ``drop``, or a ``--bone-override`` naming
+    the rig's own spelling, is the fix), and a stub whose parent's head sits more than
+    ``STUB_TOL`` from the same bone's head on the reference (the stub sits where the
+    reference's bone rests, so the rig must coincide with the reference there)."""
     bone_overrides = bone_overrides or {}
     offenders: List[str] = []
     if reference is None:
         return {"stubs": [], "offenders": [
             "--absent-bones stub needs the fit reference linked, and no linked armature is in the "
-            "scene; link the base body with import_fbx --fit-reference BLEND"]}
+            "scene; re-import with import_fbx --fit-reference BLEND, or link the reference's rig into "
+            "this blend by hand as an object"]}
     rig = {b.name for b in armature.data.bones}
     absent = [n for n in edge_bones(edge) if _resolve_bone(n, bone_overrides) not in rig]
     planned = {}
@@ -257,32 +262,55 @@ def plan_stubs(armature, edge, reference, bone_overrides=None) -> Dict[str, Any]
             continue
         planned[rn] = rb
     inverse = {v: k for k, v in bone_overrides.items()}
+
+    def on_rig(ref_name, extra=()):
+        for cand in (bone_overrides.get(ref_name, ref_name), inverse.get(ref_name)):
+            if cand and (cand in rig or cand in extra):
+                return cand
+        return None
+
     stubs = []
     placed = set()
     for rn, rb in sorted(planned.items(), key=lambda kv: len(kv[1].parent_recursive)):
-        parent = None
+        kept = [on_rig(d.name) for d in rb.children_recursive if on_rig(d.name)]
+        if kept:
+            offenders.append("bone not found: %r, and its descendant %r is on this rig, so a stub (a leaf) "
+                             "would scale nothing below it; pass --absent-bones drop, or --bone-override %s=<the "
+                             "rig's bone> if the rig spells it otherwise" % (rn, kept[0], rn))
+            continue
+        parent = ref_parent = None
         for a in rb.parent_recursive:
-            for cand in (bone_overrides.get(a.name, a.name), inverse.get(a.name)):
-                if cand and (cand in rig or cand in placed):
-                    parent = cand
-                    break
+            parent = on_rig(a.name, placed)
             if parent:
+                ref_parent = a
                 break
         if parent is None:
             offenders.append("stub %r has no ancestor in the fit reference that this rig carries, so it "
                              "would be a second root bone; the edge's object transform needs one" % rn)
             continue
+        if parent in rig:
+            here = armature.matrix_world @ armature.data.bones[parent].head_local
+            there = reference.matrix_world @ ref_parent.head_local
+            off = (here - there).length
+            if off > STUB_TOL:
+                offenders.append("stub %r would hang off %r, whose head sits %.4f m from the fit reference's "
+                                 "%r, so a stub at the reference's rest would not sit where this rig's bone "
+                                 "would; apply the edges that bring the rig onto the reference first, or pass "
+                                 "--absent-bones drop" % (rn, parent, off, ref_parent.name))
+                continue
         placed.add(rn)
         stubs.append({"name": rn, "reference_bone": rb.name, "parent": parent})
     return {"stubs": stubs, "offenders": offenders}
 
 
-def add_stubs(armature, reference, stubs) -> List[str]:
+def add_stubs(armature, reference, stubs, names=None) -> List[str]:
     """Add ``plan_stubs``' stubs to ``armature`` at the reference bones' rest head, tail and
-    roll, carried from the reference's world space into the rig's; returns their names."""
+    roll, carried from the reference's world space into the rig's; returns their names,
+    appending each to ``names`` as it is made so a failure part-way leaves the caller the
+    list to remove."""
     A = armature.matrix_world.inverted()
     R = reference.matrix_world
-    names = []
+    names = [] if names is None else names
     with scene_utils.edit_mode(armature) as ebs:
         for st in stubs:
             rb = reference.data.bones[st["reference_bone"]]
@@ -721,8 +749,10 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
               "warnings": val["warnings"], "dropped": val["dropped"], "bakes": [],
               "scales_applied": 0, "shapekeys": [], "base": None, "state": None,
               "stubs": [st["name"] for st in val["stubs"]]}
-    stubs = add_stubs(armature, reference, val["stubs"]) if val["stubs"] else []
+    stubs = []
     try:
+        if val["stubs"]:
+            add_stubs(armature, reference, val["stubs"], stubs)
         _apply(armature, meshes, edge, report, bone_overrides, shapekey_overrides,
                skip_shapekeys, stage_hook)
     finally:

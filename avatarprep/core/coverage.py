@@ -551,6 +551,35 @@ def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: b
     return add_key(ob, shape_name, offsets, replace=replace)
 
 
+def check_key(ob, shape_name: str, *, replace: bool = False):
+    """The writer's refusals, read-only, so a preview refuses what the write would: library
+    data, the Basis's own name, an existing key without ``replace``, and ``replace`` on a key
+    another key's ``relative_key`` names. Returns the existing key block or ``None``."""
+    me = ob.data
+    if not me.is_editable or me.library is not None:
+        raise CoverageError("%s is library data and cannot take a shape key" % me.name)
+    if me.shape_keys is None:
+        if shape_name == "Basis":
+            raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, ob.name))
+        return None
+    blocks = me.shape_keys.key_blocks
+    if shape_name == blocks[0].name:
+        raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, ob.name))
+    existing = blocks.get(shape_name)
+    if existing is None:
+        return None
+    if not replace:
+        raise CoverageError("shape key %r already exists on %s (pass --replace)" % (shape_name, ob.name))
+    dependants = [k.name for k in blocks if k != existing and k.relative_key == existing]
+    if dependants:
+        raise CoverageError("--replace would rewrite %r on %s, which %s %s relative to, so %s would "
+                            "move with it; author the key under a new name instead"
+                            % (shape_name, ob.name, ", ".join(dependants),
+                               "is" if len(dependants) == 1 else "are",
+                               "it" if len(dependants) == 1 else "they"))
+    return existing
+
+
 def add_key(ob, shape_name: str, offsets: Dict[int, Vector], *, replace: bool = False):
     """The carrier writer every door that authors a Delete or Hide key shares (``mark_coverage``,
     ``mark_parts``): a shape key on ``ob``'s mesh, relative to Basis, value 0, each vertex in
@@ -563,28 +592,11 @@ def add_key(ob, shape_name: str, offsets: Dict[int, Vector], *, replace: bool = 
     key would move with the rewrite. Keys are created with ``from_mix=False``, so whatever other
     keys are set to never leaks into the new one."""
     me = ob.data
-    if not me.is_editable or me.library is not None:
-        raise CoverageError("%s is library data and cannot take a shape key" % me.name)
+    existing = check_key(ob, shape_name, replace=replace)
     if me.shape_keys is None:
         ob.shape_key_add(name="Basis", from_mix=False)
     blocks = me.shape_keys.key_blocks
-    if shape_name == blocks[0].name:
-        raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, ob.name))
-    existing = blocks.get(shape_name)
-    if existing is not None:
-        if not replace:
-            raise CoverageError("shape key %r already exists on %s (pass --replace)"
-                                % (shape_name, ob.name))
-        dependants = [k.name for k in blocks if k != existing and k.relative_key == existing]
-        if dependants:
-            raise CoverageError("--replace would rewrite %r on %s, which %s %s relative to, so %s would "
-                                "move with it; author the key under a new name instead"
-                                % (shape_name, ob.name, ", ".join(dependants),
-                                   "is" if len(dependants) == 1 else "are",
-                                   "it" if len(dependants) == 1 else "they"))
-        kb = existing
-    else:
-        kb = ob.shape_key_add(name=shape_name, from_mix=False)
+    kb = existing if existing is not None else ob.shape_key_add(name=shape_name, from_mix=False)
     basis = blocks[0]
     kb.relative_key = basis
     kb.value = 0.0

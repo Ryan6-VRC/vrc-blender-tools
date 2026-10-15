@@ -16,7 +16,9 @@ the records use: ``import_fbx --fit-reference`` → ``stamp_base`` → ``apply_p
     bones, ``stub`` prints a STUB per absent bone and applies, leaving no stub behind;
   * a stubbed apply moves the present bones exactly as an apply on a rig that carries those
     bones for real (non-deforming, at the reference's rest) does;
-  * ``stub`` refuses without a linked fit reference, naming ``--fit-reference``.
+  * ``stub`` refuses without a linked fit reference, naming ``--fit-reference``; refuses an
+    absent bone whose descendant the rig keeps, and a rig that does not sit on the reference;
+  * re-linking a reference whose collection is gone says so.
 """
 import json
 import os
@@ -33,6 +35,7 @@ REF_BONES = {
     "Hips": ((0, 0, 1.0), (0, 0, 1.1), None),
     "Spine": ((0, 0, 1.1), (0, 0, 1.25), "Hips"),
     "Chest": ((0, 0, 1.25), (0, -0.02, 1.4), "Spine"),
+    "Neck": ((0, -0.02, 1.4), (0, -0.02, 1.5), "Chest"),
     "UpperLeg.L": ((0.1, 0, 1.0), (0.1, 0, 0.55), "Hips"),
     "LowerLeg.L": ((0.1, 0, 0.55), (0.1, 0.01, 0.1), "UpperLeg.L"),
     "UpperLeg.R": ((-0.1, 0, 1.0), (-0.1, 0, 0.55), "Hips"),
@@ -75,6 +78,8 @@ def _rig(name, bones, deform=None):
         ebs[n] = eb
     for n in bones:
         p = REF_BONES[n][2]
+        while p and p not in ebs:
+            p = REF_BONES[p][2]
         if p:
             ebs[n].parent = ebs[p]
     bpy.ops.object.mode_set(mode='OBJECT')
@@ -247,6 +252,43 @@ def test_stub_matches_real_bones(ref):
     check(abs(spine1.length - spine0.length) > 1e-3, "the median op reaches Spine at all")
 
 
+def _plan(ref, bones, location=(0.0, 0.0, 0.0)):
+    from avatarprep.core import proportions
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    rig = _rig("G", bones)
+    rig.location = location
+    bpy.context.view_layer.update()
+    with bpy.data.libraries.load(ref, link=True) as (src, dst):
+        dst.objects = ["Armature"]
+    bpy.context.scene.collection.objects.link(dst.objects[0])
+    return proportions.plan_stubs(rig, proportions.load_edge(dict(EDGE)), dst.objects[0])
+
+
+def test_stub_refusals(ref):
+    from avatarprep.core import proportions, scene_utils
+    p = _plan(ref, list(GARMENT_BONES) + ["Neck"])
+    check(any("descendant 'Neck'" in o and "--absent-bones drop" in o for o in p["offenders"]),
+          "an absent bone whose descendant the rig keeps refuses: %r" % p["offenders"])
+    p = _plan(ref, list(GARMENT_BONES), location=(0.2, 0.0, 0.0))
+    check(any("0.2000 m from the fit reference" in o for o in p["offenders"]),
+          "a rig off the reference refuses: %r" % p["offenders"])
+    p = _plan(ref, list(GARMENT_BONES))
+    check(not p["offenders"] and [s["name"] for s in p["stubs"]] == ["Chest", "LowerLeg.L"],
+          "the coinciding rig plans both stubs: %r" % p)
+    p = proportions.plan_stubs(bpy.data.objects["G"], proportions.load_edge(dict(EDGE)), None)
+    check(any("re-import with import_fbx --fit-reference" in o for o in p["offenders"]),
+          "no reference names both fixes: %r" % p["offenders"])
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene_utils.link_fit_reference(ref)
+    bpy.data.collections.remove(bpy.data.collections["ref_ref"])
+    try:
+        scene_utils.link_fit_reference(ref)
+        FAILURES.append("re-linking a reference whose collection is gone should refuse")
+    except scene_utils.FitReferenceError as e:
+        check("already linked" in str(e) and "ref_ref" in str(e), "the re-link refusal says why: %s" % e)
+
+
 def main():
     _repo_root()
     from avatarprep.core import proportions
@@ -255,6 +297,7 @@ def main():
         ref, fbx, edge = _fixtures(tmp)
         test_chain(tmp, ref, fbx, edge)
         test_stub_matches_real_bones(ref)
+        test_stub_refusals(ref)
     if FAILURES:
         for f in FAILURES:
             print("FITREF_TEST FAIL:", f)

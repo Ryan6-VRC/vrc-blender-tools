@@ -637,6 +637,18 @@ def test_cli(tmp):
     check(rc == 0 and "Band [zone:front] new-pen" in txt and pngs and all(os.path.exists(p) for p in pngs),
           "a region report renders its worst steps (rc=%d)\n%s" % (rc, txt))
 
+    # a literal group name holding a glob bracket, and a slot term, through the door
+    lit = bpy.data.objects["Band"]
+    half = [v.index for v in lit.data.vertices if v.co.y < 0]
+    lit.vertex_groups.new(name="Front[1]").add(half, 1.0, 'REPLACE')
+    lit.data.materials.append(bpy.data.materials.new("BandCloth"))
+    g_blend = os.path.join(tmp, "g.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=g_blend)
+    rc, txt = _blender("report_fit", ["--in", g_blend, "--targets", "Band", "--sweep", "UpperLeg.L",
+                                      "--region", "group:Front[1]", "--region", "slot:BandCloth"])
+    check(rc == 0 and "Band [group:Front[1]] new-pen" in txt and "Band [slot:BandCloth] new-pen" in txt,
+          "report_fit reads a literal bracketed group and a slot term (rc=%d)\n%s" % (rc, txt))
+
     cmp = os.path.join(tmp, "c.json")
     rc, txt = _blender("compare_fit", ["--in", a_blend, "--in", b_blend, "--targets", "Band", "--sweep",
                                        "UpperLeg.L:lateral", "--render", rdir, "--report", cmp])

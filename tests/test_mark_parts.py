@@ -14,13 +14,16 @@ world and object frames differ, each island pinning one clause:
   * a ``group:Mask_*`` glob over a non-bone group;
   * a box centred on its dominant bone's head refuses at the default target and moves with
     ``--to``; every island moves rigidly, its object-space offset the world move through the
-    object's inverse scale;
-  * the writer appends last, ``--replace`` keeps the index and refuses a key another key is
-    relative to, and the stamp records each key's recipe;
-  * refusals: zero vertices, shared mesh, linked mesh, posed rig, a slot no material matches;
-  * the door: ``--whatif`` writes nothing, ``--out`` saves the key in Object Mode with the
-    active key on Basis from a blend left in Edit Mode, ``report_stamps`` reads the stamp, and
-    bad args exit 2 while refusals exit 1.
+    object's inverse scale, or with ``collapse`` every vertex lands on the target;
+  * a group named ``Mask[1]`` beside one named ``Mask1``: the literal name wins over the glob;
+  * the writer appends last, ``--replace`` keeps the index, refuses a key another key is
+    relative to and a key this door did not author, and the stamp records each key's recipe;
+    a non-map stamp refuses; ``plan`` refuses an existing key as the write does;
+  * refusals: zero vertices, shared mesh (a fake user is not a sharer), linked mesh, posed rig,
+    a slot no material matches;
+  * the door: ``--whatif`` writes nothing and refuses an existing key, ``--out`` saves the key in
+    Object Mode with the active key on Basis from a blend left in Edit Mode, ``report_stamps``
+    reads the stamp, and bad args exit 2 while refusals exit 1.
 """
 import os
 import subprocess
@@ -74,8 +77,9 @@ BONES = {  # name: (head, tail, parent)
 
 # island name: (centre, size, material per face or one for all, {group: weight} or per-vertex fn)
 ISLANDS = {
-    "torso": ((0, 0, 1.25), 0.2, "Cloth", {"Spine": 1.0}),
-    "ribbon": ((0, -0.14, 1.32), 0.04, "Cloth", {"Ribbon_1": 0.8, "Chest": 0.2, "Mask_Ribbon": 1.0}),
+    "torso": ((0, 0, 1.25), 0.2, "Cloth", {"Spine": 1.0, "Mask1": 1.0}),
+    "ribbon": ((0, -0.14, 1.32), 0.04, "Cloth", {"Ribbon_1": 0.8, "Chest": 0.2, "Mask_Ribbon": 1.0,
+                                                  "Mask[1]": 1.0}),
     "collar": ((0, 0, 1.45), 0.06, "Cloth", None),
     "pearl_left": ((0.08, -0.1, 1.2), 0.02, "Pearl", {"Chest": 1.0}),
     "pearl_mid": ((0.0, -0.11, 1.15), 0.02, "Pearl", {"Chest": 1.0}),
@@ -180,6 +184,8 @@ def test_selection():
         (["slot:Pea*+zone:midline:0.02"], "any", {"pearl_mid"}),
         (["slot:Pearl+zone:left"], "all", {"pearl_left"}),
         (["group:Mask_*"], "half", {"ribbon"}),
+        (["group:Mask[1]"], "half", {"ribbon"}),
+        (["group:Mask[1x]"], "half", {"torso"}),
         (["bone:Ribbon*", "slot:Pearl"], "half", {"ribbon", "pearl_left", "pearl_mid"}),
     ]
     for regions, mode, want in cases:
@@ -208,12 +214,20 @@ def test_plan():
     row = pl["islands"][0]
     check(row["dominant"] == "Ribbon_1" and row["target"] == "Ribbon_1 head", "default target: %r" % row)
     want = np.array(BONES["Ribbon_1"][0]) - np.array(ISLANDS["ribbon"][0])
-    check(np.allclose(row["delta"], want, atol=1e-6), "world move %r, expected %r" % (row["delta"], want))
+    check(abs(row["min_m"] - np.linalg.norm(want)) < 1e-6 and row["min_m"] == row["max_m"],
+          "a rigid move is one length: %r, expected %r" % (row, np.linalg.norm(want)))
     offs = [pl["offsets"][i] for i in R["ribbon"]]
     check(all((o - offs[0]).length < 1e-9 for o in offs), "an island moves rigidly")
     check(np.allclose(np.array(offs[0]) * SCALE, want, atol=1e-6), "object-space offset is the world move "
           "through the object's inverse scale: %r" % (tuple(offs[0]),))
     check(set(pl["offsets"]) == set(R["ribbon"]), "only the taken island moves")
+    col = parts.plan(ob, sel, collapse=True)
+    V = parts.basis_world(ob)
+    head = np.array(BONES["Ribbon_1"][0])
+    landed = [V[i] + np.array(col["offsets"][i]) * SCALE for i in R["ribbon"]]
+    check(all(np.allclose(p, head, atol=1e-6) for p in landed), "--collapse puts every vertex on the target")
+    crow = col["islands"][0]
+    check(crow["min_m"] < crow["max_m"], "a collapse moves each vertex its own distance: %r" % crow)
     bow = parts.select(ob, ["bone:Bow"])
     refuses(lambda: parts.plan(ob, bow), "Pass --to", "an island sitting on its target")
     pl = parts.plan(ob, bow, to="Hips")
@@ -245,6 +259,10 @@ def test_write_and_refusals(tmp):
     check((kb.data[i].co - basis.data[i].co - pl["offsets"][i]).length < 1e-6, "a part vertex moves by its offset")
     check(ob.active_shape_key_index == 0, "the active key is parked on Basis")
     refuses(lambda: parts.write(ob, "Hide_Ribbon", pl, recipe="x"), "pass --replace", "an existing key")
+    sel = parts.select(ob, ["bone:Ribbon*"])
+    refuses(lambda: parts.plan(ob, sel, key="Hide_Ribbon"), "pass --replace", "plan refuses an existing key")
+    refuses(lambda: parts.plan(ob, sel, key="Vendor_A", replace=True), "did not author",
+            "--replace on a key mark_parts did not author")
     pearls = parts.plan(ob, parts.select(ob, ["slot:Pearl"], islands="any"), to="Hips")
     parts.write(ob, "Hide_Pearls", pearls, recipe="mark_parts --key Hide_Pearls")
     parts.write(ob, "Hide_Ribbon", pearls, recipe="mark_parts --key Hide_Ribbon --replace", replace=True)
@@ -256,6 +274,11 @@ def test_write_and_refusals(tmp):
     dep.relative_key = keys["Hide_Pearls"]
     refuses(lambda: parts.write(ob, "Hide_Pearls", pearls, recipe="x", replace=True), "Dep is relative",
             "--replace on a key another key is relative to")
+    saved = dict(ob[scene_utils.STAMP_AUTHORED])
+    ob[scene_utils.STAMP_AUTHORED] = "junk"
+    refuses(lambda: parts.write(ob, "Hide_Other", pearls, recipe="x"), "not a {key: recipe} map",
+            "a non-map authored stamp")
+    ob[scene_utils.STAMP_AUTHORED] = saved
     entry = [m for a in scene_utils.report_stamps()["armatures"] for m in a["meshes"] if m["name"] == "Dress"]
     check(entry and entry[0].get("authored", {}).get("Hide_Pearls") == "mark_parts --key Hide_Pearls",
           "report_stamps reads the authored stamp: %r" % entry)
@@ -266,6 +289,9 @@ def test_write_and_refusals(tmp):
     bpy.context.scene.collection.objects.link(twin)
     refuses(lambda: parts.check_target(ob), "shares its mesh", "shared mesh data")
     bpy.data.objects.remove(twin)
+    ob.data.use_fake_user = True
+    parts.check_target(ob)
+    ob.data.use_fake_user = False
     rig.pose.bones["Spine"].rotation_quaternion = (0.9, 0.1, 0, 0)
     refuses(lambda: parts.check_target(ob), "is posed (bone Spine)", "a posed armature")
     rig.pose.bones["Spine"].rotation_quaternion = (1, 0, 0, 0)
@@ -320,6 +346,12 @@ def test_door(tmp):
 
     rc, out = _door("mark_parts", base + ["--out", dst, "--in", dst])
     check(rc == 1 and "pass --replace" in out, "an existing key refuses exit 1: %d\n%s" % (rc, out))
+    rc, out = _door("mark_parts", base + ["--whatif", "--in", dst])
+    check(rc == 1 and "pass --replace" in out, "--whatif refuses an existing key as the write does: %d\n%s"
+          % (rc, out))
+    rc, out = _door("mark_parts", base + ["--whatif", "--in", dst, "--replace", "--collapse"])
+    check(rc == 0 and "--collapse" in out and "(whatif; nothing saved)" in out,
+          "--replace on an authored key previews: %d\n%s" % (rc, out))
     rc, out = _door("mark_parts", ["--in", src, "--targets", "Dress", "--key", "K", "--region", "bone:Bow",
                                    "--whatif"])
     check(rc == 1 and "Pass --to" in out, "an island on its target refuses exit 1: %d\n%s" % (rc, out))
@@ -335,6 +367,8 @@ def test_door(tmp):
 
 def test_fit_grammar():
     from avatarprep.core import fit
+    check(fit._matching(["Skirt[1]", "Skirt1"], "Skirt[1]") == ["Skirt[1]"], "a literal name wins over the glob")
+    check(fit._matching(["Skirt1", "Skirt2"], "Skirt[1]") == ["Skirt1"], "with no exact name the glob applies")
     check(fit.parse_region("slot:Mat_*+zone:midline:0.05") == [("slot", "Mat_*"), ("zone", "midline:0.05")],
           "parse_region reads slot and midline terms")
     for bad in ("zone:midline", "zone:midline:0", "zone:midline:-1", "slot"):
