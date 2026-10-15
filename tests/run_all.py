@@ -32,6 +32,7 @@ SUITES = {
     "test_fit.py": "FIT_TEST",
     "test_fit_reference.py": "FITREF_TEST",
     "test_fold_bones.py": "FOLD_TEST",
+    "test_handedit.py": "HANDEDIT_TEST",
     "test_import_fbx.py": "IMPORT_TEST",
     "test_linked_data.py": "LINKED_TEST",
     "test_mark_parts.py": "MARKPARTS_TEST",
