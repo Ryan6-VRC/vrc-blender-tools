@@ -76,7 +76,7 @@ blender --background --factory-startup --python tests/verify.py -- --asset path/
 avatarprep/            # the extension package
   core/                # pure logic (no Operator/UI): scene_utils, import_fbx, prune_bones,
                        #   rest_pose, merge_armatures, proportions, shapekey_bake, fbx_export,
-                       #   render_mesh, measure, rename_objects, coverage, fit, parts
+                       #   render_mesh, measure, rename_objects, coverage, fit, parts, handedit
   operators.py         # thin operator wrappers
   ui.py                # N-panel (category "AvatarPrep")
   __init__.py          # register()/unregister() — NO upper version guard
