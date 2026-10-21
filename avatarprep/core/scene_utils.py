@@ -35,6 +35,11 @@ STAMP_PUSHED = "avatarprep_pushed"  # mesh OBJECT: the canonical push_garment co
 STAMP_AUTHORED = "avatarprep_authored"  # mesh OBJECT: {shapekey: canonical mark_parts command line}
                                    # dict, one entry per key the door authored; a dict like
                                    # STAMP_BAKED, written directly, not through write_stamp
+STAMP_OFFSET = "avatarprep_offset"  # mesh OBJECT: the canonical offset_garment command line (str);
+                                   # a stamped mesh refuses a second offset
+STAMP_NORMALS = "avatarprep_normals"  # mesh OBJECT: {shapekey: canonical bake_shapekey_normals command
+                                   # line} dict, one entry per key whose normals the door baked; a dict
+                                   # like STAMP_AUTHORED, written directly
 
 
 def write_stamp(obj, key, value) -> None:
@@ -177,10 +182,17 @@ def _baked_entry(ob) -> Dict[str, Any]:
     pushed = ob.get(STAMP_PUSHED)
     if pushed is not None:
         entry["pushed"] = pushed if isinstance(pushed, str) else repr(pushed)
+    offset = ob.get(STAMP_OFFSET)
+    if offset is not None:
+        entry["offset"] = offset if isinstance(offset, str) else repr(offset)
     authored = ob.get(STAMP_AUTHORED)
     if authored is not None:
         entry["authored"] = (dict(authored) if isinstance(authored, (dict, idprop.types.IDPropertyGroup))
                              else repr(authored))
+    normals = ob.get(STAMP_NORMALS)
+    if normals is not None:
+        entry["normals"] = (dict(normals) if isinstance(normals, (dict, idprop.types.IDPropertyGroup))
+                            else repr(normals))
     entry.update(_library_fields(ob))
     return entry
 
@@ -210,13 +222,16 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
                       ["weights": <transfer_weights recipe line>],
                       ["folded": <fold_bones command line>],
                       ["pushed": <push_garment command line>],
-                      ["authored": {shapekey: <mark_parts command line>}]}
+                      ["offset": <offset_garment command line>],
+                      ["authored": {shapekey: <mark_parts command line>}],
+                      ["normals": {shapekey: <bake_shapekey_normals command line>}]}
 
     A mesh qualifies by carrying any of ``avatarprep_baked``, ``avatarprep_weights``,
-    ``avatarprep_folded``, ``avatarprep_pushed`` or ``avatarprep_authored``, and its entry holds a
-    key for each stamp it carries: ``baked``, ``weights``, ``folded``, ``pushed`` and ``authored``
-    are the keys a consumer branches on by presence (a non-map ``authored`` reads as its repr). Every other
-    key is always present.
+    ``avatarprep_folded``, ``avatarprep_pushed``, ``avatarprep_offset``, ``avatarprep_authored`` or
+    ``avatarprep_normals``, and its entry holds a key for each stamp it carries: ``baked``,
+    ``weights``, ``folded``, ``pushed``, ``offset``, ``authored`` and ``normals`` are the keys a
+    consumer branches on by presence (a non-map ``authored`` or ``normals`` reads as its repr). Every
+    other key is always present.
 
     Every armature is reported even when unstamped (``base=None``,
     ``state_kind="absent"``) so absent/interrupted/corrupt read honestly, never
@@ -249,13 +264,13 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     objects = list(scene.objects) if scene else list(bpy.data.objects)
 
     armature_objs = [ob for ob in objects if ob is not None and ob.type == 'ARMATURE']
-    # A mesh qualifies on any of its stamps (baked, weights, folded, pushed, authored), so a mesh carrying
-    # only one of them is not invisible here.
+    # A mesh qualifies on any of its stamps (baked, weights, folded, pushed, offset, authored, normals),
+    # so a mesh carrying only one of them is not invisible here.
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
                   and any(ob.get(k) is not None
                           for k in (STAMP_BAKED, STAMP_WEIGHTS, STAMP_FOLDED, STAMP_PUSHED,
-                                    STAMP_AUTHORED))]
+                                    STAMP_OFFSET, STAMP_AUTHORED, STAMP_NORMALS))]
     baked_names = {ob.name for ob in baked_objs}
 
     # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.

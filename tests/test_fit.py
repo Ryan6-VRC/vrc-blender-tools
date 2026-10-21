@@ -1,4 +1,4 @@
-"""Synthetic headless test for avatarprep.core.fit and cli/report_fit.py, compare_fit.py, push_garment.py.
+"""Synthetic headless test for avatarprep.core.fit and cli/report_fit.py, compare_fit.py, push_garment.py, offset_garment.py.
 
 Run: blender --background --factory-startup --python tests/test_fit.py
 Prints FIT_TEST OK / FIT_TEST FAIL: <reason>.
@@ -532,6 +532,77 @@ def test_apply_push_units():
           "another key keeps its offset from it")
 
 
+def _cone_band(s, name, d0, d1, rings=10, segs=24):
+    """A band around the left thigh whose gap to the skin runs from ``d0`` at its bottom ring to
+    ``d1`` at its top, so one garment spans the tight band, the fade and beyond."""
+    import _weight_fixture as F
+    verts, faces = [], []
+    for i in range(rings + 1):
+        z, r = 0.60 + 0.16 * i / rings, F.RL + d0 + (d1 - d0) * i / rings
+        for j in range(segs):
+            a = 2 * np.pi * j / segs
+            verts.append((F.LX + r * np.cos(a), r * np.sin(a), z))
+    for i in range(rings):
+        for j in range(segs):
+            a, b = i * segs + j, i * segs + (j + 1) % segs
+            faces.append((a, b, b + segs, a + segs))
+    return F.mesh(name, verts, faces, s["garment_rig"])
+
+
+def test_offset_core():
+    import _weight_fixture as F
+    from avatarprep.core import fit
+    from avatarprep.core import weight_transfer as WT
+    from mathutils.bvhtree import BVHTree
+    s = F.build()
+    amount, tight, loose = 0.001, 0.003, 0.006
+    thigh = F.add_band(s, "ThighBand", {"UpperLeg.L": 1.0})
+    pl = fit.plan_offset(s["body"], thigh, amount=amount)
+    V = np.array([v.co[:] for v in thigh.data.vertices])
+    mag = np.linalg.norm(pl["delta"], axis=1)
+    radial = np.c_[V[:, :2] - np.array([F.LX, 0.0]), np.zeros(len(V))]
+    cos = (pl["delta"] * radial).sum(1) / (mag * np.linalg.norm(radial, axis=1))
+    check(pl["moved"] == pl["full"] == len(V) and np.allclose(mag, amount, atol=1e-9),
+          "a band 2 mm off the thigh moves every vertex the whole amount: %r" % {k: pl[k] for k in ("moved", "full")})
+    check(cos.min() > 0.999, "the move is along the thigh's own normal (min cos %.5f)" % cos.min())
+    check(pl["tight"] == len(V) and abs(pl["tight_median_mm"][1] - pl["tight_median_mm"][0] - 1.0) < 0.05,
+          "the tight band's skin distance grows by the amount: %r" % pl["tight_median_mm"])
+
+    cone = _cone_band(s, "Cone", 0.001, 0.010)
+    pl = fit.plan_offset(s["body"], cone, amount=amount, tight=tight, loose=loose)
+    src = WT.source_arrays(s["body"], {})
+    tree = BVHTree.FromPolygons(src["V"].astype(np.float64).tolist(), src["F"].tolist())
+    d = np.array([tree.find_nearest(p)[3] for p in [v.co[:] for v in cone.data.vertices]])
+    want = amount * fit.smoothstep((loose - d) / (loose - tight))
+    got = np.linalg.norm(pl["delta"], axis=1)
+    check(np.allclose(got, want, atol=1e-9), "the move is amount * smoothstep((loose - d) / (loose - tight))")
+    check((got[d > loose] == 0).all() and pl["held"] == int((d > loose).sum()) > 0,
+          "vertices beyond --loose hold: %d held" % pl["held"])
+    check(pl["full"] == int((d <= tight).sum()) > 0 and pl["partial"] > 0,
+          "the cone spans the whole amount and the fade: %r" % {k: pl[k] for k in ("full", "partial", "held")})
+
+    shorts = s["garment"]
+    pl = fit.plan_offset(s["body"], shorts, amount=amount)
+    tags = np.array(s["tags"])
+    gm = np.linalg.norm(pl["delta"], axis=1)
+    check((gm[tags == "float"] == 0).all() and np.allclose(gm[tags == "band"], amount, atol=1e-9),
+          "a patch 12 cm off the body holds while the band 2 mm off it moves")
+    check(pl["inside_before"] == 0, "the band sits outside the body as built: %d" % pl["inside_before"])
+    bulk = fit.plan_offset(s["body"], shorts, amount=amount, shapes=[(None, "Bulk", 1.0)])
+    check(bulk["inside_before"] > 0, "--shape Bulk=1 widens the pelvis through the band: %d" % bulk["inside_before"])
+
+    refuses(lambda: fit.plan_offset(s["body"], thigh, amount=0.0), "at most 0.005", "a zero amount")
+    refuses(lambda: fit.plan_offset(s["body"], thigh, amount=0.006), "metres", "an amount over 5 mm")
+    refuses(lambda: fit.plan_offset(s["body"], thigh, amount=0.001, tight=0.006, loose=0.006), "below --loose",
+            "tight at loose")
+    refuses(lambda: fit.plan_offset(s["body"], thigh, amount=0.002), "can cross", "a band under 1.5 x the amount")
+    refuses(lambda: fit.plan_offset(s["body"], thigh, amount=0.001, shapes=[(None, "Nope", 1.0)]),
+            "on none of", "a shape the body lacks")
+    refuses(lambda: fit.plan_offset(s["body"], s["body"], amount=0.001), "is the source", "the body itself")
+    far = F.add_band(s, "Far", {"UpperLeg.L": 1.0}, gap=0.012)  # 8 mm clear of the other thigh too
+    refuses(lambda: fit.plan_offset(s["body"], far, amount=0.001), "nothing would move", "a garment off the skin")
+
+
 def test_sweep_grammar():
     from cli import _fit
 
@@ -727,6 +798,58 @@ def test_cli(tmp):
         check(rc == 1 and "already pushed by `%s`" % line in txt, "a stamped mesh refuses and names its line\n%s" % txt)
 
 
+def test_offset_cli(tmp):
+    import _weight_fixture as F
+    from avatarprep.core import scene_utils
+    s = F.build()
+    _keyed_band(s, "Band", {"UpperLeg.L": 1.0}, F.GAP)
+    a_blend = os.path.join(tmp, "offset_a.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=a_blend)
+    rc, txt = _blender("offset_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.002", "--whatif"])
+    check(rc == 1 and "=> FAIL:" in txt and "can cross" in txt, "a band narrower than 1.5 x --amount refuses\n%s" % txt)
+    rc, txt = _blender("offset_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.001",
+                                          "--shape", "Bulk", "--whatif"])
+    check(rc == 2 and "bad args" in txt, "a malformed --shape is bad args\n%s" % txt)
+    rc, txt = _blender("offset_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.001",
+                                          "--shape", "Loose=1", "--whatif"])
+    check(rc == 1 and "on none of Body_Base" in txt, "a --shape only the garment carries refuses\n%s" % txt)
+    before_mtime = os.path.getmtime(a_blend)
+    rc, txt = _blender("offset_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.001",
+                                          "--loose", "0.008", "--whatif"])
+    line = "offset_garment --targets Band --amount 0.001 --loose 0.008"
+    check(rc == 0 and ("recipe: " + line) in txt and "whatif; nothing saved" in txt
+          and os.path.getmtime(a_blend) == before_mtime, "--whatif plans, prints the recipe and writes nothing\n%s" % txt)
+    out = os.path.join(tmp, "offset.blend")
+    rpath = os.path.join(tmp, "offset.json")
+    rc, txt = _blender("offset_garment", ["--in", a_blend, "--targets", "Band", "--amount", "0.001",
+                                          "--loose", "0.008", "--out", out, "--report", rpath])
+    check(rc == 0 and "=> OK" in txt and "moved=" in txt, "an offset saves (rc=%d)\n%s" % (rc, txt))
+    if rc != 0:
+        return
+    r = json.load(open(rpath))
+    check(r["targets"][0]["shape_keys"] == 2 and r["targets"][0]["full"] > 0, "the report holds the counts: %r" % r)
+    bpy.ops.wm.open_mainfile(filepath=a_blend)
+    old = _coords(bpy.data.objects["Band"])
+    bpy.ops.wm.open_mainfile(filepath=out)
+    ob = bpy.data.objects["Band"]
+    new = _coords(ob)
+    deltas = {k: new[k] - old[k] for k in old}
+    ref = deltas["Basis"]
+    check(all(np.abs(dv - ref).max() < 1e-7 for dv in deltas.values()),
+          "the mesh, Basis and every key move by the same delta, so each key keeps its offset from Basis")
+    mag = np.linalg.norm(ref, axis=1)
+    check(np.allclose(mag, 0.001, atol=1e-6), "a band 2 mm off the skin moves the whole --amount: %g..%g"
+          % (mag.min(), mag.max()))
+    check(ob.get(scene_utils.STAMP_OFFSET) == line, "the object carries the recipe: %r" % ob.get(scene_utils.STAMP_OFFSET))
+    rep = scene_utils.report_stamps(bpy.context.scene)
+    entry = [m for a in rep["armatures"] for m in a["meshes"] + rep["unbound"] if m["name"] == "Band"]
+    check(entry and entry[0].get("offset") == line, "report_stamps surfaces the offset: %r" % rep)
+    rc, txt = _blender("report_stamps", ["--in", out])
+    check(rc == 0 and ("mesh Band offset=%s" % line) in txt, "report_stamps prints the offset\n%s" % txt)
+    rc, txt = _blender("offset_garment", ["--in", out, "--targets", "Band", "--amount", "0.001", "--whatif"])
+    check(rc == 1 and "already offset by `%s`" % line in txt, "an offset mesh refuses a second run\n%s" % txt)
+
+
 def main():
     for p in (REPO, HERE):
         if p not in sys.path:
@@ -755,10 +878,12 @@ def main():
     test_push_profile()
     test_push_smooth()
     test_apply_push_units()
+    test_offset_core()
     test_sweep_grammar()
     test_joint_rows()
     with tempfile.TemporaryDirectory() as tmp:
         test_cli(tmp)
+        test_offset_cli(tmp)
     if FAILURES:
         for f in FAILURES:
             print("%s FAIL: %s" % (TOKEN, f))

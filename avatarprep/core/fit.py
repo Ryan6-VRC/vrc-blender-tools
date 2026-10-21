@@ -1,4 +1,4 @@
-"""Measure how skinned garments fit their body under motion, and push a garment off the body where motion pulls skin through it.
+"""Measure how skinned garments fit their body under motion, push a garment off the body where motion pulls skin through it, and offset a skin-tight garment off it by an even layer.
 
 Everything is read from ``bpy`` data once (``load``) and then posed analytically, so no
 armature is copied, posed or switched between rest and pose:
@@ -25,7 +25,10 @@ armature is copied, posed or switched between rest and pose:
 Metric meanings are ``LEGEND``, which the doors print; that text is the canon. The body is
 cropped to the garment's posed bounds plus ``CROP`` before every BVH build.
 
-Doors: ``cli/report_fit.py``, ``cli/compare_fit.py``, ``cli/push_garment.py``.
+``plan_offset`` reads the body itself and never goes through ``load``: an offset is a rest-shape
+change, so it needs no skinning, sweep or frame.
+
+Doors: ``cli/report_fit.py``, ``cli/compare_fit.py``, ``cli/push_garment.py``, ``cli/offset_garment.py``.
 """
 import fnmatch
 import math
@@ -1054,6 +1057,99 @@ def apply_push(ob, delta) -> int:
     if any(np.abs(a - b).max() > tol for a, b in zip(before, after)) or len(me.vertices) != n:
         raise FitError("invariant broken (nothing saved): %s: a shape key's offset from Basis changed" % ob.name)
     return len(keys)
+
+
+# --- offset ----------------------------------------------------------------------------------------
+
+def plan_offset(source, target, *, amount, shapes=(), tight=0.003, loose=0.006) -> Dict:
+    """An even layer of cloth thickness for a skin-tight garment; nothing is written. Each vertex of
+    ``target`` at its Basis finds its nearest point on ``source`` at distance ``d`` and moves along
+    the body's normal there by ``amount * smoothstep((loose - d) / (loose - tight))``: whole within
+    ``tight``, nothing beyond ``loose``, so frills and straps standing off the skin hold and the
+    fabric between blends. The body is read at the row's state (``shapes``: ``(mesh_or_None, key,
+    value)`` triples, resolved on the source alone, since only its state places the skin) with its
+    Armature modifier off (``weight_transfer.source_arrays``). Its normal is the area-weighted
+    vertex normal, each vertex summing its triangles' unnormalised cross products rather than
+    Blender's angle-weighted one, interpolated barycentrically across the nearest triangle, so the
+    direction turns smoothly over the skin and does not facet on a coarse limb. Two layers keep
+    their order along a normal only while ``loose - tight`` exceeds 1.5 x ``amount``, the
+    smoothstep's steepest slope, so a narrower band refuses. Metres throughout.
+
+    Returns the object-space ``delta`` for ``apply_push`` and counts: ``moved`` (``full`` at the
+    whole amount, ``partial`` in the band), ``held``, ``max_mm``, ``inside_before`` and
+    ``inside_after`` (moved vertices on the inner side of their nearest body triangle), and the
+    skin distance of the vertices within ``tight`` (``tight_median_mm``, ``tight_min_mm``, each
+    ``[before, after]``, ``None`` when no vertex is that close). Raises ``FitError``; an invariant
+    (no vertex beyond ``loose`` moves, none farther than ``amount``) that fails is one too."""
+    if not 0 < amount <= 0.005:
+        raise FitError("--amount %g is not above 0 and at most 0.005; it is metres (0.0005 is half a "
+                       "millimetre)" % amount)
+    if not 0 <= tight < loose:
+        raise FitError("--tight %g must be at least 0 and below --loose %g (metres)" % (tight, loose))
+    if loose - tight <= 1.5 * amount:
+        raise FitError("--loose minus --tight is %g m, which must exceed 1.5 x --amount (%g m) or layers "
+                       "between them can cross; widen the band or offset by less" % (loose - tight, 1.5 * amount))
+    if source is None or source.type != 'MESH':
+        raise FitError("the source is not a mesh object")
+    if target is None or target.type != 'MESH':
+        raise FitError("target %r is not a mesh object" % getattr(target, "name", target))
+    if target is source or target.data is source.data:
+        raise FitError("%s is the source; offset a garment off it" % target.name)
+    try:
+        src = WT.source_arrays(source, WT.resolve_shapes(shapes, [source])[source.name])
+    except WT.WeightTransferError as e:
+        raise FitError(str(e))
+    BV, BF = src["V"].astype(np.float64), src["F"]
+    fn = np.cross(BV[BF[:, 1]] - BV[BF[:, 0]], BV[BF[:, 2]] - BV[BF[:, 0]])
+    vn = np.zeros_like(BV)
+    for c in range(3):
+        np.add.at(vn, BF[:, c], fn)
+    me = target.data
+    n = len(me.vertices)
+    co = np.empty(n * 3)
+    (me.shape_keys.key_blocks[0].data if me.shape_keys else me.vertices).foreach_get("co", co)
+    M = np.array(target.matrix_world, np.float64)
+    V = co.reshape(-1, 3) @ M[:3, :3].T + M[:3, 3]
+    reach = loose + amount  # every body triangle a moving vertex can be nearest to, before or after
+    Vc, Fc, sel = _crop(BV, BF, V.min(0) - reach, V.max(0) + reach)
+    if Vc is None:
+        raise FitError("%s is farther than %g m from %s everywhere, so nothing would move; check that --source "
+                       "names the body it is worn on and that it is seated there" % (target.name, reach, source.name))
+    tree = _tree(Vc, Fc)
+    _, _, face, d = _nearest(tree, V)
+    T = BF[sel[np.maximum(face, 0)]]
+    bary = WT.closest_on_triangles(V, BV[T[:, 0]], BV[T[:, 1]], BV[T[:, 2]])
+    nrm = np.nan_to_num(_unit(np.einsum("nk,nkd->nd", bary, vn[T])))
+    fade = smoothstep((loose - d) / (loose - tight))
+    dw = nrm * (amount * fade)[:, None]
+    mag = np.linalg.norm(dw, axis=1)
+    moved = mag > 1e-9
+    if not moved.any():
+        raise FitError("no vertex of %s is within --loose %g m of %s at Basis, so nothing would move; check that "
+                       "--source names the body it is worn on, that --shape sets the row's body state, and that "
+                       "the garment is seated there" % (target.name, loose, source.name))
+    if (moved & (d > loose)).any():
+        raise FitError("invariant broken (nothing saved): %s: a vertex beyond --loose moved" % target.name)
+    if mag.max() > amount * (1 + 1e-6):
+        raise FitError("invariant broken (nothing saved): %s: a vertex moved farther than --amount" % target.name)
+
+    def inside(P):
+        loc, nor, f, _ = _nearest(tree, P)
+        return int(((f >= 0) & (((P - loc) * nor).sum(1) < 0)).sum())
+
+    full = moved & (fade >= 0.999)
+    close = d <= tight
+    out = {"mesh": target.name, "source": source.name, "verts": n,
+           "delta": dw @ np.linalg.inv(M[:3, :3]).T, "moved": int(moved.sum()), "full": int(full.sum()),
+           "partial": int((moved & ~full).sum()), "held": int((~moved).sum()),
+           "max_mm": round(float(mag.max()) * 1000.0, 4),
+           "inside_before": inside(V[moved]), "inside_after": inside((V + dw)[moved]),
+           "tight": int(close.sum()), "tight_median_mm": None, "tight_min_mm": None}
+    if close.any():
+        d1 = _nearest(tree, (V + dw)[close])[3]
+        out["tight_median_mm"] = [round(float(np.median(x)) * 1000.0, 3) for x in (d[close], d1)]
+        out["tight_min_mm"] = [round(float(x.min()) * 1000.0, 3) for x in (d[close], d1)]
+    return out
 
 
 # --- renders -----------------------------------------------------------------------------------------
