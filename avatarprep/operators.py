@@ -124,8 +124,8 @@ class AVATARPREP_OT_apply_proportion_edge(bpy.types.Operator, ImportHelper):
 class AVATARPREP_OT_bake_shapekey(bpy.types.Operator):
     bl_idname = "avatarprep.bake_shapekey"
     bl_label = "Bake Shape Key to Basis"
-    bl_description = ("Bake one shape key into Basis (normal-safe finalize), "
-                      "protecting authored normals in a vertex group")
+    bl_description = ("Bake one shape key into Basis (normal-safe finalize): authored normals "
+                      "in a vertex group keep their direction, the rest keep their offset")
     bl_options = {'REGISTER', 'UNDO'}
 
     key_name: StringProperty(name="Shape Key", default="")
@@ -157,8 +157,9 @@ class AVATARPREP_OT_bake_shapekey(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
         self.report({'INFO'},
-                    "Baked %s into Basis on %s (%d protected loops)"
-                    % (report["key"], report["mesh"], report["protected_loops"]))
+                    "Baked %s into Basis on %s (%d protected loops, %d carried)"
+                    % (report["key"], report["mesh"], report["protected_loops"],
+                       report["carried_loops"]))
         return {'FINISHED'}
 
 

@@ -1,13 +1,19 @@
-"""Synthetic headless test for avatarprep.core.shapekey_bake.
+"""Synthetic headless test for avatarprep.core.shapekey_bake, cli/bake_shapekey.py and cli/bake_shapekey_normals.py.
 
 Run: blender --background --factory-startup --python tests/test_shapekey_bake.py
 Prints BAKE_TEST OK / BAKE_TEST FAIL: <reason>.
 """
+import math
 import os
+import subprocess
 import sys
+import tempfile
 
 import bpy
-from mathutils import Vector
+import numpy as np
+from mathutils import Matrix, Vector
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FAILURES = []
 
@@ -179,6 +185,179 @@ def test_baked_map_nonmap_raises():
     check(drift < 1e-9, "non-map guard must fire before folding Basis (drift=%g)" % drift)
 
 
+def _smooth_grid(name="Garment", n=10):
+    """A smooth-shaded unit grid in z=0, normals +Z."""
+    verts = [(j / n, i / n, 0.0) for i in range(n + 1) for j in range(n + 1)]
+    faces = [(i * (n + 1) + j, i * (n + 1) + j + 1, (i + 1) * (n + 1) + j + 1, (i + 1) * (n + 1) + j)
+             for i in range(n) for j in range(n)]
+    md = bpy.data.meshes.new(name + "Data")
+    md.from_pydata(verts, [], faces)
+    md.shade_smooth()
+    md.update()
+    ob = bpy.data.objects.new(name, md)
+    bpy.context.collection.objects.link(ob)
+    return ob
+
+def _dome(i, co):
+    """A dome of height 0.1 and radius 0.3 at the grid's centre; exactly flat outside it."""
+    r = math.hypot(co.x - 0.5, co.y - 0.5)
+    return co + Vector((0, 0, 0.1 * (1 - (r / 0.3) ** 2) ** 2 if r < 0.3 else 0.0))
+
+def _co(seq):
+    a = np.empty(len(seq) * 3)
+    seq.foreach_get("co", a)
+    return a.reshape(-1, 3)
+
+def _deg(u, v):
+    from avatarprep.core import shapekey_bake as B
+    return np.degrees(B._angle(u, v))
+
+def _tilt(ob, deg=10.0):
+    """Tilt the custom normal of every corner on the grid's left half (x < 0.45) by ``deg``
+    about Y; returns that corner mask."""
+    from avatarprep.core import shapekey_bake as B
+    me = ob.data
+    lv = np.array([l.vertex_index for l in me.loops])
+    x = _co(me.vertices)[:, 0]
+    tilt = x[lv] < 0.45
+    R = np.array(Matrix.Rotation(math.radians(deg), 3, 'Y'))
+    n = B._computed_normals(ob)
+    n[tilt] = n[tilt] @ R.T
+    me.normals_split_custom_set(n.tolist())
+    me.update()
+    return tilt
+
+def test_bake_carries_normal_offsets():
+    from avatarprep.core import shapekey_bake as B
+    _clear()
+    ob = _smooth_grid()
+    _add_key(ob, "Dome", _dome)
+    me = ob.data
+    tilt = _tilt(ob)
+    before = B._corner_normals(me)
+    computed_before = B._computed_normals(ob)
+    dev_before = _deg(before, computed_before)
+    rep = B.bake_shapekey_to_basis(ob, "Dome", 1.0, protect_group="")
+    after = B._corner_normals(me)
+    computed_after = B._computed_normals(ob)
+    dev_after = _deg(after, computed_after)
+    check(me.has_custom_normals and rep["had_custom_normals"], "the baked mesh keeps custom normals")
+    want = B._unit(computed_after + (before - computed_before))
+    check(_deg(after, want).max() < 0.5, "every corner is computed-after plus its authored offset (max %.3f deg)"
+          % _deg(after, want).max())
+    check(np.abs(dev_after - dev_before)[tilt].max() < 0.5,
+          "a 10 deg authored deviation survives the bake: %.2f..%.2f deg after"
+          % (dev_after[tilt].min(), dev_after[tilt].max()))
+    turned = _deg(computed_after, computed_before) > 5.0
+    check((turned & tilt).any(), "the fixture's dome turns some tilted corners' computed normals")
+    check(dev_after[~tilt].max() < 0.5, "a corner with no authored offset takes the recomputed normal")
+    check(rep["carried_loops"] == int(tilt.sum()), "carried_loops counts the deviated corners: %d of %d"
+          % (rep["carried_loops"], tilt.sum()))
+
+def test_bake_without_custom_normals_adds_none():
+    from avatarprep.core import shapekey_bake as B
+    _clear()
+    ob = _smooth_grid()
+    _add_key(ob, "Dome", _dome)
+    rep = B.bake_shapekey_to_basis(ob, "Dome", 1.0)
+    check(not ob.data.has_custom_normals and rep["carried_loops"] == 0,
+          "a mesh without custom normals is left without them")
+
+def test_bake_shapekey_normals():
+    from avatarprep.core import shapekey_bake as B
+    _clear()
+    from avatarprep.core import scene_utils
+    ob = _smooth_grid()
+    _add_key(ob, "Dome", _dome)
+    me = ob.data
+    kbs = me.shape_keys.key_blocks
+    co0, basis0, dome0 = _co(me.vertices), _co(kbs["Basis"].data), _co(kbs["Dome"].data)
+    before = B._corner_normals(me)
+    keyed = B._computed_normals(ob, dome0)
+    turn = _deg(keyed, before)
+    rep = B.bake_shapekey_normals(ob, "Dome")
+    after = B._corner_normals(me)
+    off, whole = turn < 0.1, turn >= 1.0
+    check(off.any() and whole.any(), "the fixture has corners off and on the dome's footprint")
+    check(_deg(after, before)[off].max() < 0.05, "corners off the footprint are unchanged (max %.4f deg)"
+          % _deg(after, before)[off].max())
+    check(_deg(after, keyed)[whole].max() < 0.05, "footprint corners take the keyed normal (max %.4f deg)"
+          % _deg(after, keyed)[whole].max())
+    check(rep["whole"] == int(whole.sum()), "whole counts the footprint corners: %d" % rep["whole"])
+    check(np.array_equal(_co(me.vertices), co0) and np.array_equal(_co(kbs["Basis"].data), basis0)
+          and np.array_equal(_co(kbs["Dome"].data), dome0), "no vertex moves, on the mesh or any key")
+    line = "bake_shapekey_normals --mesh Garment --key Dome"
+    check(rep["recipe"] == line and dict(ob[scene_utils.STAMP_NORMALS]) == {"Dome": line},
+          "the recipe is recorded per key: %r" % dict(ob.get(scene_utils.STAMP_NORMALS) or {}))
+    entry = [m for m in scene_utils.report_stamps(bpy.context.scene)["unbound"] if m["name"] == "Garment"]
+    check(entry and entry[0].get("normals") == {"Dome": line}, "report_stamps reads it as normals: %r" % entry)
+    expect_raises(lambda: B.bake_shapekey_normals(ob, "Dome"), "already baked", "a second bake of one key")
+    expect_raises(lambda: B.bake_shapekey_normals(ob, "Basis"), "is the basis", "the Basis")
+    expect_raises(lambda: B.bake_shapekey_normals(ob, "Dome", fade=(1.0, 0.5)), "two angles", "a reversed fade")
+
+    # a mesh with authored normals keeps them off the footprint
+    ob2 = _smooth_grid("Garment2")
+    _add_key(ob2, "Dome", _dome)
+    _tilt(ob2)
+    before = B._corner_normals(ob2.data)
+    turn = _deg(B._computed_normals(ob2, _co(ob2.data.shape_keys.key_blocks["Dome"].data)),
+                B._computed_normals(ob2))
+    B.bake_shapekey_normals(ob2, "Dome")
+    after = B._corner_normals(ob2.data)
+    check(_deg(after, before)[turn < 0.1].max() < 0.05, "authored normals off the footprint are unchanged")
+    check((_deg(after, before)[turn >= 1.0] > 1.0).all(), "authored normals on the footprint turn")
+    rel = ob2.shape_key_add(name="OnDome", from_mix=False)
+    rel.relative_key = ob2.data.shape_keys.key_blocks["Dome"]
+    expect_raises(lambda: B.bake_shapekey_normals(ob2, "OnDome"), "relative to", "a key relative to another key")
+
+    head = _smooth_grid("Body")
+    _add_key(head, "Dome", _dome)
+    expect_raises(lambda: B.bake_shapekey_normals(head, "Dome"), "head mesh", "the head mesh")
+
+def _blender(tool, args):
+    cmd = [bpy.app.binary_path, "--background", "--factory-startup", "--python",
+           os.path.join(REPO, "cli", tool + ".py"), "--"] + args
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    return p.returncode, p.stdout + p.stderr
+
+def test_cli(tmp):
+    from avatarprep.core import scene_utils
+    _clear()
+    ob = _smooth_grid()
+    _add_key(ob, "Dome", _dome)
+    _tilt(ob)
+    src = os.path.join(tmp, "dome.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=src)
+
+    out = os.path.join(tmp, "baked.blend")
+    rc, txt = _blender("bake_shapekey", ["--in", src, "--out", out, "--mesh", "Garment", "--key", "Dome"])
+    check(rc == 0 and "carried_loops=" in txt and "carried_loops=0" not in txt,
+          "bake_shapekey prints the carried loops (rc=%d)\n%s" % (rc, txt))
+
+    mtime = os.path.getmtime(src)
+    rc, txt = _blender("bake_shapekey_normals", ["--in", src, "--whatif", "--mesh", "Garment", "--key", "Dome"])
+    check(rc == 0 and "whatif; nothing saved" in txt and os.path.getmtime(src) == mtime,
+          "--whatif bakes in memory and saves nothing\n%s" % txt)
+    ghost = os.path.join(tmp, "ghost.blend")
+    rc, txt = _blender("bake_shapekey_normals", ["--in", src, "--whatif", "--out", ghost, "--mesh", "Garment",
+                                                 "--key", "Dome"])
+    check(rc == 2 and not os.path.exists(ghost) and "--whatif" in txt, "--whatif with --out is bad args\n%s" % txt)
+    rc, txt = _blender("bake_shapekey_normals", ["--in", src, "--whatif", "--mesh", "Garment", "--key", "Dome",
+                                                 "--fade-deg", "1"])
+    check(rc == 2 and "two angles" in txt, "a one-angle --fade-deg is bad args\n%s" % txt)
+    normals = os.path.join(tmp, "normals.blend")
+    rc, txt = _blender("bake_shapekey_normals", ["--in", src, "--out", normals, "--mesh", "Garment", "--key", "Dome",
+                                                 "--fade-deg", "0.2,2"])
+    line = "bake_shapekey_normals --mesh Garment --key Dome --fade-deg 0.2,2"
+    check(rc == 0 and ("recipe: " + line) in txt and os.path.exists(normals),
+          "a saving run prints the recipe and saves (rc=%d)\n%s" % (rc, txt))
+    if rc == 0:
+        rc, txt = _blender("report_stamps", ["--in", normals])
+        check(rc == 0 and ("mesh Garment normals Dome=%s" % line) in txt, "report_stamps prints it\n%s" % txt)
+        rc, txt = _blender("bake_shapekey_normals", ["--in", normals, "--out", ghost, "--mesh", "Garment",
+                                                     "--key", "Dome"])
+        check(rc == 1 and "already baked" in txt and not os.path.exists(ghost), "a rerun refuses\n%s" % txt)
+
 def main():
     _clear(); _enable()
     test_bake_moves_basis_and_retains_morph()
@@ -191,6 +370,11 @@ def main():
     test_baked_map_accumulates()
     test_baked_map_snaps_zero()
     test_baked_map_nonmap_raises()
+    test_bake_carries_normal_offsets()
+    test_bake_without_custom_normals_adds_none()
+    test_bake_shapekey_normals()
+    with tempfile.TemporaryDirectory() as tmp:
+        test_cli(tmp)
     if FAILURES:
         for f in FAILURES: print("BAKE_TEST FAIL:", f)
         sys.exit(1)

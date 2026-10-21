@@ -6,8 +6,9 @@ Run:
 
 The read/query counterpart of stamp_base — inspects a file's avatarprep_base /
 avatarprep_state (per armature), avatarprep_baked (per baked mesh), avatarprep_weights,
-avatarprep_folded and avatarprep_pushed (per reweighted, folded or pushed mesh) and
-avatarprep_authored (one line per key mark_parts authored) in one call.
+avatarprep_folded, avatarprep_pushed and avatarprep_offset (per reweighted, folded, pushed or
+offset mesh), avatarprep_authored (one line per key mark_parts authored) and avatarprep_normals
+(one line per key bake_shapekey_normals baked) in one call.
 Opens the blend read-only; never saves. A report never "fails" — exit 0 always
 (a bad --in / open failure is the only ERROR exit 2).
 
@@ -62,8 +63,8 @@ def main():
 
     def _print_mesh(owner, m):
         # A mesh qualifies on any stamp (avatarprep_baked / _weights / _folded /
-        # _pushed / _authored), so any key may be absent — print only what the entry
-        # carries. A corrupt (non-map) baked stamp is the one genuine fault → WARNING
+        # _pushed / _offset / _authored / _normals), so any key may be absent — print
+        # only what the entry carries. A corrupt (non-map) baked stamp is the one genuine fault → WARNING
         # (greppable, matching the Slice-E CLI family); everything else is a plain line.
         if m.get("corrupt") is not None:
             print("AVATARPREP: WARNING mesh %s baked=CORRUPT %s (%s)%s"
@@ -80,6 +81,9 @@ def main():
         if "pushed" in m:
             print("AVATARPREP: mesh %s pushed=%s (%s)%s"
                   % (m["name"], m["pushed"], owner, _linked(m)))
+        if "offset" in m:
+            print("AVATARPREP: mesh %s offset=%s (%s)%s"
+                  % (m["name"], m["offset"], owner, _linked(m)))
         if "authored" in m:
             if isinstance(m["authored"], dict):
                 for key, line in sorted(m["authored"].items()):
@@ -88,6 +92,14 @@ def main():
             else:
                 print("AVATARPREP: WARNING mesh %s authored=CORRUPT %s (%s)%s"
                       % (m["name"], m["authored"], owner, _linked(m)))
+        if "normals" in m:
+            if isinstance(m["normals"], dict):
+                for key, line in sorted(m["normals"].items()):
+                    print("AVATARPREP: mesh %s normals %s=%s (%s)%s"
+                          % (m["name"], key, line, owner, _linked(m)))
+            else:
+                print("AVATARPREP: WARNING mesh %s normals=CORRUPT %s (%s)%s"
+                      % (m["name"], m["normals"], owner, _linked(m)))
 
     for a in report["armatures"]:
         base = a["base"] if a["base"] is not None else "unknown"

@@ -5,6 +5,11 @@ Run:
       --in <in.blend> --out <out.blend> --mesh <MeshName> --key <KeyName> \
       [--value 1.0] [--protect-group neck] [--head-mesh-names Body]
 
+A mesh with custom normals keeps them through the fold: a loop in ``--protect-group``
+keeps its authored normal as it is, and every other loop keeps the offset its authored
+normal had from the computed one, carried onto the new Basis (``carried_loops`` counts
+the loops whose offset was over 1 degree). A mesh without custom normals gets none.
+
 ``--head-mesh-names`` is the comma-separated head-refusal list (default ``Body`` —
 a NAME CONVENTION standing in for a geometric check; suffix/case-insensitive).
 Baking a mesh on the list is refused because the bake recomputes its normals and
@@ -39,9 +44,11 @@ def _parse_args():
     p.add_argument("--value", dest="value", type=float, default=1.0,
                    help="Fraction of the key to bake in (default 1.0 = fully)")
     p.add_argument("--protect-group", dest="protect_group", default="neck",
-                   help="Vertex group whose authored custom split normals survive the bake "
-                        "(default 'neck'). Geometry still moves — the fold into Basis is "
-                        "whole-mesh; this only keeps the seam to the head from shading wrong")
+                   help="Vertex group whose authored custom split normals keep their exact "
+                        "direction through the bake (default 'neck'); every other loop keeps "
+                        "its offset from the computed normal. Geometry still moves — the fold "
+                        "into Basis is whole-mesh; this only keeps the seam to the head from "
+                        "shading wrong")
     p.add_argument("--head-mesh-names", dest="head_mesh_names", default="Body",
                    help="Comma-separated meshes to REFUSE to bake (default 'Body'). Matched "
                         "by EXACT name, case-insensitively and ignoring Blender's .001 "
@@ -76,9 +83,10 @@ def main():
                   "'Body', a name convention); overriding it asserts where the "
                   "head lives on this rig — see the CLI docstring")
         sys.exit(1)
-    print("AVATARPREP: baked %s=%g into Basis on %s (cumulative=%g, protected_loops=%d)"
+    print("AVATARPREP: baked %s=%g into Basis on %s (cumulative=%g, protected_loops=%d, "
+          "carried_loops=%d)"
           % (report["key"], report["value"], report["mesh"],
-             report["baked_cumulative"], report["protected_loops"]))
+             report["baked_cumulative"], report["protected_loops"], report["carried_loops"]))
 
     out_path = os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
