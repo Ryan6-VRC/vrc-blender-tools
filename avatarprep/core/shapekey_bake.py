@@ -1,7 +1,8 @@
 """Bake one shape key into Basis (Approach 2), AvatarPrep's normal-safe finalize, and bake a key's shading into the custom normals.
 
-Replicates the operator's manual method: Blend-from-Shape (Add) the morph delta
-into Basis, leaving the morph block behind (reversible/extensible — keep it). Then
+Replicates the operator's manual method, Blend-from-Shape (Add) of the morph delta
+into Basis, on the mesh's data so no other selected mesh is touched, leaving the
+morph block behind (reversible/extensible — keep it). Then
 refresh normals: authored custom normals in a protected vertex group (default
 "neck") keep their absolute direction, and every other authored normal keeps its
 offset from the computed normal, carried onto the new geometry. A head mesh is
@@ -89,6 +90,38 @@ def _angle(u, v):
     return np.arccos(np.clip((_unit(u) * _unit(v)).sum(1), -1.0, 1.0))
 
 
+def _fold_into_basis(me, key_name, value):
+    """Add ``value`` times ``key_name``'s delta from its relative key to Basis, on this mesh's data alone.
+
+    The data form of Blend from Shape (Add) on Basis in Edit mode: every key that depends on
+    Basis moves by the same offset, as leaving Edit mode moves them, so each key's delta is
+    kept. Done on data rather than through the operator because Edit mode enters every
+    selected mesh at once, and the operator then folds the key into each of them that
+    carries it while only this one is stamped."""
+    kbs = me.shape_keys.key_blocks
+    basis, kb = me.shape_keys.reference_key, kbs[key_name]
+    n = len(me.vertices)
+    sco, rco = np.empty(n * 3), np.empty(n * 3)
+    kb.data.foreach_get("co", sco)
+    kb.relative_key.data.foreach_get("co", rco)
+    ofs = value * (sco - rco)
+    moved = {basis.name}
+    grew = True
+    while grew:
+        grew = False
+        for k in kbs:
+            if k.name not in moved and k.relative_key.name in moved:
+                moved.add(k.name)
+                grew = True
+    co = np.empty(n * 3)
+    for name in moved:
+        kbs[name].data.foreach_get("co", co)
+        kbs[name].data.foreach_set("co", co + ofs)
+    basis.data.foreach_get("co", co)
+    me.vertices.foreach_set("co", co)
+    me.update()
+
+
 def bake_shapekey_to_basis(mesh_obj, key_name, value=1.0, *,
                            protect_group="neck", protect_threshold=0.01,
                            head_mesh_names=("Body",)) -> Dict[str, Any]:
@@ -140,12 +173,7 @@ def bake_shapekey_to_basis(mesh_obj, key_name, value=1.0, *,
     if raw is not None and not isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
         raise BakeError("avatarprep_baked on %r is not a map (%r)" % (mesh_obj.name, raw))
 
-    mesh_obj.active_shape_key_index = 0  # Basis
-    with scene_utils.mesh_edit_all(mesh_obj):
-        scene_utils.op_override(bpy.ops.mesh.blend_from_shape,
-                                {'active_object': mesh_obj, 'object': mesh_obj},
-                                shape=key_name, blend=float(value), add=True)
-    me.update()
+    _fold_into_basis(me, key_name, float(value))
 
     # Record the fold into the mesh's baked map IMMEDIATELY — the fold into Basis
     # is the event the map records. Normals below are cosmetic, so a partial failure
