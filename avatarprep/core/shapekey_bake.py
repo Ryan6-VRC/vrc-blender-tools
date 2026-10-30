@@ -97,16 +97,21 @@ def _fold_into_basis(me, key_name, value):
     Basis moves by the same offset, as leaving Edit mode moves them, so each key's delta is
     kept. Done on data rather than through the operator because Edit mode enters every
     selected mesh at once, and the operator then folds the key into each of them that
-    carries it while only this one is stamped."""
+    carries it while only this one is stamped. Like the operator, it skips hidden vertices
+    and, on absolute keys, moves Basis alone."""
     kbs = me.shape_keys.key_blocks
     basis, kb = me.shape_keys.reference_key, kbs[key_name]
     n = len(me.vertices)
     sco, rco = np.empty(n * 3), np.empty(n * 3)
     kb.data.foreach_get("co", sco)
     kb.relative_key.data.foreach_get("co", rco)
-    ofs = value * (sco - rco)
+    ofs = (value * (sco - rco)).reshape(-1, 3)
+    hidden = np.zeros(n, bool)
+    me.vertices.foreach_get("hide", hidden)
+    ofs[hidden] = 0.0
+    ofs = ofs.ravel()
     moved = {basis.name}
-    grew = True
+    grew = me.shape_keys.use_relative
     while grew:
         grew = False
         for k in kbs:
@@ -173,7 +178,11 @@ def bake_shapekey_to_basis(mesh_obj, key_name, value=1.0, *,
     if raw is not None and not isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
         raise BakeError("avatarprep_baked on %r is not a map (%r)" % (mesh_obj.name, raw))
 
+    if mesh_obj.mode != 'OBJECT':  # a live edit BMesh would overwrite the fold on exit
+        scene_utils.op_override(bpy.ops.object.mode_set,
+                                {'active_object': mesh_obj, 'object': mesh_obj}, mode='OBJECT')
     _fold_into_basis(me, key_name, float(value))
+    mesh_obj.active_shape_key_index = 0  # Basis, as the operator path left it
 
     # Record the fold into the mesh's baked map IMMEDIATELY — the fold into Basis
     # is the event the map records. Normals below are cosmetic, so a partial failure
