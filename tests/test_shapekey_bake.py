@@ -78,6 +78,33 @@ def test_bake_moves_basis_and_retains_morph():
     drift = max((rel_after[i] - rel_before[i]).length for i in range(len(rel_before)))
     check(drift < 1e-5, "sibling relative-delta must be preserved at all verts (drift=%g)" % drift)
 
+def test_bake_touches_no_other_selected_mesh():
+    from avatarprep.core import shapekey_bake as B
+    a, b = _grid_mesh("GarmentA"), _grid_mesh("GarmentB")
+    for ob in (a, b):
+        _add_key(ob, "Chest", lambda i, co: co + Vector((0,0,1)) if co.x > 0.5 else co)
+        ob.select_set(True)
+    before = _co(b.data.shape_keys.key_blocks["Basis"].data)
+    B.bake_shapekey_to_basis(a, "Chest", 0.6)
+    check(abs(a.data.shape_keys.key_blocks["Basis"].data[4].co.z - 0.6) < 1e-5,
+          "the target's basis rises by the baked value")
+    check(np.array_equal(_co(b.data.shape_keys.key_blocks["Basis"].data), before),
+          "a second selected mesh carrying the key keeps its Basis")
+    check(abs(a.data.vertices[4].co.z - 0.6) < 1e-5, "the mesh positions follow the new Basis")
+    for ob in (a, b):
+        ob.select_set(False)
+
+def test_bake_skips_hidden_vertices():
+    from avatarprep.core import shapekey_bake as B
+    ob = _grid_mesh("GarmentHidden")
+    _add_key(ob, "Chest", lambda i, co: co + Vector((0,0,1)) if co.x > 0.5 else co)
+    ob.data.vertices[4].hide = True
+    B.bake_shapekey_to_basis(ob, "Chest", 1.0)
+    basis = ob.data.shape_keys.key_blocks["Basis"]
+    check(abs(basis.data[4].co.z) < 1e-6, "a hidden vertex is not folded, as the operator skips it")
+    check(abs(basis.data[5].co.z - 1.0) < 1e-5, "a visible vertex is folded")
+    check(ob.active_shape_key_index == 0, "Basis is left active")
+
 def test_protect_group_case_insensitive():
     from avatarprep.core import shapekey_bake as B
     ob = _grid_mesh()
@@ -361,6 +388,8 @@ def test_cli(tmp):
 def main():
     _clear(); _enable()
     test_bake_moves_basis_and_retains_morph()
+    test_bake_touches_no_other_selected_mesh()
+    test_bake_skips_hidden_vertices()
     test_protect_group_case_insensitive()
     test_refuses_head_mesh()
     test_refuses_head_mesh_suffix()
