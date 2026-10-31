@@ -1087,6 +1087,324 @@ def test_world_bounds_measurability_is_the_evaluated_count():
     bpy.data.node_groups.remove(ng)   # _clear_scene() does not purge node groups
 
 
+# --- moves: rest-pose bone moves --------------------------------------------------
+
+def test_load_moves():
+    from avatarprep.core.proportions import load_edge
+    base = {"source": "a", "target": "b", "source_base": "base"}
+    e = load_edge(dict(base, moves=[{"bones": ["K.L", "K.R"], "value": [0, 0.01, 0]}]))
+    op = e["moves"][0]
+    check((op["space"], op["tail"], op["children"], op["parent_tail"], op["from"])
+          == ("world", "keep", "keep", "keep", {}),
+          "a move's defaults: world space, everything but the head kept, no from: %r" % op)
+    check(load_edge(base)["moves"] == [], "moves defaults to empty")
+
+    def bad(moves, substr, label, **extra):
+        expect_raises(lambda: load_edge(dict(base, moves=moves, **extra)), substr, label)
+    bad([{"bones": ["K"], "value": [0, 0, 0]}], "all zero", "zero move")
+    bad([{"bones": ["K"], "value": [0, 1, 0], "space": "local"}], "space", "unknown space")
+    bad([{"bones": ["K"], "value": [0, 1, 0], "tail": "stay"}], "tail", "bad tail policy")
+    bad([{"bones": ["K"], "value": [0, 1, 0], "rotate": 1}], "unknown", "unknown key")
+    bad([{"bones": ["K", "K"], "value": [0, 1, 0]}], "distinct", "duplicate bone")
+    bad([{"bones": ["K"], "value": [0, 1, 0], "from": {"J": [0, 0, 0]}}], "does not move",
+        "from names a bone the op does not move")
+    bad([{"bones": ["K"], "value": [0, 1, 0], "from": {"K": [0, 0, 0]}}], "object/scales",
+        "from in an edge with a scales stage", scales=[{"bones": ["X"], "value": [1, 1.1, 1]}])
+    bad([{"bones": ["K"], "value": [0, 1, 0]},
+         {"bones": ["K"], "value": [0, 1, 0], "from": {"K": [0, 0, 0]}}], "earlier move",
+        "from on a bone an earlier move moves")
+
+
+# Hips -> Thigh -> Shin -> Foot. The left shin and foot are connected, as a vendor import
+# carries them; the right side is unconnected, as the owned body carries it.
+_MOVE_RIG = (("Hips", None, False, (0, 0, 0.9), (0, 0, 1.0)),
+             ("Thigh.L", "Hips", False, (0.1, 0.01, 0.85), (0.1, 0.0, 0.5)),
+             ("Shin.L", "Thigh.L", True, (0.1, 0.0, 0.5), (0.1, 0.03, 0.1)),
+             ("Foot.L", "Shin.L", True, (0.1, 0.03, 0.1), (0.1, -0.06, 0.03)),
+             ("Thigh.R", "Hips", False, (-0.1, 0.01, 0.85), (-0.1, 0.0, 0.5)),
+             ("Shin.R", "Thigh.R", False, (-0.1, 0.0, 0.5), (-0.1, 0.03, 0.1)),
+             ("Foot.R", "Shin.R", False, (-0.1, 0.03, 0.1), (-0.1, -0.06, 0.03)))
+_KNEE = [0.0, 0.0105, 0.0]
+
+
+def _move_rig(delete=()):
+    """The rig above, its world rest where the table puts it, under a vendor-import
+    object transform (0.01 scale, +90 X), so a world delta must go through it to land
+    in metres."""
+    from avatarprep.core import scene_utils
+    _clear_scene()
+    arm = _make_arm(bones=[(n, h, t) for n, _, _, h, t in _MOVE_RIG])
+    with scene_utils.edit_mode(arm) as ebs:
+        for n, parent, conn, _, _ in _MOVE_RIG:
+            ebs[n].roll = 0.25
+            if parent:
+                ebs[n].parent = ebs[parent]
+                ebs[n].use_connect = conn
+        for n in delete:
+            ebs.remove(ebs[n])
+    M = mathutils.Matrix.Rotation(math.radians(90), 4, 'X') @ mathutils.Matrix.Scale(0.01, 4)
+    arm.data.transform(M.inverted())
+    arm.matrix_world = M
+    md = bpy.data.meshes.new("LegData")
+    md.from_pydata([(0.1, 0.0, 0.7), (0.1, 0.02, 0.3), (0.1, 0.0, 0.05), (0, 0, 0.95)], [], [])
+    md.update()
+    ob = bpy.data.objects.new("Leg", md)
+    bpy.context.collection.objects.link(ob)
+    for g, idx in (("Thigh.L", [0]), ("Shin.L", [1]), ("Foot.L", [2]), ("Hips", [3])):
+        if g in arm.data.bones:
+            ob.vertex_groups.new(name=g).add(idx, 1.0, 'REPLACE')
+    ob.modifiers.new("Armature", 'ARMATURE').object = arm
+    bpy.context.view_layer.update()
+    arm["avatarprep_base"] = "a"
+    arm["avatarprep_state"] = "s0"
+    return arm, ob
+
+
+def _rest(arm):
+    """World head and tail, connect flag and parent per bone."""
+    A = arm.matrix_world
+    return {b.name: {"head": A @ b.head_local, "tail": A @ b.tail_local,
+                     "connect": b.use_connect, "parent": b.parent.name if b.parent else None}
+            for b in arm.data.bones}
+
+
+def _rolls(arm):
+    from avatarprep.core import scene_utils
+    with scene_utils.edit_mode(arm) as ebs:
+        return {eb.name: eb.roll for eb in ebs}
+
+
+def _verts(ob):
+    ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    return [ob.matrix_world @ v.co for v in ev.data.vertices]
+
+
+def _vclose(a, b, tol=1e-6):
+    return (a - b).length < tol
+
+
+def _moves_edge(moves, target="s1"):
+    return {"source": "s0", "target": target, "source_base": "a", "moves": moves}
+
+
+def test_moves_apply():
+    from avatarprep.core import proportions as P
+    d = Vector(_KNEE)
+    arm, ob = _move_rig()
+    before, rolls0, verts0 = _rest(arm), _rolls(arm), _verts(ob)
+    weights0 = [[(g.group, g.weight) for g in v.groups] for v in ob.data.vertices]
+    seen = []
+    rep = P.apply_proportion_edge(arm, [ob], _moves_edge([{"bones": ["Shin.L", "Shin.R"],
+                                                           "value": _KNEE}]),
+                                  skip_shapekeys=True, stage_hook=lambda n: seen.append(n))
+    after, rolls1 = _rest(arm), _rolls(arm)
+    check(seen == ["pre", "moves"], "a moves-only edge stages pre then moves: %r" % seen)
+    check(rep["moves_applied"] == 1 and len(rep["moves"]) == 2 and not rep["bakes"],
+          "one op, two bone records, no bake: %r" % rep)
+    for side in ("L", "R"):
+        shin = "Shin." + side
+        check(_vclose(after[shin]["head"], before[shin]["head"] + d),
+              "%s head moves by the world delta through the 0.01 rig: %r -> %r"
+              % (shin, before[shin]["head"], after[shin]["head"]))
+        check(_vclose(after[shin]["tail"], before[shin]["tail"]), "%s tail is kept" % shin)
+        check(abs(rolls1[shin] - rolls0[shin]) < 1e-6, "%s roll is kept" % shin)
+        check(after[shin]["parent"] == "Thigh." + side, "%s keeps its parent" % shin)
+        for other in ("Hips", "Thigh." + side, "Foot." + side):
+            check(_vclose(after[other]["head"], before[other]["head"])
+                  and _vclose(after[other]["tail"], before[other]["tail"])
+                  and abs(rolls1[other] - rolls0[other]) < 1e-6,
+                  "%s rest is untouched by the move" % other)
+    check(not after["Shin.L"]["connect"] and after["Foot.L"]["connect"],
+          "the connected shin is disconnected (thigh kept), the foot stays connected: %r"
+          % {n: after[n]["connect"] for n in ("Shin.L", "Foot.L")})
+    recs = {r["bone"]: r for r in rep["moves"]}
+    check(recs["Shin.L"]["disconnected"] == ["Shin.L"] and recs["Shin.R"]["disconnected"] == [],
+          "the record names what the move disconnected: %r"
+          % {n: r["disconnected"] for n, r in recs.items()})
+    for i, (v0, v1) in enumerate(zip(verts0, _verts(ob))):
+        check(_vclose(v0, v1), "vertex %d stays put under a rest move: %r -> %r" % (i, v0, v1))
+    check(weights0 == [[(g.group, g.weight) for g in v.groups] for v in ob.data.vertices],
+          "weights are untouched")
+    check(arm.get("avatarprep_state") == "s1" and arm.get("avatarprep_base") == "a",
+          "the stamps transition as for any edge")
+
+    # parent_tail "follow" keeps the connection and re-aims the parent.
+    arm, ob = _move_rig()
+    before = _rest(arm)
+    P.apply_proportion_edge(arm, [ob], _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
+                                                     "parent_tail": "follow"}]),
+                            skip_shapekeys=True)
+    after = _rest(arm)
+    check(_vclose(after["Thigh.L"]["tail"], before["Shin.L"]["head"] + d)
+          and _vclose(after["Thigh.L"]["head"], before["Thigh.L"]["head"])
+          and after["Shin.L"]["connect"],
+          "parent_tail follow moves the thigh's tail with the head and stays connected")
+
+    # tail + children "follow" translate the subtree rigidly, connections intact.
+    arm, ob = _move_rig()
+    before = _rest(arm)
+    P.apply_proportion_edge(arm, [ob], _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
+                                                     "tail": "follow", "children": "follow"}]),
+                            skip_shapekeys=True)
+    after = _rest(arm)
+    for n in ("Shin.L", "Foot.L"):
+        check(_vclose(after[n]["head"], before[n]["head"] + d)
+              and _vclose(after[n]["tail"], before[n]["tail"] + d),
+              "%s translates rigidly under tail+children follow" % n)
+    check(after["Foot.L"]["connect"], "the foot stays connected when tail and foot co-move")
+
+    # tail "follow", children "keep": the foot stays and its connection is cleared.
+    arm, ob = _move_rig()
+    before = _rest(arm)
+    rep = P.apply_proportion_edge(arm, [ob], _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
+                                                           "tail": "follow"}]),
+                                  skip_shapekeys=True)
+    after = _rest(arm)
+    check(_vclose(after["Foot.L"]["head"], before["Foot.L"]["head"])
+          and not after["Foot.L"]["connect"]
+          and "Foot.L" in rep["moves"][0]["disconnected"],
+          "a kept foot under a moved tail is disconnected and reported")
+
+
+def test_moves_validate():
+    from avatarprep.core import proportions as P
+    arm, ob = _move_rig()
+    A = arm.matrix_world
+    knee = [list(A @ arm.data.bones[n].head_local) for n in ("Shin.L", "Shin.R")]
+    guarded = _moves_edge([{"bones": ["Shin.L", "Shin.R"], "value": _KNEE,
+                            "from": {"Shin.L": knee[0], "Shin.R": knee[1]}}], target="s0")
+    val = P.validate_proportion_edge(arm, [ob], P.load_edge(guarded), skip_shapekeys=True)
+    check(not val["offenders"], "from at the rig's knee passes: %r" % val["offenders"])
+    P.apply_proportion_edge(arm, [ob], guarded, skip_shapekeys=True)
+    # A same-state edge passes the state guard a second time; from is what refuses it.
+    val = P.validate_proportion_edge(arm, [ob], P.load_edge(guarded), skip_shapekeys=True)
+    check(len(val["offenders"]) == 2 and all("already applied" in o for o in val["offenders"]),
+          "a second apply refuses as already applied: %r" % val["offenders"])
+    expect_raises(lambda: P.apply_proportion_edge(arm, [ob], guarded, skip_shapekeys=True),
+                  "already applied", "second apply of a guarded same-state edge")
+    off = _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
+                        "from": {"Shin.L": [0.1, 0.05, 0.5]}}], target="s0")
+    val = P.validate_proportion_edge(arm, [ob], P.load_edge(off), skip_shapekeys=True)
+    check(any("not at the edge's source rest" in o for o in val["offenders"]),
+          "a head away from both from and from + value names the mismatch: %r" % val["offenders"])
+
+    arm, ob = _move_rig()
+    for moves, substr, label in (
+            ([{"bones": ["Shin.L"], "value": [0, 0.03, -0.4]}], "long with its tail",
+             "a move onto its own tail"),
+            ([{"bones": ["Thigh.L", "Shin.L"], "value": _KNEE, "children": "follow"}],
+             "twice", "a bone and its ancestor in one children-follow op"),
+            ([{"bones": ["Shin.L"], "value": _KNEE, "children": "follow"},
+              {"bones": ["Foot.L"], "value": _KNEE, "from": {"Foot.L": [0.1, 0.03, 0.1]}}],
+             "moves first", "from on a bone an earlier children-follow move carries")):
+        val = P.validate_proportion_edge(arm, [ob], P.load_edge(_moves_edge(moves)),
+                                         skip_shapekeys=True)
+        check(any(substr in o for o in val["offenders"]),
+              "%s offends: %r" % (label, val["offenders"]))
+    val = P.validate_proportion_edge(arm, [ob], P.load_edge(_moves_edge(
+        [{"bones": ["Shin.L", "Shin.R"], "value": [0.01, 0, 0]}])), skip_shapekeys=True)
+    check(any("mirror" in w for w in val["warnings"]),
+          "a pair moved by one delta with nonzero X warns: %r" % val["warnings"])
+
+
+def test_moves_absent_bones():
+    """A hair has no legs: drop and stub make a knee move a no-op; refuse offends."""
+    from avatarprep.core import proportions as P
+    edge = _moves_edge([{"bones": ["Shin.L", "Shin.R"], "value": _KNEE,
+                         "from": {"Shin.L": [0.1, 0.0, 0.5], "Shin.R": [-0.1, 0.0, 0.5]}}],
+                       target="s0")
+    legless = ("Foot.L", "Foot.R", "Shin.L", "Shin.R", "Thigh.L", "Thigh.R")
+    arm, ob = _move_rig(delete=legless)
+    val = P.validate_proportion_edge(arm, [ob], P.load_edge(edge), skip_shapekeys=True)
+    check(sum("bone not found" in o for o in val["offenders"]) == 2,
+          "refuse offends on each absent moved bone: %r" % val["offenders"])
+    for mode in ("drop", "stub"):
+        arm, ob = _move_rig(delete=legless)
+        before = _rest(arm)
+        rep = P.apply_proportion_edge(arm, [ob], edge, skip_shapekeys=True, absent_bones=mode)
+        check(rep["moves_applied"] == 0 and rep["moves"] == [] and rep["stubs"] == [],
+              "%s: the move drops whole and nothing is stubbed: %r" % (mode, rep))
+        check([(d["where"], d["whole_op"]) for d in rep["dropped"]] == [("moves[0]", True)],
+              "%s: one whole-op DROPPED record: %r" % (mode, rep["dropped"]))
+        check(all(_vclose(before[n]["head"], r["head"]) for n, r in _rest(arm).items()),
+              "%s: the rig is unchanged" % mode)
+        check(arm.get("avatarprep_state") == "s0", "%s: the stamps still transition" % mode)
+
+    # One side present: the present bone moves under its from guard; the absent one drops.
+    arm, ob = _move_rig(delete=("Foot.R", "Shin.R"))
+    before = _rest(arm)
+    rep = P.apply_proportion_edge(arm, [ob], edge, skip_shapekeys=True, absent_bones="drop")
+    check([(d["bones"], d["whole_op"]) for d in rep["dropped"]] == [(["Shin.R"], False)]
+          and [r["bone"] for r in rep["moves"]] == ["Shin.L"]
+          and _vclose(_rest(arm)["Shin.L"]["head"], before["Shin.L"]["head"] + Vector(_KNEE)),
+          "a partly-absent move applies to its present bone: %r" % rep["dropped"])
+
+    # A --bone-override onto an absent bone is never dropped, under drop or stub.
+    for mode in ("drop", "stub"):
+        arm, ob = _move_rig(delete=legless)
+        val = P.validate_proportion_edge(
+            arm, [ob], P.load_edge(_moves_edge([{"bones": ["Knee.L"], "value": _KNEE}])),
+            bone_overrides={"Knee.L": "Shin.L"}, skip_shapekeys=True, absent_bones=mode)
+        check(any("Shin.L" in o and "--bone-override" in o for o in val["offenders"]),
+              "%s: an override onto an absent moved bone offends: %r" % (mode, val["offenders"]))
+
+
+def test_cli_whatif_reports_moves():
+    """The door: --whatif writes nothing and reports each moved bone and the moves stage;
+    the apply saves; a guarded second whatif exits 1 at the gate."""
+    import hashlib
+    import json
+    import subprocess
+    import tempfile
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    door = os.path.join(root, "cli", "apply_proportion_edge.py")
+    tmp = tempfile.mkdtemp(prefix="avatarprep_moves_")
+    src, out_blend = os.path.join(tmp, "src.blend"), os.path.join(tmp, "out.blend")
+    edge_path = os.path.join(tmp, "edge.json")
+    arm, _ = _move_rig()
+    A = arm.matrix_world
+    knee = {n: list(A @ arm.data.bones[n].head_local) for n in ("Shin.L", "Shin.R")}
+    bpy.ops.wm.save_as_mainfile(filepath=src)
+    digest = hashlib.sha256(open(src, "rb").read()).hexdigest()
+    with open(edge_path, "w", encoding="utf-8") as fh:
+        json.dump(_moves_edge([{"bones": ["Shin.L", "Shin.R"], "value": _KNEE, "from": knee}],
+                              target="s0"), fh)
+
+    def run(blend, extra):
+        proc = subprocess.run([bpy.app.binary_path, "--background", "--factory-startup",
+                               "--python", door, "--", "--in", blend, "--edge", edge_path] + extra,
+                              capture_output=True, text=True, timeout=600)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    report = os.path.join(tmp, "r.json")
+    rc, out = run(src, ["--whatif", "--report", report])
+    check(rc == 0, "moves whatif exits 0: %s %r" % (rc, out[-600:]))
+    check(hashlib.sha256(open(src, "rb").read()).hexdigest() == digest,
+          "--whatif leaves --in byte-identical")
+    check("whatif moves[0] bone Shin.L head" in out and "tail kept" in out
+          and "disconnected Shin.L" in out and "no bone outside the edge's moves moved" in out,
+          "the printed tier shows each move: %r" % out[-1200:])
+    geo = json.load(open(report, encoding="utf-8"))["geometry"]
+    check([s["stage"] for s in geo["stages"]] == ["pre", "moves", "shapekeys"],
+          "stages: %r" % [s["stage"] for s in geo["stages"]])
+    ops = geo["move_ops"]
+    check(len(ops) == 1 and [r["bone"] for r in ops[0]["bones"]] == ["Shin.L", "Shin.R"]
+          and ops[0]["tail"] == "keep" and geo["collateral_moves"] == []
+          and geo["collateral_lengths"] == [],
+          "move_ops carries the per-bone records and the moved bones are not collateral: %r"
+          % {k: geo.get(k) for k in ("move_ops", "collateral_moves", "collateral_lengths")})
+    if ops and ops[0]["bones"]:
+        rec = ops[0]["bones"][0]
+        moved = Vector(rec["head"][1]) - Vector(rec["head"][0])
+        check(_vclose(moved, Vector(_KNEE)), "the reported head delta is the edge's: %r" % moved)
+
+    rc, out = run(src, ["--out", out_blend])
+    check(rc == 0 and "moved Shin.L head" in out, "the apply: %s %r" % (rc, out[-600:]))
+    rc, out = run(out_blend, ["--whatif"])
+    check(rc == 1 and "already applied" in out and "whatif moves" not in out,
+          "a second whatif refuses at the gate: %s %r" % (rc, out[-600:]))
+
+
 def main():
     _clear_scene()
     _add_repo_root_to_path()
@@ -1115,6 +1433,11 @@ def main():
     test_world_bounds_is_not_a_lagging_cache()
     test_world_bounds_forces_the_view_layer_update()
     test_world_bounds_measurability_is_the_evaluated_count()
+    test_load_moves()
+    test_moves_apply()
+    test_moves_validate()
+    test_moves_absent_bones()
+    test_cli_whatif_reports_moves()
     if FAILURES:
         for f in FAILURES:
             print("PROP_TEST FAIL:", f)

@@ -4,6 +4,14 @@ A *proportion edge* (JSON) maps one named proportion state to another. This
 module loads/validates an edge and applies it to the scene armature + meshes,
 baking shape-key-safely via rest_pose.apply_pose. Pure bpy: no
 bpy.types.Operator, no UI.
+
+An edge applies in stage order: ``object`` (a posed transform, baked), ``scales``
+(``no_inherit_scale`` then the per-bone scales, posed and baked), ``moves`` (rest-pose
+edits, no bake), ``shapekeys``. A scale reshapes the mesh with the rig; a move edits
+the rig's rest under a mesh that stays where it is, so it re-pivots a joint without
+re-skinning anything. ``moves`` runs after the last bake: a scale pivots on the bone
+heads a move changes, so a move ahead of it would reshape the mesh differently, and a
+move's world delta is authored in the coordinates the scales land in.
 """
 from typing import Any, Dict, List, Union
 
@@ -21,6 +29,11 @@ class EdgeError(ValueError):
 _SPACES = {"local", "normal"}
 _PIVOTS = {"individual", "median"}
 _OP_KEYS = {"bones", "value", "space", "pivot", "note"}
+_MOVE_KEYS = {"bones", "value", "space", "tail", "children", "parent_tail", "from", "note"}
+_MOVE_SPACES = {"world"}
+_MOVE_POLICY = ("keep", "follow")
+MOVE_FROM_TOL = 1e-3     # m: how far a bone's head may sit from its op's ``from`` point
+MOVE_MIN_LENGTH = 1e-4   # m: a move may not leave a bone shorter (Blender drops a zero-length bone)
 
 
 def _num(x) -> bool:
@@ -58,7 +71,7 @@ def load_edge(src: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     edge: Dict[str, Any] = {"source": data["source"], "target": data["target"],
                             "source_base": None, "target_base": None,
                             "object": None, "no_inherit_scale": [], "scales": [],
-                            "shapekeys": {}}
+                            "moves": [], "shapekeys": {}}
     edge["source_base"] = sb
     edge["target_base"] = tb
 
@@ -109,12 +122,86 @@ def load_edge(src: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
         edge["scales"].append({"bones": list(bones), "value": value,
                                "space": space, "pivot": pivot})
 
+    moved = set()
+    for i, op in enumerate(data.get("moves", [])):
+        edge["moves"].append(_load_move(op, i, origin, moved,
+                                        staged=bool(edge["object"] or edge["scales"])))
+
     sk = data.get("shapekeys", {})
     if not (isinstance(sk, dict) and all(isinstance(k, str) and _num(v) for k, v in sk.items())):
         raise EdgeError("edge %s: shapekeys must be a dict of name -> number" % origin)
     edge["shapekeys"] = {k: float(v) for k, v in sk.items()}
 
     return edge
+
+
+def _load_move(op, i, origin, moved, staged):
+    """One ``moves`` op, validated: ``{"bones", "value", "space", "tail", "children",
+    "parent_tail", "from"}``.
+
+    A move translates each named bone's rest **head** by ``value``, a delta in world
+    metres (``space`` is ``"world"``, the only space). Everything else stays where it
+    is unless the op says ``"follow"``:
+
+    - ``tail``: ``"keep"`` (default) holds the tail, so the bone's direction and length
+      change; ``"follow"`` translates it too, so the bone moves rigidly.
+    - ``children``: ``"keep"`` (default) holds every descendant's rest; ``"follow"``
+      translates the whole subtree by the same delta.
+    - ``parent_tail``: read only for a bone connected to its parent. ``"keep"`` (default)
+      disconnects it and leaves the parent untouched; ``"follow"`` keeps the connection,
+      so the parent's tail moves with the head and the parent re-aims. An unconnected
+      bone's parent is never touched.
+
+    Roll is held as a value, and no weight changes. Any connection the result breaks (a
+    head left off its parent's tail) is cleared and reported. A world delta is the same
+    vector on both sides, so a mirrored ``.L``/``.R`` pair shares an op only when its X
+    component is 0.
+
+    ``from`` (optional) maps a named bone to the world point its head must sit within
+    ``MOVE_FROM_TOL`` of before the move, which is what stops a same-state edge (one a
+    state guard cannot refuse a second time) applying twice. It is checked on the rig as
+    found, so it refuses in an edge with an ``object`` or ``scales`` block, and on a bone
+    an earlier move names."""
+    where = "moves[%d]" % i
+    if not isinstance(op, dict):
+        raise EdgeError("edge %s: %s must be a mapping, got %r" % (origin, where, type(op).__name__))
+    extra = set(op) - _MOVE_KEYS
+    if extra:
+        raise EdgeError("edge %s: %s has unknown key(s) %s" % (origin, where, sorted(extra)))
+    bones = op.get("bones")
+    if not (isinstance(bones, list) and bones and all(isinstance(b, str) for b in bones)
+            and len(set(bones)) == len(bones)):
+        raise EdgeError("edge %s: %s.bones must be a non-empty list of distinct bone names"
+                        % (origin, where))
+    value = _vec3(op.get("value"), "%s.value" % where, origin)
+    if not any(value):
+        raise EdgeError("edge %s: %s.value is all zero, which moves nothing" % (origin, where))
+    space = op.get("space", "world")
+    if space not in _MOVE_SPACES:
+        raise EdgeError("edge %s: %s.space must be one of %s" % (origin, where, sorted(_MOVE_SPACES)))
+    out = {"bones": list(bones), "value": value, "space": space, "from": {}}
+    for key in ("tail", "children", "parent_tail"):
+        out[key] = op.get(key, "keep")
+        if out[key] not in _MOVE_POLICY:
+            raise EdgeError("edge %s: %s.%s must be one of %s, got %r"
+                            % (origin, where, key, _MOVE_POLICY, out[key]))
+    frm = op.get("from", {})
+    if not isinstance(frm, dict):
+        raise EdgeError("edge %s: %s.from must map bone names to world points" % (origin, where))
+    for b, p in frm.items():
+        if b not in bones:
+            raise EdgeError("edge %s: %s.from names %r, which the op does not move"
+                            % (origin, where, b))
+        if staged:
+            raise EdgeError("edge %s: %s.from is checked on the rig as found, and this edge's "
+                            "object/scales stages move it first; put the guarded move in its own "
+                            "edge" % (origin, where))
+        if b in moved:
+            raise EdgeError("edge %s: %s.from guards %r, which an earlier move moves first"
+                            % (origin, where, b))
+        out["from"][b] = _vec3(p, "%s.from[%r]" % (where, b), origin)
+    moved.update(bones)
+    return out
 
 
 def _resolve_bone(name, bone_overrides):
@@ -132,13 +219,17 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
     Returns ``{"edge", "dropped", "refused"}``. ``edge`` is a copy whose ops carry
     ``index``, their position in the source edge. Under ``absent_bones="refuse"`` it is
     the source edge unchanged and the other two are empty, so an absent bone offends; under
-    ``"stub"`` it is the same, the absent bones being ``plan_stubs``' to supply.
+    ``"stub"`` it is the same except for ``moves``, below, the absent bones being
+    ``plan_stubs``' to supply.
 
     Under ``"drop"``, for a rig that lacks body bones the edge names (a mergeable pruned
     to what it skins), a bone is judged absent after ``--bone-override`` resolution:
 
     - an op whose bones are all absent is dropped;
     - a ``space="local"``, ``pivot="individual"`` op applies to its present bones;
+    - a ``moves`` op applies to its present bones, under ``"stub"`` too: a move is
+      per-bone, and a stub is removed after the apply, so there is nothing to stub (a rig
+      with no legs takes a knee move as a no-op);
     - any other partly-absent op is kept whole, so it still offends: a median pivot and
       a normal frame are computed over the whole bone set, and a subset moves the bones
       it keeps differently from the body;
@@ -152,7 +243,7 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
     Dropping is exact only where every absent bone's subtree is absent too. A rig that
     lacks a bone the edge scales but keeps a descendant of it (pruned of ``Hand`` but
     keeping a finger) does not reproduce the body: that descendant never inherits the
-    dropped scale, and nothing reports it."""
+    dropped scale, and nothing reports it; a ``children: "follow"`` move the same way."""
     if absent_bones not in ABSENT_BONES_MODES:
         raise EdgeError("absent_bones must be one of %s, got %r"
                         % (ABSENT_BONES_MODES, absent_bones))
@@ -161,8 +252,11 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
     out["scales"] = [dict(op, bones=list(op["bones"]), index=i)
                      for i, op in enumerate(edge["scales"])]
     out["no_inherit_scale"] = list(edge["no_inherit_scale"])
+    out["moves"] = [dict(op, bones=list(op["bones"]), index=i,
+                         **{"from": dict(op["from"])})
+                    for i, op in enumerate(edge.get("moves", []))]
     result = {"edge": out, "dropped": [], "refused": {}}
-    if absent_bones in ("refuse", "stub"):
+    if absent_bones == "refuse":
         return result
 
     bone_names = {b.name for b in armature.data.bones}
@@ -176,6 +270,27 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
             refused[rn] = "it is a --bone-override target, which is never dropped"
             return False
         return True
+
+    # A move is per-bone whatever its policy, so an absent bone leaves it under drop and
+    # under stub alike: a stub is removed after the apply, so moving one moves nothing.
+    kept_moves = []
+    for op in out["moves"]:
+        gone = [b for b in op["bones"] if absent(b)]
+        where = "moves[%d]" % op["index"]
+        if len(gone) == len(op["bones"]):
+            result["dropped"].append({"where": where, "whole_op": True, "bones": gone,
+                                      "resolved": [_resolve_bone(b, bone_overrides)
+                                                   for b in gone]})
+            continue
+        for b in gone:
+            result["dropped"].append({"where": where, "whole_op": False, "bones": [b],
+                                      "resolved": [_resolve_bone(b, bone_overrides)]})
+            op["from"].pop(b, None)
+        op["bones"] = [b for b in op["bones"] if b not in gone]
+        kept_moves.append(op)
+    out["moves"] = kept_moves
+    if absent_bones == "stub":
+        return result
 
     kept_ops = []
     for op in out["scales"]:
@@ -214,8 +329,8 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
 
 
 def edge_bones(edge) -> List[str]:
-    """Every bone name the edge reads, in first-use order: its ops' bones, then
-    ``no_inherit_scale``."""
+    """Every bone name the edge's scale stage reads, in first-use order: its scale ops'
+    bones, then ``no_inherit_scale``. Moves are left out: a move is never stubbed."""
     out = []
     for name in [b for op in edge["scales"] for b in op["bones"]] + list(edge["no_inherit_scale"]):
         if name not in out:
@@ -240,13 +355,15 @@ def plan_stubs(armature, edge, reference, bone_overrides=None) -> Dict[str, Any]
     reference's bone rests, so the rig must coincide with the reference there)."""
     bone_overrides = bone_overrides or {}
     offenders: List[str] = []
+    rig = {b.name for b in armature.data.bones}
+    absent = [n for n in edge_bones(edge) if _resolve_bone(n, bone_overrides) not in rig]
+    if not absent:
+        return {"stubs": [], "offenders": []}
     if reference is None:
         return {"stubs": [], "offenders": [
             "--absent-bones stub needs the fit reference linked, and no linked armature is in the "
             "scene; re-import with import_fbx --fit-reference BLEND, or link the reference's rig into "
             "this blend by hand as an object"]}
-    rig = {b.name for b in armature.data.bones}
-    absent = [n for n in edge_bones(edge) if _resolve_bone(n, bone_overrides) not in rig]
     planned = {}
     for name in absent:
         rn = _resolve_bone(name, bone_overrides)
@@ -352,6 +469,71 @@ def _effective_shapekeys(edge, shapekey_overrides):
     return eff
 
 
+def _validate_moves(armature, edge, bone_overrides, offenders, warnings) -> None:
+    """The ``moves`` checks, on the rig as found (a move's result is decided by the rest
+    it edits, and an edge whose earlier stages reshape the rig makes these lengths an
+    estimate; ``from`` refuses in such an edge at load). Absent bones are left to the
+    bone-not-found check."""
+    A = armature.matrix_world
+    bones = armature.data.bones
+    follow_roots = []   # (index, bone) of earlier children-follow moves
+    for op in edge["moves"]:
+        i = op["index"]
+        d = mathutils.Vector(op["value"])
+        present = [(b, _resolve_bone(b, bone_overrides)) for b in op["bones"]]
+        present = [(b, rn) for b, rn in present if rn in bones]
+        for b, rn in present:
+            bone = bones[rn]
+            head = A @ bone.head_local
+            want = op["from"].get(b)
+            if want is not None:
+                want = mathutils.Vector(want)
+                off = (head - want).length
+                if off > MOVE_FROM_TOL:
+                    done = (head - (want + d)).length <= MOVE_FROM_TOL
+                    offenders.append(
+                        "moves[%d] bone %r head sits %.4f m from the op's from point %s%s"
+                        % (i, rn, off, tuple(round(c, 6) for c in want),
+                           "; it sits at from + value, so this move is already applied"
+                           if done else "; this rig is not at the edge's source rest there"))
+                for j, root in follow_roots:
+                    if root in [p.name for p in bone.parent_recursive]:
+                        offenders.append("moves[%d] from guards %r, which moves[%d] moves first "
+                                         "as a descendant of %r (children 'follow')"
+                                         % (i, rn, j, root))
+            if op["tail"] == "keep":
+                length = ((A @ bone.tail_local) - (head + d)).length
+                if length < MOVE_MIN_LENGTH:
+                    offenders.append("moves[%d] would leave bone %r %.6f m long with its tail "
+                                     "kept, and Blender drops a zero-length bone" % (i, rn, length))
+            if bone.use_connect and op["parent_tail"] == "follow":
+                parent = bone.parent
+                length = ((head + d) - (A @ parent.head_local)).length
+                if length < MOVE_MIN_LENGTH:
+                    offenders.append("moves[%d] parent_tail 'follow' would leave %r %.6f m long"
+                                     % (i, parent.name, length))
+                others = [c.name for c in parent.children if c.use_connect and c.name != rn]
+                if others:
+                    offenders.append("moves[%d] parent_tail 'follow' moves %r's tail, which %r is "
+                                     "also connected to; use parent_tail 'keep', or move %r too"
+                                     % (i, parent.name, others[0], others[0]))
+        names = {rn for _, rn in present}
+        if abs(d.x) > 0.0:
+            pairs = [rn for rn in names if rn.endswith(".L") and rn[:-2] + ".R" in names]
+            for lb in pairs:
+                warnings.append("moves[%d] moves %r and %r by one world delta with a nonzero X, "
+                                "which is not mirror-symmetric; give each side its own op"
+                                % (i, lb, lb[:-2] + ".R"))
+        if op["children"] == "follow":
+            for rn in names:
+                inside = [p.name for p in bones[rn].parent_recursive if p.name in names]
+                if inside:
+                    offenders.append("moves[%d] names %r and its ancestor %r with children "
+                                     "'follow', which would move %r twice; drop it from the op"
+                                     % (i, rn, inside[0], rn))
+            follow_roots.extend((i, rn) for rn in names)
+
+
 def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
                            shapekey_overrides=None, skip_shapekeys=False,
                            absent_bones="refuse", reference=None) -> Dict[str, Any]:
@@ -431,6 +613,15 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
             offenders.append("bone not found: %r (resolved from %r)%s"
                              % (rn, name, "; --absent-bones drop keeps it: " + refused[rn]
                                 if rn in refused else ""))
+    # A move is never stubbed, so an absent bone still in a move (a --bone-override
+    # target, which no mode drops) offends under every mode.
+    for name in dict.fromkeys(b for op in edge["moves"] for b in op["bones"]):
+        rn = _resolve_bone(name, bone_overrides)
+        if rn not in rig_bones and name not in seen:
+            offenders.append("bone not found: %r (resolved from %r)%s"
+                             % (rn, name, "; --absent-bones %s keeps it: %s" % (absent_bones, refused[rn])
+                                if rn in refused else ""))
+    _validate_moves(armature, edge, bone_overrides, offenders, warnings)
 
     for op in edge["scales"]:
         i = op["index"]
@@ -712,6 +903,84 @@ def _set_no_inherit_scale(armature, bone_names):
                 eb.inherit_scale = 'NONE'
 
 
+def apply_moves(armature, moves, bone_overrides=None) -> List[Dict[str, Any]]:
+    """Apply validated ``moves`` ops (``_load_move`` owns their meaning) to the rig's rest,
+    in edit mode, in op order then bone order. The meshes are not touched: a rest edit at
+    rest pose deforms nothing, so a move re-pivots a joint under a mesh that stays put.
+
+    Every new position is computed from a snapshot taken before the op writes anything,
+    because Blender's edit bones drag a connected parent's tail and connected children's
+    heads as a head or tail is set; with the snapshot, a drag can only land where the op
+    puts that point anyway. X-mirror editing is held off for the edit for the same reason.
+
+    Returns one record per moved bone: ``index``, ``bone``, world ``head`` / ``tail`` as
+    ``[before, after]``, ``roll`` ``[before, after]`` (radians), ``parent`` and its world
+    ``parent_tail`` ``[before, after]`` (``None`` without a parent), and ``disconnected``,
+    the bones whose connection the move cleared."""
+    bone_overrides = bone_overrides or {}
+    A = armature.matrix_world
+    to_local = A.inverted().to_3x3()
+
+    def world(v):
+        return [float(c) for c in A @ v]
+
+    records = []
+    mirror = armature.data.use_mirror_x
+    armature.data.use_mirror_x = False
+    try:
+        with scene_utils.edit_mode(armature) as ebs:
+            for op in moves:
+                d = to_local @ mathutils.Vector(op["value"])
+                for name in op["bones"]:
+                    rn = _resolve_bone(name, bone_overrides)
+                    rec = _move_bone(ebs[rn], d, op, world)
+                    rec["index"] = op["index"]
+                    records.append(rec)
+    finally:
+        armature.data.use_mirror_x = mirror
+    lost = [r["bone"] for r in records if armature.data.bones.get(r["bone"]) is None]
+    if lost:
+        raise EdgeError("moves left bone(s) %s zero-length and Blender dropped them; the rig is "
+                        "half-applied, restore it" % lost)
+    return records
+
+
+def _move_bone(eb, d, op, world) -> Dict[str, Any]:
+    parent = eb.parent
+    subtree = list(eb.children_recursive) if op["children"] == "follow" else []
+    snap = {b.name: (b.head.copy(), b.tail.copy()) for b in [eb] + subtree}
+    head0, tail0 = snap[eb.name]
+    ptail0 = parent.tail.copy() if parent else None
+    roll0 = eb.roll
+    disconnected = []
+    # A connection survives where both ends move together: the head and the parent's tail
+    # under parent_tail "follow", the tail and a child's head when tail and children share
+    # a policy. Every other connection is cleared before any write can drag through it.
+    # Connections that survive are never re-made: re-connecting snaps a child's head onto
+    # the parent's tail, and edit bones carry sub-micron gaps there.
+    if eb.use_connect and op["parent_tail"] == "keep":
+        eb.use_connect = False
+        disconnected.append(eb.name)
+    if op["tail"] != op["children"]:
+        for c in eb.children:
+            if c.use_connect:
+                c.use_connect = False
+                disconnected.append(c.name)
+    for b in subtree:
+        h, t = snap[b.name]
+        b.head = h + d
+        b.tail = t + d
+    eb.head = head0 + d          # drags a still-connected parent's tail (parent_tail "follow")
+    if op["tail"] == "follow":
+        eb.tail = tail0 + d
+    return {"bone": eb.name,
+            "head": [world(head0), world(eb.head)], "tail": [world(tail0), world(eb.tail)],
+            "roll": [float(roll0), float(eb.roll)],
+            "parent": parent.name if parent else None,
+            "parent_tail": [world(ptail0), world(parent.tail)] if parent else None,
+            "disconnected": disconnected}
+
+
 def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_overrides=None,
                   shapekey_overrides=None, skip_shapekeys=False,
                   stage_hook=None, absent_bones="refuse", reference=None) -> Dict[str, Any]:
@@ -722,8 +991,9 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
     ``stubs`` lists them.
 
     ``stage_hook(name)``, when given, is called at each stage boundary — ``'pre'``,
-    then ``'object'`` / ``'scales'`` / ``'shapekeys'`` for the stages this edge
-    actually has.
+    then ``'object'`` / ``'scales'`` / ``'moves'`` / ``'shapekeys'`` for the stages
+    this edge actually has. The report's ``moves`` holds ``apply_moves``' per-bone
+    records.
 
     The hook exists so ``--whatif`` can measure the real transform at each boundary
     instead of predicting it: a second implementation of this engine, however careful,
@@ -747,7 +1017,8 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
 
     report = {"source": edge["source"], "target": edge["target"],
               "warnings": val["warnings"], "dropped": val["dropped"], "bakes": [],
-              "scales_applied": 0, "shapekeys": [], "base": None, "state": None,
+              "scales_applied": 0, "moves_applied": 0, "moves": [], "shapekeys": [],
+              "base": None, "state": None,
               "stubs": [st["name"] for st in val["stubs"]]}
     stubs = []
     try:
@@ -801,6 +1072,12 @@ def _apply(armature, meshes, edge, report, bone_overrides, shapekey_overrides, s
         report["bakes"].append(rest_pose.apply_pose(armature))
         if stage_hook:
             stage_hook("scales")
+
+    if edge["moves"]:
+        report["moves"] = apply_moves(armature, edge["moves"], bone_overrides)
+        report["moves_applied"] = len(edge["moves"])
+        if stage_hook:
+            stage_hook("moves")
 
     if not skip_shapekeys:
         eff = _effective_shapekeys(edge, shapekey_overrides)

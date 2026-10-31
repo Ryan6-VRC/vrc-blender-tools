@@ -116,8 +116,9 @@ class AVATARPREP_OT_apply_proportion_edge(bpy.types.Operator, ImportHelper):
             return {'CANCELLED'}
         for w in report["warnings"]:
             self.report({'WARNING'}, w)
-        self.report({'INFO'}, "Applied %s -> %s (%d scale ops)"
-                    % (report["source"], report["target"], report["scales_applied"]))
+        self.report({'INFO'}, "Applied %s -> %s (%d scale ops, %d move ops)"
+                    % (report["source"], report["target"], report["scales_applied"],
+                       report["moves_applied"]))
         return {'FINISHED'}
 
 

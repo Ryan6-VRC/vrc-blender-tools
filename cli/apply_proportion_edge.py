@@ -25,10 +25,17 @@ mid-body without reaching the feet or the crown legitimately moves min-z and max
 zero, so a 0.000 delta is not evidence that a shapekeys block did nothing. Per-mesh
 bounds in --report are the next place to look.
 
-``--absent-bones stub`` gives each bone the edge names and the rig lacks a non-deforming stub
+An edge's ``moves`` block edits the rig's rest after the scales (core
+``proportions._load_move`` owns the grammar): under --whatif each moved bone prints its world
+head before and after, its tail, length and roll, its parent's tail and any connection the
+move cleared, and every bone no move names that moved anyway is listed, stated positively
+when there is none. A move changes no mesh, so its stage reads zero delta by design.
+
+``--absent-bones stub`` gives each bone the edge scales and the rig lacks a non-deforming stub
 copied from the linked fit reference's rest bone (``import_fbx --fit-reference`` links one),
 parented to its nearest ancestor the rig carries, applies the edge, and removes the stubs;
-core ``proportions.plan_stubs`` owns the rules.
+core ``proportions.plan_stubs`` owns the rules. A moved bone the rig lacks is dropped under
+stub as under drop.
 
 Exit codes: 0 = would apply (with numbers) · 1 = offenders, would not apply ·
 2 = ERROR (bad edge path, unopenable --in, --out combined with --whatif).
@@ -151,7 +158,7 @@ def _print_dropped(dropped):
             "every bone of the op is absent" if d["whole_op"] else "absent from the rig"))
 
 
-def _geometry_report(stages, edge, bone_overrides, repair):
+def _geometry_report(stages, edge, bone_overrides, repair, moves=()):
     """Assemble the staged geometry block from the trial's measurements.
 
     ``repair`` rides along deliberately: these numbers were measured on whatever the
@@ -160,7 +167,7 @@ def _geometry_report(stages, edge, bone_overrides, repair):
     from avatarprep.core import measure
     pre = stages[0][1]
     out = {"loaded_with_repairs": repair, "stages": [], "bones": {},
-           "scale_ops": []}
+           "scale_ops": [], "move_ops": []}
     prev = pre
     # ``m["unevaluated"]`` is deliberately not carried into the entry: the gate above
     # exits 1 before any stage is measured, so on every reachable path it is empty. Carry
@@ -187,8 +194,43 @@ def _geometry_report(stages, edge, bone_overrides, repair):
             "index": op["index"], "value": op["value"], "space": op["space"],
             "pivot": op["pivot"], "bones": names,
             "lengths": measure.bone_length_deltas(pre, final, names)})
-    out["collateral_lengths"] = measure.collateral_lengths(pre, final, named)
+    # A move changes its own bone's length by design (a kept tail), so it is named too;
+    # a parent re-aimed by parent_tail "follow" is not, and lands in the spread.
+    moved = set()
+    for op in edge["moves"]:
+        names = [bone_overrides.get(b, b) for b in op["bones"]]
+        moved.update(names)
+        out["move_ops"].append({
+            "index": op["index"], "value": op["value"], "space": op["space"],
+            "tail": op["tail"], "children": op["children"], "parent_tail": op["parent_tail"],
+            "bones": [r for r in moves if r["index"] == op["index"]]})
+    out["collateral_lengths"] = measure.collateral_lengths(pre, final, named | moved)
+    if edge["moves"]:
+        names = [n for n, _ in stages]
+        before = stages[names.index("moves") - 1][1]["bones"]
+        after = stages[names.index("moves")][1]["bones"]
+        out["collateral_moves"] = _collateral_moves(before, after, moved)
     return out
+
+
+def _collateral_moves(before, after, moved, tol=1e-6):
+    """Bones the moves stage shifted that no move names: a parent's tail under
+    parent_tail "follow", a subtree under children "follow". World metres."""
+    rows = []
+    for name, a in before.items():
+        b = after.get(name)
+        if name in moved or b is None:
+            continue
+        dh = max(abs(x - y) for x, y in zip(a["head"], b["head"]))
+        dt = max(abs(x - y) for x, y in zip(a["tail"], b["tail"]))
+        if dh > tol or dt > tol:
+            rows.append({"bone": name, "d_head": [y - x for x, y in zip(a["head"], b["head"])],
+                         "d_tail": [y - x for x, y in zip(a["tail"], b["tail"])]})
+    return rows
+
+
+def _fmt(v):
+    return "(%s)" % ", ".join("%.6f" % c for c in v)
 
 
 def _print_geometry(geometry, repair):
@@ -213,10 +255,41 @@ def _print_geometry(geometry, repair):
             pct = "n/a" if row["pct"] is None else "%+.2f%%" % row["pct"]
             print("AVATARPREP: whatif scales[%d] bone %s length %.6f -> %.6f (%s achieved)"
                   % (op["index"], row["bone"], row["before"], row["after"], pct))
+    for op in geometry["move_ops"]:
+        for r in op["bones"]:
+            (h0, h1), (t0, t1), (r0, r1) = r["head"], r["tail"], r["roll"]
+            d = [b - a for a, b in zip(h0, h1)]
+            tail = ("tail %s -> %s" % (_fmt(t0), _fmt(t1)) if op["tail"] == "follow"
+                    else "tail kept %s" % _fmt(t1))
+            print("AVATARPREP: whatif moves[%d] bone %s head %s -> %s (d %s, %.6f m); %s; "
+                  "length %.6f -> %.6f; roll %.4f -> %.4f rad"
+                  % (op["index"], r["bone"], _fmt(h0), _fmt(h1), _fmt(d),
+                     sum(c * c for c in d) ** 0.5, tail,
+                     sum((b - a) ** 2 for a, b in zip(h0, t0)) ** 0.5,
+                     sum((b - a) ** 2 for a, b in zip(h1, t1)) ** 0.5, r0, r1))
+            if r["parent"]:
+                p0, p1 = r["parent_tail"]
+                print("AVATARPREP: whatif moves[%d]   parent %s tail %s"
+                      % (op["index"], r["parent"], "kept" if p0 == p1
+                         else "%s -> %s" % (_fmt(p0), _fmt(p1))))
+            for n in r["disconnected"]:
+                print("AVATARPREP: whatif moves[%d]   disconnected %s" % (op["index"], n))
+    if "collateral_moves" in geometry:
+        rows = geometry["collateral_moves"]
+        if rows:
+            print("AVATARPREP: whatif %d bone(s) no move names also moved:" % len(rows))
+            for row in rows[:12]:
+                print("AVATARPREP: whatif   %s d_head %s d_tail %s"
+                      % (row["bone"], _fmt(row["d_head"]), _fmt(row["d_tail"])))
+            if len(rows) > 12:
+                print("AVATARPREP: whatif   ... %d more; --report has all of them"
+                      % (len(rows) - 12))
+        else:
+            print("AVATARPREP: whatif no bone outside the edge's moves moved")
     collateral = geometry["collateral_lengths"]
     if collateral:
-        print("AVATARPREP: whatif %d unnamed bone(s) also changed length — the scale "
-              "spread past the bones the edge names:" % len(collateral))
+        print("AVATARPREP: whatif %d unnamed bone(s) also changed length — the edge "
+              "spread past the bones it names:" % len(collateral))
         for row in collateral[:12]:
             pct = "n/a" if row["pct"] is None else "%+.2f%%" % row["pct"]
             print("AVATARPREP: whatif   %s %.6f -> %.6f (%s)"
@@ -226,7 +299,7 @@ def _print_geometry(geometry, repair):
                   % (len(collateral) - 12))
     else:
         # Stated positively: silence here would be indistinguishable from not looking.
-        print("AVATARPREP: whatif no bone outside the edge's scale ops changed length")
+        print("AVATARPREP: whatif no bone outside the edge's ops changed length")
     total = geometry["delta_total"]
     if total:
         print("AVATARPREP: whatif total d_min_z %+.6f d_max_z %+.6f d_height %+.6f"
@@ -292,13 +365,14 @@ def main():
         # against a real apply on both shipped longlimb edges and on a shapekey-bearing
         # fixture. Cost is 1.6-4.5 s on a full avatar.
         stages = []
-        proportions.apply_proportion_edge(
+        trial = proportions.apply_proportion_edge(
             armature, meshes, edge, bone_overrides=bone_overrides,
             shapekey_overrides=shapekey_overrides, skip_shapekeys=args.skip_shapekeys,
             absent_bones=args.absent_bones, reference=reference, stage_hook=lambda name: stages.append(
                 (name, measure.measure_geometry(armature, meshes))))
 
-        geometry = _geometry_report(stages, report["effective_edge"], bone_overrides, repair)
+        geometry = _geometry_report(stages, report["effective_edge"], bone_overrides, repair,
+                                    trial["moves"])
         report["geometry"] = geometry
         _print_geometry(geometry, repair)
 
@@ -326,9 +400,15 @@ def main():
     except proportions.EdgeError as e:
         print("AVATARPREP: ERROR", e)
         sys.exit(1)
-    print("AVATARPREP: applied %s -> %s (%d scale ops, %d shapekeys, %d bakes, %d warnings)"
+    print("AVATARPREP: applied %s -> %s (%d scale ops, %d move ops, %d shapekeys, %d bakes, "
+          "%d warnings)"
           % (report["source"], report["target"], report["scales_applied"],
-             len(report["shapekeys"]), len(report["bakes"]), len(report["warnings"])))
+             report["moves_applied"], len(report["shapekeys"]), len(report["bakes"]),
+             len(report["warnings"])))
+    for r in report["moves"]:
+        print("AVATARPREP: moved %s head by %s%s" % (
+            r["bone"], _fmt([b - a for a, b in zip(*r["head"])]),
+            "; disconnected " + ", ".join(r["disconnected"]) if r["disconnected"] else ""))
     for w in report["warnings"]:
         print("AVATARPREP: WARNING", w)
     _print_dropped(report["dropped"])
