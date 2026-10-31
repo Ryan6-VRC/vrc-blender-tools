@@ -33,7 +33,7 @@ _MOVE_KEYS = {"bones", "value", "space", "tail", "children", "parent_tail", "fro
 _MOVE_SPACES = {"world"}
 _MOVE_POLICY = ("keep", "follow")
 MOVE_FROM_TOL = 1e-3     # m: how far a bone's head may sit from its op's ``from`` point
-MOVE_MIN_LENGTH = 1e-4   # m: a move may not leave a bone shorter (Blender drops a zero-length bone)
+MOVE_MIN_LENGTH = 1e-4   # m: shortest bone a move may leave; Blender rewrites a zero-length one on edit-mode exit
 
 
 def _num(x) -> bool:
@@ -160,8 +160,9 @@ def _load_move(op, i, origin, moved, staged):
     ``from`` (optional) maps a named bone to the world point its head must sit within
     ``MOVE_FROM_TOL`` of before the move, which is what stops a same-state edge (one a
     state guard cannot refuse a second time) applying twice. It is checked on the rig as
-    found, so it refuses in an edge with an ``object`` or ``scales`` block, and on a bone
-    an earlier move names."""
+    found, so it refuses in an edge with an ``object`` or ``scales`` block, on a bone an
+    earlier move names, and on a move no longer than twice the tolerance, which a second
+    application would still pass."""
     where = "moves[%d]" % i
     if not isinstance(op, dict):
         raise EdgeError("edge %s: %s must be a mapping, got %r" % (origin, where, type(op).__name__))
@@ -188,6 +189,10 @@ def _load_move(op, i, origin, moved, staged):
     frm = op.get("from", {})
     if not isinstance(frm, dict):
         raise EdgeError("edge %s: %s.from must map bone names to world points" % (origin, where))
+    if frm and mathutils.Vector(value).length <= 2 * MOVE_FROM_TOL:
+        raise EdgeError("edge %s: %s.from guards a move of %.4f m, and from tells a moved head from "
+                        "an unmoved one only past twice its %.4f m tolerance; guard a larger move or "
+                        "drop from" % (origin, where, mathutils.Vector(value).length, MOVE_FROM_TOL))
     for b, p in frm.items():
         if b not in bones:
             raise EdgeError("edge %s: %s.from names %r, which the op does not move"
@@ -470,60 +475,45 @@ def _effective_shapekeys(edge, shapekey_overrides):
 
 
 def _validate_moves(armature, edge, bone_overrides, offenders, warnings) -> None:
-    """The ``moves`` checks, on the rig as found (a move's result is decided by the rest
-    it edits, and an edge whose earlier stages reshape the rig makes these lengths an
-    estimate; ``from`` refuses in such an edge at load). Absent bones are left to the
-    bone-not-found check."""
+    """The ``moves`` checks. Lengths and connections are judged on a simulation of every
+    op in order, over every point an op changes (the named bones, a followed subtree, a
+    dragged parent's tail), so two ops that each pass alone cannot collapse a bone
+    between them. The simulation starts from the rig as found: an edge whose earlier
+    stages reshape the rig makes its lengths an estimate, and ``from`` refuses in such
+    an edge at load. Absent bones are left to the bone-not-found check."""
     A = armature.matrix_world
     bones = armature.data.bones
-    follow_roots = []   # (index, bone) of earlier children-follow moves
+    pts = {b.name: [A @ b.head_local, A @ b.tail_local] for b in bones}
+    length0 = {n: (t - h).length for n, (h, t) in pts.items()}
+    conn = {b.name: b.use_connect for b in bones}
+    moved = {}          # resolved bone -> index of the first op that moved it
     for op in edge["moves"]:
         i = op["index"]
         d = mathutils.Vector(op["value"])
         present = [(b, _resolve_bone(b, bone_overrides)) for b in op["bones"]]
         present = [(b, rn) for b, rn in present if rn in bones]
+        names = [rn for _, rn in present]
+        for rn in {n for n in names if names.count(n) > 1}:
+            offenders.append("moves[%d] names %r twice once --bone-override resolves it, which "
+                             "would move it twice" % (i, rn))
         for b, rn in present:
-            bone = bones[rn]
-            head = A @ bone.head_local
             want = op["from"].get(b)
-            if want is not None:
-                want = mathutils.Vector(want)
-                off = (head - want).length
-                if off > MOVE_FROM_TOL:
-                    done = (head - (want + d)).length <= MOVE_FROM_TOL
-                    offenders.append(
-                        "moves[%d] bone %r head sits %.4f m from the op's from point %s%s"
-                        % (i, rn, off, tuple(round(c, 6) for c in want),
-                           "; it sits at from + value, so this move is already applied"
-                           if done else "; this rig is not at the edge's source rest there"))
-                for j, root in follow_roots:
-                    if root in [p.name for p in bone.parent_recursive]:
-                        offenders.append("moves[%d] from guards %r, which moves[%d] moves first "
-                                         "as a descendant of %r (children 'follow')"
-                                         % (i, rn, j, root))
-            if op["tail"] == "keep":
-                length = ((A @ bone.tail_local) - (head + d)).length
-                if length < MOVE_MIN_LENGTH:
-                    offenders.append("moves[%d] would leave bone %r %.6f m long with its tail "
-                                     "kept, and Blender drops a zero-length bone" % (i, rn, length))
-            if bone.use_connect and op["parent_tail"] == "follow":
-                parent = bone.parent
-                length = ((head + d) - (A @ parent.head_local)).length
-                if length < MOVE_MIN_LENGTH:
-                    offenders.append("moves[%d] parent_tail 'follow' would leave %r %.6f m long"
-                                     % (i, parent.name, length))
-                others = [c.name for c in parent.children if c.use_connect and c.name != rn]
-                if others:
-                    offenders.append("moves[%d] parent_tail 'follow' moves %r's tail, which %r is "
-                                     "also connected to; use parent_tail 'keep', or move %r too"
-                                     % (i, parent.name, others[0], others[0]))
-        names = {rn for _, rn in present}
-        if abs(d.x) > 0.0:
-            pairs = [rn for rn in names if rn.endswith(".L") and rn[:-2] + ".R" in names]
-            for lb in pairs:
-                warnings.append("moves[%d] moves %r and %r by one world delta with a nonzero X, "
-                                "which is not mirror-symmetric; give each side its own op"
-                                % (i, lb, lb[:-2] + ".R"))
+            if want is None:
+                continue
+            if rn in moved:
+                offenders.append("moves[%d] from guards %r, which moves[%d] moves first"
+                                 % (i, rn, moved[rn]))
+                continue
+            want = mathutils.Vector(want)
+            head = pts[rn][0]
+            off = (head - want).length
+            if off > MOVE_FROM_TOL:
+                done = (head - (want + d)).length <= MOVE_FROM_TOL
+                offenders.append(
+                    "moves[%d] bone %r head sits %.4f m from the op's from point %s%s"
+                    % (i, rn, off, tuple(round(c, 6) for c in want),
+                       "; it sits at from + value, so this move is already applied"
+                       if done else "; this rig is not at the edge's source rest there"))
         if op["children"] == "follow":
             for rn in names:
                 inside = [p.name for p in bones[rn].parent_recursive if p.name in names]
@@ -531,7 +521,46 @@ def _validate_moves(armature, edge, bone_overrides, offenders, warnings) -> None
                     offenders.append("moves[%d] names %r and its ancestor %r with children "
                                      "'follow', which would move %r twice; drop it from the op"
                                      % (i, rn, inside[0], rn))
-            follow_roots.extend((i, rn) for rn in names)
+        if abs(d.x) > 0.0:
+            for lb in [rn for rn in names if rn.endswith(".L") and rn[:-2] + ".R" in names]:
+                warnings.append("moves[%d] moves %r and %r by one world delta with a nonzero X, "
+                                "which is not mirror-symmetric; give each side its own op"
+                                % (i, lb, lb[:-2] + ".R"))
+        # Simulate, step for step as _move_bone writes.
+        for rn in dict.fromkeys(names):
+            bone = bones[rn]
+            parent = bone.parent
+            subtree = [c.name for c in bone.children_recursive] if op["children"] == "follow" else []
+            follow = conn[rn] and op["parent_tail"] == "follow"
+            if follow:
+                others = [c.name for c in parent.children
+                          if conn[c.name] and c.name != rn and c.name not in names]
+                if others:
+                    offenders.append("moves[%d] parent_tail 'follow' moves %r's tail, which %r is "
+                                     "also connected to; use parent_tail 'keep', or move %r in "
+                                     "this op too" % (i, parent.name, others[0], others[0]))
+            elif conn[rn]:
+                conn[rn] = False
+            if op["tail"] != op["children"]:
+                for c in bone.children:
+                    conn[c.name] = False
+            for n in subtree:
+                pts[n] = [pts[n][0] + d, pts[n][1] + d]
+                moved.setdefault(n, i)
+            pts[rn][0] = pts[rn][0] + d
+            if follow:
+                pts[parent.name][1] = pts[rn][0].copy()
+            if op["tail"] == "follow":
+                pts[rn][1] = pts[rn][1] + d
+            moved.setdefault(rn, i)
+            for n, why in ((rn, ""), (parent.name if follow else None, " (parent_tail 'follow')")):
+                if n is None:
+                    continue
+                length = (pts[n][1] - pts[n][0]).length
+                if length < MOVE_MIN_LENGTH and length < length0[n]:   # a short bone the rig had passes
+                    offenders.append("moves[%d] would leave bone %r %.6f m long%s, after every "
+                                     "earlier move; Blender rewrites a zero-length bone's tail "
+                                     "on leaving edit mode" % (i, n, length, why))
 
 
 def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
@@ -913,6 +942,10 @@ def apply_moves(armature, moves, bone_overrides=None) -> List[Dict[str, Any]]:
     heads as a head or tail is set; with the snapshot, a drag can only land where the op
     puts that point anyway. X-mirror editing is held off for the edit for the same reason.
 
+    Before leaving edit mode it refuses a bone shorter than ``MOVE_MIN_LENGTH`` or a
+    connection cleared without a record: Blender does not keep a zero-length bone as
+    written but re-aims its tail on exit and clears a child's connection onto it.
+
     Returns one record per moved bone: ``index``, ``bone``, world ``head`` / ``tail`` as
     ``[before, after]``, ``roll`` ``[before, after]`` (radians), ``parent`` and its world
     ``parent_tail`` ``[before, after]`` (``None`` without a parent), and ``disconnected``,
@@ -929,6 +962,8 @@ def apply_moves(armature, moves, bone_overrides=None) -> List[Dict[str, Any]]:
     armature.data.use_mirror_x = False
     try:
         with scene_utils.edit_mode(armature) as ebs:
+            connected0 = {eb.name for eb in ebs if eb.use_connect}
+            length0 = {eb.name: ((A @ eb.tail) - (A @ eb.head)).length for eb in ebs}
             for op in moves:
                 d = to_local @ mathutils.Vector(op["value"])
                 for name in op["bones"]:
@@ -936,12 +971,21 @@ def apply_moves(armature, moves, bone_overrides=None) -> List[Dict[str, Any]]:
                     rec = _move_bone(ebs[rn], d, op, world)
                     rec["index"] = op["index"]
                     records.append(rec)
+            # Checked here, before the exit rewrites a zero-length bone and clears the
+            # connection onto it. Validation simulates the same writes, so this is a backstop.
+            reported = {n for r in records for n in r["disconnected"]}
+            bad = []
+            for eb in ebs:
+                length = ((A @ eb.tail) - (A @ eb.head)).length
+                if length < MOVE_MIN_LENGTH and length < length0[eb.name]:
+                    bad.append("%r is %.6f m long" % (eb.name, length))
+                if eb.name in connected0 and not eb.use_connect and eb.name not in reported:
+                    bad.append("%r lost its connection unreported" % eb.name)
+            if bad:
+                raise EdgeError("moves left %s; the rig is half-applied and its state stamp is "
+                                "left at the crash sentinel, so restore it" % "; ".join(bad))
     finally:
         armature.data.use_mirror_x = mirror
-    lost = [r["bone"] for r in records if armature.data.bones.get(r["bone"]) is None]
-    if lost:
-        raise EdgeError("moves left bone(s) %s zero-length and Blender dropped them; the rig is "
-                        "half-applied, restore it" % lost)
     return records
 
 

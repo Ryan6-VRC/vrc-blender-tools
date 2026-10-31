@@ -1290,7 +1290,7 @@ def test_moves_validate():
 
     arm, ob = _move_rig()
     for moves, substr, label in (
-            ([{"bones": ["Shin.L"], "value": [0, 0.03, -0.4]}], "long with its tail",
+            ([{"bones": ["Shin.L"], "value": [0, 0.03, -0.4]}], "0.000000 m long",
              "a move onto its own tail"),
             ([{"bones": ["Thigh.L", "Shin.L"], "value": _KNEE, "children": "follow"}],
              "twice", "a bone and its ancestor in one children-follow op"),
@@ -1404,6 +1404,98 @@ def test_cli_whatif_reports_moves():
     check(rc == 1 and "already applied" in out and "whatif moves" not in out,
           "a second whatif refuses at the gate: %s %r" % (rc, out[-600:]))
 
+def test_moves_cumulative():
+    """Ops are judged in sequence: two that each pass alone cannot collapse a bone between
+    them, an alias cannot slip a second move past from, and siblings moved together under
+    parent_tail "follow" pass."""
+    from avatarprep.core import proportions as P
+    from avatarprep.core import scene_utils
+    arm, ob = _move_rig()
+    half_shin = [0.0, 0.015, -0.2]          # half of Shin.L's head-to-tail vector
+    half_thigh = [0.0, 0.005, 0.175]        # half of Thigh.L's tail-to-head vector
+    for moves, bone, label in (
+            ([{"bones": ["Shin.L"], "value": half_shin}] * 2, "'Shin.L'",
+             "two ops each moving a head halfway to its kept tail"),
+            ([{"bones": ["Shin.L"], "value": half_thigh, "parent_tail": "follow"}] * 2,
+             "'Thigh.L'", "two parent_tail follow ops collapsing the unnamed parent")):
+        val = P.validate_proportion_edge(arm, [ob], P.load_edge(_moves_edge(moves)),
+                                         skip_shapekeys=True)
+        check(any(bone in o and "after every earlier move" in o for o in val["offenders"]),
+              "%s offends: %r" % (label, val["offenders"]))
+        one = P.validate_proportion_edge(arm, [ob], P.load_edge(_moves_edge(moves[:1])),
+                                         skip_shapekeys=True)
+        check(not one["offenders"], "%s: one op alone passes: %r" % (label, one["offenders"]))
+
+    # The in-edit-mode backstop refuses the same collapse when validation is bypassed.
+    arm, ob = _move_rig()
+    moves = P.effective_edge(arm, P.load_edge(_moves_edge(
+        [{"bones": ["Shin.L"], "value": half_shin}] * 2)))["edge"]["moves"]
+    expect_raises(lambda: P.apply_moves(arm, moves), "half-applied",
+                  "apply_moves on a collapsing op list")
+
+    # A --bone-override alias does not get a second move past from.
+    arm, ob = _move_rig()
+    knee = list(arm.matrix_world @ arm.data.bones["Shin.L"].head_local)
+    edge = _moves_edge([{"bones": ["Knee.L"], "value": _KNEE},
+                        {"bones": ["Shin.L"], "value": _KNEE, "from": {"Shin.L": knee}}])
+    val = P.validate_proportion_edge(arm, [ob], P.load_edge(edge),
+                                     bone_overrides={"Knee.L": "Shin.L"}, skip_shapekeys=True)
+    check(any("moves first" in o for o in val["offenders"]),
+          "from on a bone an aliased earlier move moves offends: %r" % val["offenders"])
+
+    # Two ops along one chain apply in sequence.
+    arm, ob = _move_rig()
+    before = _rest(arm)
+    P.apply_proportion_edge(arm, [ob], _moves_edge(
+        [{"bones": ["Shin.L"], "value": _KNEE},
+         {"bones": ["Foot.L"], "value": _KNEE, "tail": "follow"}]), skip_shapekeys=True)
+    after = _rest(arm)
+    d = Vector(_KNEE)
+    check(_vclose(after["Shin.L"]["head"], before["Shin.L"]["head"] + d)
+          and _vclose(after["Shin.L"]["tail"], before["Shin.L"]["tail"])
+          and _vclose(after["Foot.L"]["head"], before["Foot.L"]["head"] + d)
+          and _vclose(after["Foot.L"]["tail"], before["Foot.L"]["tail"] + d)
+          and not after["Foot.L"]["connect"],
+          "two ops on one chain land in sequence: %r" % {n: after[n] for n in ("Shin.L", "Foot.L")})
+
+    # Siblings connected to one parent tail, moved together under parent_tail "follow".
+    _clear_scene()
+    arm = _make_arm(bones=(("P", (0, 0, 1), (0, 0, 0.5)), ("C1", (0, 0, 0.5), (0.1, 0, 0)),
+                           ("C2", (0, 0, 0.5), (-0.1, 0, 0))))
+    with scene_utils.edit_mode(arm) as ebs:
+        for c in ("C1", "C2"):
+            ebs[c].parent = ebs["P"]
+            ebs[c].use_connect = True
+    arm["avatarprep_base"] = "a"
+    arm["avatarprep_state"] = "s0"
+    both = _moves_edge([{"bones": ["C1", "C2"], "value": [0, 0.01, 0], "parent_tail": "follow"}])
+    val = P.validate_proportion_edge(arm, [], P.load_edge(both), skip_shapekeys=True)
+    check(not val["offenders"], "siblings moved together pass: %r" % val["offenders"])
+    val = P.validate_proportion_edge(arm, [], P.load_edge(_moves_edge(
+        [{"bones": ["C1"], "value": [0, 0.01, 0], "parent_tail": "follow"}])), skip_shapekeys=True)
+    check(any("'C2'" in o and "in this op too" in o for o in val["offenders"]),
+          "one sibling alone offends naming the other: %r" % val["offenders"])
+    P.apply_proportion_edge(arm, [], both, skip_shapekeys=True)
+    after = _rest(arm)
+    check(_vclose(after["P"]["tail"], Vector((0, 0.01, 0.5)))
+          and after["C1"]["connect"] and after["C2"]["connect"],
+          "the parent's tail follows both siblings, which stay connected: %r" % after)
+
+
+def test_moves_from_tolerance():
+    from avatarprep.core import proportions as P
+    arm, ob = _move_rig()
+    knee = arm.matrix_world @ arm.data.bones["Shin.L"].head_local
+    for off, ok in ((0.0009, True), (0.0011, False)):
+        edge = _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
+                             "from": {"Shin.L": list(knee + Vector((off, 0, 0)))}}], target="s0")
+        val = P.validate_proportion_edge(arm, [ob], P.load_edge(edge), skip_shapekeys=True)
+        check(bool(val["offenders"]) != ok, "from %.4f m off should %s: %r"
+              % (off, "pass" if ok else "refuse", val["offenders"]))
+    expect_raises(lambda: P.load_edge(_moves_edge(
+        [{"bones": ["Shin.L"], "value": [0, 0.0008, 0], "from": {"Shin.L": list(knee)}}])),
+        "twice its", "from on a move within twice the tolerance")
+
 
 def main():
     _clear_scene()
@@ -1438,6 +1530,8 @@ def main():
     test_moves_validate()
     test_moves_absent_bones()
     test_cli_whatif_reports_moves()
+    test_moves_cumulative()
+    test_moves_from_tolerance()
     if FAILURES:
         for f in FAILURES:
             print("PROP_TEST FAIL:", f)

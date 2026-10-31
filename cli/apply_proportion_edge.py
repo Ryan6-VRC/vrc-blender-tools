@@ -194,8 +194,8 @@ def _geometry_report(stages, edge, bone_overrides, repair, moves=()):
             "index": op["index"], "value": op["value"], "space": op["space"],
             "pivot": op["pivot"], "bones": names,
             "lengths": measure.bone_length_deltas(pre, final, names)})
-    # A move changes its own bone's length by design (a kept tail), so it is named too;
-    # a parent re-aimed by parent_tail "follow" is not, and lands in the spread.
+    # A move changes its own bone's length by design (a kept tail), so the moves stage
+    # names it; a parent re-aimed by parent_tail "follow" is not named, and lands in the spread.
     moved = set()
     for op in edge["moves"]:
         names = [bone_overrides.get(b, b) for b in op["bones"]]
@@ -204,12 +204,17 @@ def _geometry_report(stages, edge, bone_overrides, repair, moves=()):
             "index": op["index"], "value": op["value"], "space": op["space"],
             "tail": op["tail"], "children": op["children"], "parent_tail": op["parent_tail"],
             "bones": [r for r in moves if r["index"] == op["index"]]})
-    out["collateral_lengths"] = measure.collateral_lengths(pre, final, named | moved)
     if edge["moves"]:
+        # Two spans, so a scale that lengthens a bone a later move names still shows: the
+        # stages before the moves against the scaled bones, the moves stage against the moved.
         names = [n for n, _ in stages]
-        before = stages[names.index("moves") - 1][1]["bones"]
-        after = stages[names.index("moves")][1]["bones"]
-        out["collateral_moves"] = _collateral_moves(before, after, moved)
+        before = stages[names.index("moves") - 1][1]
+        after = stages[names.index("moves")][1]
+        out["collateral_lengths"] = (measure.collateral_lengths(pre, before, named)
+                                     + measure.collateral_lengths(before, after, moved))
+        out["collateral_moves"] = _collateral_moves(before["bones"], after["bones"], moved)
+    else:
+        out["collateral_lengths"] = measure.collateral_lengths(pre, final, named)
     return out
 
 
