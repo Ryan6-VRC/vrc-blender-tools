@@ -2,7 +2,7 @@
 
 Primary reader: an agent about to apply or author a proportion edge. This folder is a **sample library and the test-fixture corpus** for `apply_proportion_edge`, not the source of a real apply: a real edge co-locates with the avatar it targets, in the Unity venue's `Blender/Avatars/<Family>/` bucket (`docs/LAYOUT.md`), and is copied there from here when one of these is the route in. The edge grammar is `avatarprep/core/proportions.py`'s `load_edge`; `docs/blender.md` §Edge filing owns naming and stamping.
 
-**An edge with no `object`, `scales` or `shapekeys` block is an identity edge — a pure base relabel.** `load_edge` defaults every op block to empty, `--whatif` reports every stage at zero delta, and the apply writes only the stamps: `avatarprep_base` moves to `target_base`, state to `target`. It is the right shape when two vendor bases are the same mesh at the same scale and only the lineage name differs; it is not a stub awaiting ops.
+**An edge with no `object`, `scales`, `moves` or `shapekeys` block is an identity edge — a pure base relabel.** `load_edge` defaults every op block to empty, `--whatif` reports every stage at zero delta, and the apply writes only the stamps: `avatarprep_base` moves to `target_base`, state to `target`. It is the right shape when two vendor bases are the same mesh at the same scale and only the lineage name differs; it is not a stub awaiting ops.
 
 | edge | kind | what it records |
 |---|---|---|
