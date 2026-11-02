@@ -1287,20 +1287,6 @@ def edit_mode(arm: bpy.types.Object):
         op_override(bpy.ops.object.mode_set, ctx, mode='OBJECT')
 
 
-@contextmanager
-def mesh_edit_all(mesh_obj: bpy.types.Object):
-    """Enter EDIT mode on ``mesh_obj`` with all geometry selected, return to OBJECT
-    on exit. Headless-safe. Mesh counterpart of ``edit_mode`` (which is armature-only)."""
-    bpy.context.view_layer.objects.active = mesh_obj
-    ctx = {'active_object': mesh_obj, 'object': mesh_obj}
-    op_override(bpy.ops.object.mode_set, ctx, mode='EDIT')
-    try:
-        op_override(bpy.ops.mesh.select_all, ctx, action='SELECT')
-        yield mesh_obj.data
-    finally:
-        op_override(bpy.ops.object.mode_set, ctx, mode='OBJECT')
-
-
 def op_override(operator,
                 context_override: Dict[str, Any],
                 context: Optional[bpy.types.Context] = None,
