@@ -41,10 +41,6 @@ import bpy
 import numpy as np
 
 
-def _empty(v):
-    return [v, v, v]
-
-
 def _world_bounds(meshes) -> Dict[str, Any]:
     """World-space bounds of ``meshes``' evaluated geometry.
 

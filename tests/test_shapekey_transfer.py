@@ -113,6 +113,25 @@ def test_seat_only_folds_into_basis_and_stamps():
     check(row["leak_outside_footprint"] == 0, "no movement outside the footprint (leak=%d)" % row["leak_outside_footprint"])
 
 
+def test_seat_outside_footprint_records_fold():
+    # The garment sits clear of the bump, so the seat moves nothing and is still a fold.
+    from avatarprep.core import shapekey_transfer as T
+    from avatarprep.core import scene_utils, weight_transfer
+    body = _body(); top = _garment()
+    for v in top.data.vertices:
+        v.co.x *= 0.15; v.co.y *= 0.15
+    row = T.transfer_shapekeys(body, [top], keys=[], authored={"Bump": 0.0})["targets"][0]
+    check(row["max_move_mm"] == 0.0, "the fixture's seat must move nothing (%g mm)" % row["max_move_mm"])
+    check(abs(row["baked_written"].get("Bump", -9) - BAKED) < 1e-9, "the report should name the fold, got %r" % row["baked_written"])
+    m = top.get(scene_utils.STAMP_BAKED)
+    check(m is not None and abs(dict(m).get("Bump", -9) - BAKED) < 1e-9, "garment baked map should record Bump=0.5, got %r" % m)
+    bad = weight_transfer.seat_disagreement(body, top)
+    check(not bad, "a garment seated without moving must not read as unseated, got %r" % bad)
+    _clear(); body = _body(); top = _garment()
+    T.transfer_shapekeys(body, [top], keys=["Bump"], seat=False)
+    check(top.get(scene_utils.STAMP_BAKED) is None, "a run with no move and no fold writes no stamp")
+
+
 def test_add_key_carries_seat_as_live_value():
     from avatarprep.core import shapekey_transfer as T
     from avatarprep.core import scene_utils
@@ -291,7 +310,7 @@ def test_tear_heals():
 
 def main():
     _clear(); _enable()
-    for t in (test_seat_only_folds_into_basis_and_stamps, test_add_key_carries_seat_as_live_value,
+    for t in (test_seat_only_folds_into_basis_and_stamps, test_seat_outside_footprint_records_fold, test_add_key_carries_seat_as_live_value,
               test_authored_offset_unbakes_negative, test_add_key_with_authored_offset, test_smooth_keeps_gap, test_whatif_writes_nothing, test_refusals,
               test_scan_reads_authored_value, test_static_island_is_dropped, test_tear_heals):
         _clear()

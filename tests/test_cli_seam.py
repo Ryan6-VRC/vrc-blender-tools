@@ -415,6 +415,40 @@ def test_weights_without_deps(tmp):
         _fail("transfer_weights without deps should FAIL naming tools/provision_deps.py\n%s" % out)
 
 
+def test_edge_missing_file(tmp):
+    """A missing --edge path is one in-grammar ERROR at exit 2, not a crash traceback."""
+    scene = os.path.join(tmp, "edge_missing.blend")
+    _build_prune_blend(scene)
+    rc, out = _run_cli("apply_proportion_edge.py",
+                       ["--in", scene, "--edge", os.path.join(tmp, "nope.json"), "--whatif"])
+    if rc != 2:
+        _fail("missing --edge: expected exit 2, got %d\n%s" % (rc, out))
+    if "ERROR --edge" not in out or "Traceback" in out:
+        _fail("missing --edge should print an in-grammar ERROR, no traceback\n%s" % out)
+
+
+def test_enable_avatarprep_propagates(tmp):
+    """enable_avatarprep swallows only the repeat-registration ValueError."""
+    if REPO_ROOT not in sys.path:
+        sys.path.insert(0, REPO_ROOT)
+    from cli import _common
+    pkg = _common.enable_avatarprep()
+    _common.enable_avatarprep()  # repeat: ValueError swallowed
+    real = pkg.register
+
+    def boom():
+        raise RuntimeError("registration broke")
+    pkg.register = boom
+    try:
+        try:
+            _common.enable_avatarprep()
+        except RuntimeError:
+            return
+        _fail("enable_avatarprep swallowed a non-repeat registration failure")
+    finally:
+        pkg.register = real
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_weights_without_deps(tmp)
@@ -425,6 +459,8 @@ def main():
         test_prune_whatif(tmp)
         test_prune_refuses_on_bone_parented(tmp)
         test_whatif_rejects_out(tmp)
+        test_edge_missing_file(tmp)
+        test_enable_avatarprep_propagates(tmp)
     if FAILURES:
         for f in FAILURES:
             print("CLI_SEAM_TEST FAIL:", f)

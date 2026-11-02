@@ -465,7 +465,7 @@ def test_untouched_vertex_over_cap():
     preview = core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=True)
     try:
         result = core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=False)
-    except AssertionError as e:
+    except core.FoldRefused as e:
         FAILURES.append("real run refused an untouched 5-group vertex whatif passed: %s" % e)
         return
     check((preview["touched"], preview["capped"]) == (result["touched"], result["capped"]),

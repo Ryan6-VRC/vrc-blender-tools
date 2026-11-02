@@ -391,7 +391,7 @@ def main():
     def _fully_degenerate(a):
         bpy.data.objects["Body"].scale = (0.0, 0.0, 0.0)
     _refuses(_fully_degenerate, "zero scale component",
-             "a fully degenerate descendant (must diagnose, not ZeroDivisionError)")
+             "a fully degenerate descendant")
 
     def _zero(a):
         bpy.data.objects["Body"].scale = (0.0, 1.0, 1.0)
@@ -449,7 +449,7 @@ def main():
         check(scene_utils._is_unit_scale(tuple(body.scale))
               and not scene_utils.has_own_rotation(body),
               "fixture(parent-inverse): the child must read unrotated and unscaled, "
-              "or this case does not test what the old proxy was blind to")
+              "or this case does not test shear entering through the parent inverse alone")
     _refuses(_sheared_parent_inverse, "composed shear",
              "shear via a sheared parent inverse under a UNIFORM parent")
 
@@ -506,6 +506,98 @@ def main():
     check(_crash != "ZeroDivisionError",
           "a degenerate composed frame must not raise ZeroDivisionError out of a "
           "ValueError-only gate; got %s" % _crash)
+
+    # 11k. Animation reaches the gate through the slot bound to it, on the active action,
+    # an NLA strip or a meta strip's inner strip.
+    def _admits(build, label):
+        _clear_scene()
+        a = _make_rig()
+        build(a)
+        try:
+            scene_utils.check_scale_normalizable([a] + scene_utils.get_bound_meshes(a))
+        except Exception as e:  # noqa: BLE001
+            check(False, "%s must pass the gate; got %s: %s" % (label, type(e).__name__, e))
+
+    def _to_nla(owner):
+        ad = owner.animation_data
+        act = ad.action
+        ad.action = None
+        return ad.nla_tracks.new().strips.new("Strip", 1, act)
+
+    def _to_meta(owner):
+        act = owner.animation_data.action
+        first = _to_nla(owner)
+        track = owner.animation_data.nla_tracks[0]
+        second = track.strips.new("Strip2", 10, act)
+        first.select = second.select = track.select = True
+        owner.select_set(True)
+        bpy.context.view_layer.objects.active = owner
+        win = bpy.context.window_manager.windows[0]
+        area = win.screen.areas[0]
+        was = area.type
+        area.type = 'NLA_EDITOR'
+        region = next(r for r in area.regions if r.type == 'WINDOW')
+        with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=region):
+            bpy.ops.nla.meta_add()
+        area.type = was
+        check([s.type for s in track.strips] == ['META'], "fixture(meta): strips must sit in one meta strip")
+
+    def _key_body(path):
+        bpy.data.objects["Body"].keyframe_insert(path, frame=1)
+        return bpy.data.objects["Body"]
+
+    def _share_action(body_path, other_path):
+        other = bpy.data.objects.new("Other", None)
+        bpy.context.scene.collection.objects.link(other)
+        other.keyframe_insert(other_path, frame=1)
+        act = other.animation_data.action
+        body = bpy.data.objects["Body"]
+        body.animation_data_create()
+        body.animation_data.action = act
+        body.animation_data.action_slot = act.slots.new('OBJECT', "Body")
+        body.keyframe_insert(body_path, frame=1)
+        check(len(act.slots) == 2, "fixture(shared action): the action must hold two slots")
+
+    def _key_bone_location(a):
+        a.scale = (0.01, 0.01, 0.01)
+        pb = a.pose.bones["Root"]
+        # The current frame evaluates to the first key, so only the second can refuse.
+        pb.keyframe_insert("location", frame=100)
+        pb.location = (0, 0, 10.0)
+        pb.keyframe_insert("location", frame=200)
+        pb.location = (0, 0, 0)
+
+    _admits(lambda a: _key_body("location"), "an action keying location")
+    _refuses(lambda a: _key_body("scale"), "animated or driven scale", "an action keying scale")
+    _refuses(lambda a: _to_nla(_key_body("scale")), "animated or driven scale", "an NLA strip keying scale")
+    _refuses(lambda a: _to_meta(_key_body("scale")), "animated or driven scale", "a meta strip keying scale")
+    _admits(lambda a: _share_action("location", "scale"), "scale keyed on another object's slot")
+    _refuses(lambda a: _share_action("scale", "location"), "animated or driven scale",
+             "scale keyed on the object's own second slot")
+
+    def _slotless_action(a):
+        _key_body("scale").animation_data.action_slot = None
+
+    def _slotless_strip(a):
+        _to_nla(_key_body("scale")).action_slot = None
+    _admits(_slotless_action, "a slot-less action keying scale")
+    _admits(_slotless_strip, "a slot-less NLA strip keying scale")
+
+    _refuses(_key_bone_location, "pose translation", "a scaled rig's action keying bone location")
+
+    def _nla_bone_location(a):
+        _key_bone_location(a)
+        _to_nla(a)
+    _refuses(_nla_bone_location, "pose translation", "a scaled rig's NLA strip keying bone location")
+
+    # An export reaches that gate on either branch.
+    for scoped in (True, False):
+        arm = _make_rig()
+        _key_body("location")
+        arm.pose.bones["Root"].rotation_mode = 'QUATERNION'
+        arm.pose.bones["Root"].keyframe_insert("rotation_quaternion", frame=1)
+        exc, written = _export(arm, scoped=scoped, tag="animated_%s" % scoped)
+        check(exc is None and written, "export (scoped=%s) with actions must write: %s" % (scoped, exc))
 
     # 11g. The gate evaluates the depsgraph itself. Deliberately omits view_layer.update().
     _clear_scene()

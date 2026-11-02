@@ -129,7 +129,7 @@ def read_body(body_mesh: Optional[str] = None) -> Dict[str, Any]:
     it the blend must hold exactly one local armature, and exactly one local mesh
     deforming with it; anything else refuses naming the candidates, since a head mesh,
     an underwear mesh and the body all deform with the same rig."""
-    local = [o for o in bpy.data.objects if o.library is None]
+    local = [o for o in bpy.data.objects if not scene_utils.is_linked(o)]
     if body_mesh:
         mo = _local(body_mesh)
         if mo is None or mo.type != 'MESH':
@@ -275,7 +275,7 @@ def read_poses(body: Dict[str, Any], bone_overrides: Optional[Dict[str, str]] = 
     a same-named body bone."""
     bone_overrides = dict(bone_overrides or {})
     rigs = sorted((o for o in bpy.data.objects
-                   if o.library is None and o.type == 'ARMATURE' and o.animation_data
+                   if not scene_utils.is_linked(o) and o.type == 'ARMATURE' and o.animation_data
                    and o.animation_data.action), key=lambda o: o.name)
     if len(rigs) != 1:
         raise HandEditRefused("the pose corpus holds %d animated armatures (%s); it carries one"
@@ -502,7 +502,7 @@ def build_scene(body_path: str, garment_path: str, body: Dict[str, Any],
                     if isinstance(o, bpy.types.Object) and o.name not in kept:
                         warnings.append("%s modifier %s targets %s, which the scene does not "
                                         "carry" % (t.name, m.name, o.name))
-    if garment_rig is not None and garment_rig.library is None and garment_rig.name not in kept:
+    if garment_rig is not None and not scene_utils.is_linked(garment_rig) and garment_rig.name not in kept:
         bpy.data.objects.remove(garment_rig)
 
     cleared = []

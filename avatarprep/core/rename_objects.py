@@ -28,11 +28,12 @@ class RenameRefused(Exception):
         self.offenders = offenders
 
 
-def _temp_name(taken, seed):
-    """A name no object holds, for breaking a rename cycle."""
+def _temp_name(taken):
+    """A name no object holds, for breaking a rename cycle. Carries no source name, which
+    could push it past the name limit."""
     i = 0
     while True:
-        candidate = "_avatarprep_rename_%s_%d" % (seed, i)
+        candidate = "_avatarprep_rename_%d" % i
         if candidate not in taken:
             return candidate
         i += 1
@@ -63,6 +64,11 @@ def plan_renames(pairs) -> Dict[str, Any]:
         if old == new:
             warnings.append("rename %r -> itself; no-op" % old)
             continue
+        limit = bpy.types.ID.bl_rna.properties["name"].length_max - 1
+        if len(new.encode("utf-8")) > limit:
+            offenders.append("target name %r is %d bytes; Blender would truncate it to %d"
+                             % (new, len(new.encode("utf-8")), limit))
+            continue
         holder = objs.get(new)
         # A name freed by another pair in the set is not a collision.
         if holder is not None and new not in pairs:
@@ -85,7 +91,7 @@ def plan_renames(pairs) -> Dict[str, Any]:
         free = [o for o, n in sorted(remaining.items()) if n not in taken]
         if not free:
             old = sorted(remaining)[0]
-            tmp = _temp_name(taken, old.replace(" ", "_"))
+            tmp = _temp_name(taken)
             order.append({"from": old, "to": tmp, "via_temp": True})
             taken.discard(old)
             taken.add(tmp)

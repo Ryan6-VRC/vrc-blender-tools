@@ -608,15 +608,34 @@ _SCALE_CONSTRAINTS = {'COPY_SCALE', 'COPY_TRANSFORMS', 'LIMIT_SCALE', 'TRANSFORM
                       'CHILD_OF', 'ACTION'}
 
 
+def _bound_fcurves(ad):
+    """The F-curves that reach ``ad``'s owner: the active action's and every NLA strip's,
+    meta-nested too, each through its bound slot. A slot-less binding evaluates nothing,
+    and another slot's channels animate another ID."""
+    if ad is None:
+        return
+
+    def walk(strips):
+        for s in strips:
+            yield s
+            yield from walk(s.strips)
+
+    bound = [(ad.action, ad.action_slot)]
+    bound += [(s.action, s.action_slot) for t in ad.nla_tracks for s in walk(t.strips)]
+    for action, slot in bound:
+        if action is None or slot is None:
+            continue
+        for layer in action.layers:
+            for strip in layer.strips:
+                cb = strip.channelbag(slot)
+                if cb is not None:
+                    yield from cb.fcurves
+
+
 def _scale_is_animated(obj) -> bool:
     ad = obj.animation_data
-    for src in (ad.action if ad else None,) + tuple(
-            s.action for s in (ad.nla_tracks if ad else []) for s in getattr(s, 'strips', [])):
-        if src is None:
-            continue
-        for fc in src.fcurves:
-            if fc.data_path in ('scale', 'delta_scale'):
-                return True
+    if any(fc.data_path in ('scale', 'delta_scale') for fc in _bound_fcurves(ad)):
+        return True
     return bool(ad and ad.drivers and any(
         d.data_path in ('scale', 'delta_scale') for d in ad.drivers))
 
@@ -631,12 +650,10 @@ def _max_pose_translation(arm) -> float:
     """Largest pose-bone translation magnitude, from the current pose AND from
     any action's location keyframes (both survive the bake unscaled)."""
     worst = max((pb.location.length for pb in arm.pose.bones), default=0.0)
-    ad = arm.animation_data
-    if ad and ad.action:
-        for fc in ad.action.fcurves:
-            if fc.data_path.startswith('pose.bones[') and fc.data_path.endswith('].location'):
-                for kp in fc.keyframe_points:
-                    worst = max(worst, abs(kp.co[1]))
+    for fc in _bound_fcurves(arm.animation_data):
+        if fc.data_path.startswith('pose.bones[') and fc.data_path.endswith('].location'):
+            for kp in fc.keyframe_points:
+                worst = max(worst, abs(kp.co[1]))
     return worst
 
 

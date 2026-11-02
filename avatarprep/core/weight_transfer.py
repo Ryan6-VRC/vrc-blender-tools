@@ -421,8 +421,8 @@ def smooth(TV, W, matched, A, steps, factor, radius):
     to [0, 1] (the add-on smoothed the raw fill and clipped at 0 afterwards), and the band
     is the straight-line ball, independent of vertex order (the add-on's edge walk stops at
     vertices an earlier seed marked, so its band depends on vertex order and is a subset of
-    this one). A ``--smooth`` run therefore exceeds the add-on differential's tolerance by
-    design."""
+    this one). A ``--smooth`` run can therefore exceed the add-on differential's tolerance;
+    ``tests/acceptance/diff_addon.py`` names the case that does."""
     import scipy.sparse as sp
     band = np.zeros(len(TV), bool)
     if steps <= 0 or matched.all():

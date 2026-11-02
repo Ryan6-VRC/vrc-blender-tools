@@ -68,24 +68,29 @@ def _find_body(meshes):
     return max(cand, key=lambda m: (_world_bbox([m])[1] - _world_bbox([m])[0]).z) if cand else None
 
 
+def _eval_bbox(mesh):
+    """World-space bbox of the depsgraph-evaluated mesh; ``bound_box`` lags a shape
+    key change."""
+    ev = mesh.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    me = ev.to_mesh()
+    ws = [mesh.matrix_world @ v.co for v in me.vertices]
+    ev.to_mesh_clear()
+    return (Vector([min(w[k] for w in ws) for k in range(3)]),
+            Vector([max(w[k] for w in ws) for k in range(3)]))
+
+
 def _dims(mesh):
-    lo, hi = _world_bbox([mesh])
+    lo, hi = _eval_bbox(mesh)
     d = hi - lo
     return d.x, d.y, d.z  # W, D, H  (X=width, Y=depth, Z=height)
 
 
-def _setup_render(out_dir, tag, all_meshes):
+def _setup_render(all_meshes):
     scene = bpy.context.scene
     scene.render.engine = 'BLENDER_WORKBENCH'
     scene.render.resolution_x = 700
     scene.render.resolution_y = 1000
     scene.render.film_transparent = False
-
-    if "VERIFY_Sun" not in bpy.data.objects:
-        sd = bpy.data.lights.new("VERIFY_Sun", 'SUN')
-        sun = bpy.data.objects.new("VERIFY_Sun", sd)
-        bpy.context.collection.objects.link(sun)
-        sun.rotation_euler = (0.6, 0.1, 0.3)
 
     lo, hi = _world_bbox(all_meshes)
     center = (lo + hi) * 0.5
@@ -111,7 +116,7 @@ def _render_view(scene, cam, center, loc, out_path):
 
 
 def _render_pair(out_dir, prefix, all_meshes):
-    scene, cam, center = _setup_render(out_dir, prefix, all_meshes)
+    scene, cam, center = _setup_render(all_meshes)
     r = 4.0
     front = _render_view(scene, cam, center, (center.x, center.y - r, center.z),
                          os.path.join(out_dir, prefix + "_front.png"))

@@ -300,6 +300,9 @@ def _print_geometry(geometry, repair):
 def main():
     args = _parse_args()
     import bpy
+    if not os.path.isfile(args.edge):
+        print("AVATARPREP: ERROR --edge %r is not a file" % args.edge)
+        sys.exit(2)
     repair = open_blend(args.in_path, writes=not args.whatif,
                         force_load_repair=args.force_load_repair)
     enable_avatarprep()

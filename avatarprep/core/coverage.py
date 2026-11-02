@@ -45,6 +45,8 @@ import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
+from . import scene_utils
+
 REASONS = ("unweighted", "swings", "escaped")
 
 
@@ -400,7 +402,7 @@ def _measure(body, garments, dg, kinship, cone_deg, share, reach, ring_deg,
     return {
         "body": body.name,
         "body_mesh": body.data.name,
-        "body_library": body.data.library.filepath if body.data.library else None,
+        "body_library": scene_utils.library_path(body.data),
         "vertex_count": n,
         "basis_hash": b_hash,
         "triangles": tri_count(range(len(polys))),

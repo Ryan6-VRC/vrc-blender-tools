@@ -51,8 +51,7 @@ def _parse_args():
                         "this under the key (default 1.0)")
     p.add_argument("--smooth", type=int, default=0, metavar="N",
                    help="Laplacian-smooth each transferred displacement N times over the garment's "
-                        "edges, inside the footprint: softens a band that buckles where the seat "
-                        "crosses a fold, at a small cost in gap fidelity (default 0)")
+                        "edges, inside the footprint (default 0)")
     p.add_argument("--heal-mm", dest="heal_mm", type=float, default=20.0,
                    help="Around an edge the mapping tears (its ends move apart by more than the "
                         "edge is long: a bridge between the breasts, a hem across the crease) "

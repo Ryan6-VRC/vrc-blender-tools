@@ -131,8 +131,9 @@ def body_weights(v, tag):
 
 
 def build(tail=False):
-    """Build the scene; returns ``{"body", "body_rig", "garment", "garment_rig", "tags"}``
-    where ``tags`` names each garment vertex's island (plus ``tail_cover`` with ``tail``)."""
+    """Build the scene; returns ``{"body", "body_rig", "garment", "garment_rig", "tags", "four"}``
+    where ``tags`` names each garment vertex's island and ``four`` is the garment vertex
+    weighted on all four Flap bones (plus ``tail_cover`` with ``tail``)."""
     clear()
     bones = BODY_BONES + (TAIL_BONE if tail else [])
     body_rig = armature("BodyRig", bones)

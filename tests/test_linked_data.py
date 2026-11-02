@@ -230,7 +230,7 @@ def main():
           "--shapekeys line for an unstamped override head must carry data-linked=, got %r" % line)
     exc, written = _export(own, tmp, "override_unit")
     check(exc is None and written,
-          "unit-scale override head must export (the narrowed refusal): %r" % exc)
+          "unit-scale override head must export: %r" % exc)
     own.scale = (2.0, 2.0, 2.0)
     exc, written = _export(own, tmp, "override_reached")
     check(isinstance(exc, ValueError) and "library data" in str(exc),

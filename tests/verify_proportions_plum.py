@@ -33,7 +33,7 @@ def _parse_args():
     p.add_argument("--fbx", required=True)
     p.add_argument("--ref", required=True)
     p.add_argument("--p1", required=True, help="plum-to-chiffon edge")
-    p.add_argument("--p2", required=True, help="chiffon-to-custom_chiffon edge")
+    p.add_argument("--p2", required=True, help="custom_chiffon edge")
     p.add_argument("--out", required=True)
     return p.parse_args(argv)
 
@@ -151,7 +151,7 @@ def main():
     print("VERIFY: vendor Plum armature=%r body mesh=%r (bones=%d)"
           % (arm.name, body.name, len(arm.data.bones)))
 
-    for tag, prof in (("plum-to-chiffon", args.p1), ("chiffon-to-custom_chiffon", args.p2)):
+    for tag, prof in (("plum-to-chiffon", args.p1), ("custom_chiffon", args.p2)):
         rep = proportions.apply_proportion_edge(arm, meshes, os.path.abspath(prof))
         print("VERIFY: applied %-16s -> state=%r scales=%d bakes=%d shapekeys=%d"
               % (tag, rep["state"], rep["scales_applied"], len(rep["bakes"]),
@@ -246,13 +246,14 @@ def main():
                   % max_spread)
 
     pick = focus if focus else common
-    stats, rows = _delta_stats(pick)
-    rows.sort(key=lambda r: -r[1].length)
     print("-" * 70)
-    print("VERIFY: worst-offset bones (focus set):")
-    for n, d in rows[:12]:
-        print("VERIFY:   %-16s d=(%+.4f,%+.4f,%+.4f) |%.4f| m"
-              % (n, d.x, d.y, d.z, d.length))
+    if pick:
+        stats, rows = _delta_stats(pick)
+        rows.sort(key=lambda r: -r[1].length)
+        print("VERIFY: worst-offset bones (%s set):" % ("focus" if focus else "common"))
+        for n, d in rows[:12]:
+            print("VERIFY:   %-16s d=(%+.4f,%+.4f,%+.4f) |%.4f| m"
+                  % (n, d.x, d.y, d.z, d.length))
 
     print("-" * 70)
     def pct(a, b):

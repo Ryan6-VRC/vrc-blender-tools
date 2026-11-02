@@ -223,7 +223,7 @@ def test_kin_and_fold():
     check(_measure(body, [tube], kin=0)["covered_triangles"] > 0, "kin 0 works unrigged")
 
 
-def test_shapes_on_stand_in():
+def test_shapes_on_body():
     from avatarprep.core import coverage
     body, tube = _scene()
     body.shape_key_add(name="Basis", from_mix=False)
@@ -478,7 +478,7 @@ def main():
     test_farther_comoving_garment_covers()
     test_non_bone_groups_do_not_skin()
     test_kin_and_fold()
-    test_shapes_on_stand_in()
+    test_shapes_on_body()
     test_polygon_carrier_keeps_uncovered_corner()
     test_residue_strip()
     test_cut_shape_exclusion_and_unknown()

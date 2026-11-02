@@ -518,7 +518,7 @@ def test_export_constrained_candidate_refuses():
           "got %r" % raised)
 
 
-def test_export_sole_parented_candidate_still_exports():
+def test_export_parented_no_own_rotation_still_exports():
     """One armature with no rotation of its own under a rotated EMPTY must still
     export, not be swept up by the parented-armature refusal."""
     import tempfile
@@ -758,6 +758,8 @@ def test_merge_differing_rotations_warns():
           "(warnings: %r)" % warns)
     check("rotations differ by 90.0" in warns,
           "warning did not name the true rotation gap (warnings: %r)" % warns)
+    check("'Armature.Out'" in warns,
+          "warning did not name the stranded rig (warnings: %r)" % warns)
     check("Align the origins" not in warns,
           "warning still offers the unfollowable align-the-origins remedy "
           "(warnings: %r)" % warns)
@@ -859,7 +861,7 @@ def main():
 
     test_export_parented_gate_sees_non_euler_rotation_modes()
     test_export_constrained_candidate_refuses()
-    test_export_sole_parented_candidate_still_exports()
+    test_export_parented_no_own_rotation_still_exports()
     test_export_multi_rig_refuses()
     test_export_scoped_from_two_armature_scene_exports()
 

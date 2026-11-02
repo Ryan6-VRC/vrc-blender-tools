@@ -104,6 +104,18 @@ def test_refusals():
         other.collection.objects.link(ob)
     refuses({"Face": "Elsewhere"}, "already held",
             "target held by an object in ANOTHER scene", add_other_scene_object)
+    refuses({"Keep": "Kept", "Face": "x" * 300}, "bytes", "target over the name limit, beside a valid pair")
+
+
+def test_cycle_of_long_names():
+    """The temp name that breaks a cycle must fit the name limit whatever it replaces."""
+    from avatarprep.core.rename_objects import rename_objects
+    _fresh()
+    a, b = "a" * 250, "b" * 250
+    _mesh(a)
+    _mesh(b)
+    res = rename_objects({a: b, b: a})
+    check(res["renamed"] == {a: b, b: a}, "a cycle of long names should land, got %s" % res["renamed"])
 
 
 def test_datablock_name_untouched():
@@ -218,6 +230,7 @@ def main():
     test_set_swap()
     test_cycle()
     test_refusals()
+    test_cycle_of_long_names()
     test_datablock_name_untouched()
     test_whatif_matches_and_touches_nothing()
     test_cli_grammar_refusals()

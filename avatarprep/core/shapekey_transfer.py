@@ -529,6 +529,7 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                         for i, bm in enumerate(basis_move):
                             if bm.length > 0:
                                 kb.data[i].co = Mi @ ((t.matrix_world @ Vector(kb.data[i].co)) + bm)
+                if moved or fold:
                     bmap = dict(target_baked[t.name])
                     for k, amt in fold.items():
                         cum = bmap.get(k, 0.0) + amt

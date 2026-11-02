@@ -13,8 +13,8 @@ def enable_avatarprep():
     import avatarprep
     try:
         avatarprep.register()
-    except Exception:
-        # Already registered in this session; fine.
+    except ValueError:
+        # register_class raises ValueError on a repeat; any other failure propagates.
         pass
     return avatarprep
 
