@@ -693,11 +693,6 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
             "stubs": stubs, "effective_edge": edge}
 
 
-def apply_local_scale(pose_bone, value) -> None:
-    """Bone-local scale of one bone. Mirror-symmetric across .L/.R."""
-    pose_bone.scale = mathutils.Vector((value[0], value[1], value[2]))
-
-
 _NO_INHERIT_MODES = ('NONE', 'NONE_LEGACY')
 
 

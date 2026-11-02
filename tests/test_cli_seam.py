@@ -415,6 +415,17 @@ def test_weights_without_deps(tmp):
         _fail("transfer_weights without deps should FAIL naming tools/provision_deps.py\n%s" % out)
 
 
+def test_apply_pose_no_armature(tmp):
+    """No armature is an in-grammar ERROR at exit 2, the shared ``resolve_arm`` rule."""
+    scene = os.path.join(tmp, "no_armature.blend")
+    _clear_scene()
+    _save_scene(scene)
+    rc, out = _run_cli("apply_pose.py", ["--in", scene, "--out", os.path.join(tmp, "unwritten.blend")])
+    if rc != 2 or "ERROR no armature found" not in out:
+        _fail("apply_pose with no armature: expected exit 2 and ERROR, got %d
+%s" % (rc, out))
+
+
 def test_edge_missing_file(tmp):
     """A missing --edge path is one in-grammar ERROR at exit 2, not a crash traceback."""
     scene = os.path.join(tmp, "edge_missing.blend")
@@ -459,6 +470,7 @@ def main():
         test_prune_whatif(tmp)
         test_prune_refuses_on_bone_parented(tmp)
         test_whatif_rejects_out(tmp)
+        test_apply_pose_no_armature(tmp)
         test_edge_missing_file(tmp)
         test_enable_avatarprep_propagates(tmp)
     if FAILURES:

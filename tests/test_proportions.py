@@ -177,8 +177,7 @@ def test_local_scale():
     bpy.context.view_layer.objects.active = arm
     arm.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')
-    P.apply_local_scale(arm.pose.bones["UpperLeg.L"], [1.0, 1.5, 1.0])
-    P.apply_local_scale(arm.pose.bones["UpperLeg.R"], [1.0, 1.5, 1.0])
+    P.apply_local_scale_op([arm.pose.bones["UpperLeg.L"], arm.pose.bones["UpperLeg.R"]], [1.0, 1.5, 1.0])
     bpy.context.view_layer.update()
     check(abs(arm.pose.bones["UpperLeg.L"].scale.y - 1.5) < 1e-6, "L scale.y should be 1.5")
     check(abs(arm.pose.bones["UpperLeg.R"].scale.y - 1.5) < 1e-6, "R scale.y should be 1.5")
