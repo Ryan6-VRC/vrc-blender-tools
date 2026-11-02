@@ -528,8 +528,9 @@ def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: b
     carrier vertex displaced ``delta`` along its inverted normal so the consumer's
     threshold catches it. Refuses a vertex-count or basis-hash
     mismatch against the measurement; ``add_key`` owns the rest of the writer's rules."""
-    if not me.is_editable or me.library is not None:
-        raise CoverageError("%s is library data and cannot take a shape key" % me.name)
+    if not scene_utils.is_editable(me):
+        raise CoverageError("%s is library or override data and cannot take a shape key; a key "
+                            "written on an override mesh is lost on reload" % me.name)
     if len(me.vertices) != result["vertex_count"]:
         raise CoverageError("%s has %d vertices, the measured body %d: re-run the mark"
                             % (me.name, len(me.vertices), result["vertex_count"]))
@@ -547,8 +548,9 @@ def check_key(ob, shape_name: str, *, replace: bool = False):
     """The writer's refusals, read-only, so a preview refuses what the write would. Returns
     the existing key block or ``None``."""
     me = ob.data
-    if not me.is_editable or me.library is not None:
-        raise CoverageError("%s is library data and cannot take a shape key" % me.name)
+    if not scene_utils.is_editable(me):
+        raise CoverageError("%s is library or override data and cannot take a shape key; a key "
+                            "written on an override mesh is lost on reload" % me.name)
     if me.shape_keys is None:
         if shape_name == "Basis":
             raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, ob.name))

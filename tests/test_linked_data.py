@@ -262,6 +262,20 @@ def main():
     except Exception as e:  # noqa: BLE001
         check(False, "wrong exception on override-armature prune: %r" % e)
 
+    # ── 4b. Override MESH: Blender drops a key written on one at reload ──────
+    from avatarprep.core import coverage
+    _fresh_with_local()
+    (ref_body,) = _link_objects(lib, ["RefBody"])
+    ov_body = ref_body.override_create(remap_local_usages=True)
+    ov_body.data.override_create(remap_local_usages=True)
+    check(ov_body.data.override_library is not None and ov_body.data.is_editable,
+          "fixture: override mesh reads ID.is_editable True")
+    try:
+        coverage.check_key(ov_body, "Cover")
+        check(False, "the carrier writer must refuse an override mesh")
+    except coverage.CoverageError:
+        pass
+
     # ── 5. Shared local data: refused only when a bake reaches it ────────────
     own, own_mesh = _fresh_with_local()
     twin = _make_mesh("ZOwnTwin", own, bone="Root", data=own_mesh.data)
