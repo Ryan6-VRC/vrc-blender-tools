@@ -2,8 +2,7 @@
 
 A *proportion edge* (JSON) maps one named proportion state to another. This
 module loads/validates an edge and applies it to the scene armature + meshes,
-baking shape-key-safely via rest_pose.apply_pose. Pure bpy: no
-bpy.types.Operator, no UI.
+baking shape-key-safely via rest_pose.apply_pose.
 
 An edge applies in stage order: ``object`` (a posed transform, baked), ``scales``
 (``no_inherit_scale`` then the per-bone scales, posed and baked), ``moves`` (rest-pose
@@ -153,16 +152,11 @@ def _load_move(op, i, origin, moved, staged):
       bone's parent is never touched.
 
     Roll is held as a value, and no weight changes. Any connection the result breaks (a
-    head left off its parent's tail) is cleared and reported. A world delta is the same
-    vector on both sides, so a mirrored ``.L``/``.R`` pair shares an op only when its X
-    component is 0.
+    head left off its parent's tail) is cleared and reported.
 
     ``from`` (optional) maps a named bone to the world point its head must sit within
-    ``MOVE_FROM_TOL`` of before the move, which is what stops a same-state edge (one a
-    state guard cannot refuse a second time) applying twice. It is checked on the rig as
-    found, so it refuses in an edge with an ``object`` or ``scales`` block, on a bone an
-    earlier move names, and on a move no longer than twice the tolerance, which a second
-    application would still pass."""
+    ``MOVE_FROM_TOL`` of before the move, which stops a same-state edge (one a state guard
+    cannot refuse a second time) applying twice."""
     where = "moves[%d]" % i
     if not isinstance(op, dict):
         raise EdgeError("edge %s: %s must be a mapping, got %r" % (origin, where, type(op).__name__))
@@ -218,8 +212,8 @@ STUB_TOL = 1e-3  # m: how far a stub's parent head may sit from the same bone's 
 
 
 def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -> Dict[str, Any]:
-    """The edge as it will apply to this rig: the one answer validate, apply and the
-    ``--whatif`` geometry report all read, so what is checked is what is applied.
+    """The edge as it will apply to this rig; validate, apply and the ``--whatif`` geometry
+    report all read it.
 
     Returns ``{"edge", "dropped", "refused"}``. ``edge`` is a copy whose ops carry
     ``index``, their position in the source edge. Under ``absent_bones="refuse"`` it is
@@ -233,8 +227,7 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
     - an op whose bones are all absent is dropped;
     - a ``space="local"``, ``pivot="individual"`` op applies to its present bones;
     - a ``moves`` op applies to its present bones, under ``"stub"`` too: a move is
-      per-bone, and a stub is removed after the apply, so there is nothing to stub (a rig
-      with no legs takes a knee move as a no-op);
+      per-bone, and a stub is removed after the apply, so there is nothing to stub;
     - any other partly-absent op is kept whole, so it still offends: a median pivot and
       a normal frame are computed over the whole bone set, and a subset moves the bones
       it keeps differently from the body;
@@ -276,8 +269,6 @@ def effective_edge(armature, edge, bone_overrides=None, absent_bones="refuse") -
             return False
         return True
 
-    # A move is per-bone whatever its policy, so an absent bone leaves it under drop and
-    # under stub alike: a stub is removed after the apply, so moving one moves nothing.
     kept_moves = []
     for op in out["moves"]:
         gone = [b for b in op["bones"] if absent(b)]
@@ -352,12 +343,7 @@ def plan_stubs(armature, edge, reference, bone_overrides=None) -> Dict[str, Any]
     Returns ``{"stubs": [{"name", "reference_bone", "parent"}], "offenders": [...]}``, the
     stubs ordered parents first. A stub is non-deforming and only ever a leaf or a parent of
     other stubs, so no bone the rig carries changes parent; what it gives the apply is the
-    bone set a median pivot or a normal frame is computed over. Two shapes refuse, because a
-    stub would not stand in for the bone there: an absent bone with a descendant the rig
-    carries (a leaf stub scales nothing below it, so ``drop``, or a ``--bone-override`` naming
-    the rig's own spelling, is the fix), and a stub whose parent's head sits more than
-    ``STUB_TOL`` from the same bone's head on the reference (the stub sits where the
-    reference's bone rests, so the rig must coincide with the reference there)."""
+    bone set a median pivot or a normal frame is computed over."""
     bone_overrides = bone_overrides or {}
     offenders: List[str] = []
     rig = {b.name for b in armature.data.bones}
@@ -476,11 +462,9 @@ def _effective_shapekeys(edge, shapekey_overrides):
 
 def _validate_moves(armature, edge, bone_overrides, offenders, warnings) -> None:
     """The ``moves`` checks. Lengths and connections are judged on a simulation of every
-    op in order, over every point an op changes (the named bones, a followed subtree, a
-    dragged parent's tail), so two ops that each pass alone cannot collapse a bone
-    between them. The simulation starts from the rig as found: an edge whose earlier
-    stages reshape the rig makes its lengths an estimate, and ``from`` refuses in such
-    an edge at load. Absent bones are left to the bone-not-found check."""
+    op in order, so two ops that each pass alone cannot collapse a bone between them. The
+    simulation starts from the rig as found, so an edge whose earlier stages reshape the
+    rig makes its lengths an estimate."""
     A = armature.matrix_world
     bones = armature.data.bones
     pts = {b.name: [A @ b.head_local, A @ b.tail_local] for b in bones}
@@ -572,10 +556,7 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
     "effective_edge": {...}}`` — offenders are hard blockers (missing bones/shapekeys,
     state mismatch) named for the fix; warnings are softer. Bones are checked on
     ``effective_edge`` (see that function for ``absent_bones``), which is what an apply
-    would scale.
-    apply_proportion_edge calls this and aborts on offenders. Faces: pure core
-    (agent/MCP) + the ``apply_proportion_edge --whatif`` headless CLI; no operator/UI
-    by design — it is an agent-side gate, not a human N-panel button.
+    would scale. apply_proportion_edge calls this and aborts on offenders.
     """
     bone_overrides = bone_overrides or {}
     shapekey_overrides = shapekey_overrides or {}
@@ -592,11 +573,8 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
         planned = plan_stubs(armature, edge, reference, bone_overrides)
         offenders.extend(planned["offenders"])
         stubs = planned["stubs"]
-    # a planned stub counts as present: the apply adds it before the first op reads it
     bone_names = rig_bones | {st["name"] for st in stubs}
 
-    # An object transform is applied via the sole root bone (see pose_object_transform);
-    # check the count here so a multi-/no-root rig fails before any mutation.
     if edge["object"]:
         roots = [b.name for b in armature.data.bones if b.parent is None]
         if len(roots) != 1:
@@ -613,12 +591,10 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
         offenders.append("state corrupt: avatarprep_state is not a string (%r)" % raw)
     elif kind == "absent":
         warnings.append("armature has no avatarprep_state stamp; assuming source=%r" % expected)
-    elif raw != expected:                       # exact match — no vendor-wildcard
+    elif raw != expected:
         offenders.append("state mismatch: armature is %r but edge expects source %r"
                          % (raw, expected))
 
-    # Base-family gate (exact). stamp_base must have seeded a lineage matching source_base;
-    # an edge only transitions an already-asserted base, so absent is an offender, not a warn.
     base_raw = scene_utils.read_stamp(armature, scene_utils.STAMP_BASE)
     if base_raw is None:
         offenders.append("base absent: stamp_base the armature's lineage before apply "
@@ -670,22 +646,11 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
             if rb in rig_bones:
                 hb = armature.data.bones[lb].head_local
                 hr = armature.data.bones[rb].head_local
-                # 1e-4 is ABSOLUTE and head_local is armature-local, whose
-                # magnitude is set by the source file's unit class: a cm-unit
-                # import (42 of 131 vendor files) runs ~100x larger, making this
-                # ~100x stricter there for the same physical asymmetry. Left
-                # alone deliberately, and NOT because the margin is comfortable —
-                # scaling a real meter-unit rig's chain deviations into cm-unit
-                # puts several within 4x of this threshold.
-                #
-                # It holds because of WHICH bones reach here: only those an
-                # edge's ``scales`` ops name (``present``, above), which are
-                # humanoid body bones. The dense skirt/hair/ribbon chains where
-                # near-threshold deviations actually live are never inspected.
-                # Measured on real rigs of both classes — cm-unit Chocolat and
-                # meter-unit Shinano each flag exactly one pair, both genuine
-                # vendor asymmetries that a world-space tolerance would flag too.
-                # Widen an edge to drive chain bones and this needs revisiting.
+                # 1e-4 is absolute and head_local is armature-local, so a cm-unit
+                # import is ~100x stricter here for the same physical asymmetry.
+                # That holds only because ``scales`` ops name humanoid body bones,
+                # never the skirt, hair and ribbon chains where near-threshold
+                # deviations live; an edge that drives chain bones needs this revisited.
                 if abs(hb.x + hr.x) > 1e-4 or abs(hb.y - hr.y) > 1e-4 or abs(hb.z - hr.z) > 1e-4:
                     warnings.append("scales[%d] pair %r/%r not rest-symmetric; mirror-for-free "
                                     "may be wrong" % (i, lb, rb))
@@ -706,7 +671,7 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
     ident = mathutils.Matrix.Identity(4)
     for pb in armature.pose.bones:
         # Tolerant compare: a bake can leave sub-micron float residue on matrix_basis
-        # that an exact != would flag as "posed". Only warn on a real pose.
+        # that an exact != would flag as "posed".
         if max(abs(pb.matrix_basis[r][c] - ident[r][c])
                for r in range(4) for c in range(4)) > 1e-4:
             warnings.append("armature not at rest pose (bone %r posed); ops will compound" % pb.name)
@@ -719,10 +684,7 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
 
     # An unevaluated mesh is an OFFENDER here rather than at the bake. apply_proportion_edge
     # calls rest_pose.apply_pose partway through, where a refusal would land on
-    # half-transformed geometry with the state stamp at its crash sentinel; this gate runs
-    # before the first mutation, so the edge declines cleanly and --whatif reports it
-    # without trialling. rest_pose owns the predicate, the states string, and why it is
-    # that one.
+    # half-transformed geometry with the state stamp at its crash sentinel.
     for name in rest_pose.unevaluated_meshes(meshes):
         offenders.append("mesh %r is not evaluated (%s); the rest-pose bake would write "
                          "it UNDEFORMED" % (name, rest_pose.UNEVALUATED_STATES))
@@ -732,7 +694,7 @@ def validate_proportion_edge(armature, meshes, edge, *, bone_overrides=None,
 
 
 def apply_local_scale(pose_bone, value) -> None:
-    """Bone-local scale (the common per-bone op). Mirror-symmetric across .L/.R."""
+    """Bone-local scale of one bone. Mirror-symmetric across .L/.R."""
     pose_bone.scale = mathutils.Vector((value[0], value[1], value[2]))
 
 
@@ -744,17 +706,12 @@ def apply_local_scale_op(pose_bones, value) -> None:
     every named bone ends at ``value`` relative to what it was, once, however many of its
     ancestors the same op also names.
 
-    Setting each pose scale directly compounds down a chain: a finger's Intermediate
-    inherits its Proximal's 1.02 and adds its own, so one "Fingers Y:1.02" lands 1.02,
-    1.04, 1.06. A hand-made rig measured against that op shows 1.02 on every segment
-    (Blender's resize on a selected chain compensates the selected parent), so the record's
-    language and the reference disagree with the naive apply by up to 0.4 mm at a
-    fingertip. Here a bone divides out the scale it inherits from same-op ancestors,
-    walking up until a bone that does not inherit (``NONE`` or ``NONE_LEGACY``) breaks the
-    chain; an ``AVERAGE`` link passes only Blender's uniform volume-equivalent factor. Component-wise division is exact where the chain's axes align (finger and
-    breast chains); a bent chain under a non-uniform value is an approximation, as it is
-    in Blender. Only ancestors in *this* op compensate: separate ops compound, as separate
-    manual resizes do."""
+    Setting each pose scale directly compounds down a chain: one "Fingers Y:1.02" lands
+    1.02, 1.04, 1.06, where Blender's resize on a selected chain compensates the selected
+    parent. Here a bone divides out the scale it inherits from same-op ancestors, walking
+    up until a bone that does not inherit breaks the chain. A bent chain under a non-uniform
+    value is an approximation, as it is in Blender. Only ancestors in *this* op compensate:
+    separate ops compound, as separate manual resizes do."""
     named = {pb.name for pb in pose_bones}
     for pb in pose_bones:
         # Links from this bone up to its nearest same-op ancestor, each carrying the mode
@@ -793,8 +750,7 @@ def _averaged_frame(armature, pose_bones) -> mathutils.Matrix:
 
     Falls back to the first bone's frame when the average is near-singular — for a
     mirror-opposed L/R pair the summed orientation can collapse toward rank-1, where
-    ``to_quaternion()`` would return garbage. (Same-oriented pairs, the common case,
-    average cleanly; this only guards the degenerate one.)"""
+    ``to_quaternion()`` would return garbage."""
     A3 = armature.matrix_world.to_3x3()
     acc = mathutils.Matrix(((0, 0, 0), (0, 0, 0), (0, 0, 0)))
     for pb in pose_bones:
@@ -829,30 +785,18 @@ def apply_framed_scale(armature, pose_bones, value, *, space="normal", pivot="me
 
 
 def _world_bbox_center(meshes) -> mathutils.Vector:
-    """Centre of the meshes' combined world bounding box.
-
-    This is the pivot ``pose_object_transform`` scales real geometry about, so an
-    approximate answer here MOVES the avatar — which is why it reads
-    ``measure._world_bounds`` (that module's docstring owns why ``bound_box``, what this
-    used to read, cannot serve a pivot, and why an unevaluated mesh is measured there
-    rather than skipped).
+    """Centre of the meshes' combined world bounding box, the pivot
+    ``pose_object_transform`` scales real geometry about.
 
     Refuses on an unevaluated mesh, where the measuring doors only report: a pivot
-    returns one vector that moves the avatar, and its error is unbounded — the stale
-    transform is arbitrary. ``apply_proportion_edge``'s preflight refuses on the same
-    predicate before reaching here, so this is unreachable on every shipped path; it is
-    here so a second caller cannot inherit the trap by omission, on a core surface built
-    to be called directly.
+    returns one vector that moves the avatar. ``apply_proportion_edge``'s preflight
+    refuses on the same predicate first, so this is unreachable on shipped paths and
+    guards a second caller.
 
-    A mesh contributing no EVALUATED geometry is the other case and is skipped, not
-    refused: an empty mesh has no bounds, and counting its origin is the ``bound_box``
-    bug. A set of only such meshes has no centre — it must raise rather than return an
-    origin that looks like an answer. An empty mesh that is also hidden is unevaluated
-    first and refuses, matching the upstream preflight."""
+    A mesh with no evaluated geometry is skipped, not refused:
+    an empty mesh has no bounds."""
     b = measure._world_bounds(meshes)
-    # Before the emptiness raise below, which cannot catch this: an unevaluated mesh
-    # still yields real (stale) bounds, so nothing further down would ever fire and the
-    # caller would get a confident wrong pivot.
+    # Before the emptiness raise below: an unevaluated mesh still yields real, stale bounds.
     if b["unevaluated"]:
         raise EdgeError("object transform: bbox_center pivot would be measured off "
                         "unevaluated geometry and a stale transform. Mesh(es) not "
@@ -934,8 +878,7 @@ def _set_no_inherit_scale(armature, bone_names):
 
 def apply_moves(armature, moves, bone_overrides=None) -> List[Dict[str, Any]]:
     """Apply validated ``moves`` ops (``_load_move`` owns their meaning) to the rig's rest,
-    in edit mode, in op order then bone order. The meshes are not touched: a rest edit at
-    rest pose deforms nothing, so a move re-pivots a joint under a mesh that stays put.
+    in edit mode, in op order then bone order.
 
     Every new position is computed from a snapshot taken before the op writes anything,
     because Blender's edit bones drag a connected parent's tail and connected children's
@@ -971,8 +914,7 @@ def apply_moves(armature, moves, bone_overrides=None) -> List[Dict[str, Any]]:
                     rec = _move_bone(ebs[rn], d, op, world)
                     rec["index"] = op["index"]
                     records.append(rec)
-            # Checked here, before the exit rewrites a zero-length bone and clears the
-            # connection onto it. Validation simulates the same writes, so this is a backstop.
+            # A backstop: validation simulates the same writes.
             reported = {n for r in records for n in r["disconnected"]}
             bad = []
             for eb in ebs:
@@ -1036,13 +978,8 @@ def apply_proportion_edge(armature, meshes=None, edge_src=None, *, bone_override
 
     ``stage_hook(name)``, when given, is called at each stage boundary — ``'pre'``,
     then ``'object'`` / ``'scales'`` / ``'moves'`` / ``'shapekeys'`` for the stages
-    this edge actually has. The report's ``moves`` holds ``apply_moves``' per-bone
-    records.
-
-    The hook exists so ``--whatif`` can measure the real transform at each boundary
-    instead of predicting it: a second implementation of this engine, however careful,
-    is a second thing to keep in sync. It observes only — nothing here reads it back,
-    so a hook cannot change what gets applied."""
+    this edge actually has. It observes only: nothing here reads it back. The report's
+    ``moves`` holds ``apply_moves``' per-bone records."""
     if armature is None or armature.type != 'ARMATURE':
         raise EdgeError("apply_proportion_edge requires a valid armature")
     if meshes is None:
@@ -1079,10 +1016,8 @@ def _apply(armature, meshes, edge, report, bone_overrides, shapekey_overrides, s
            stage_hook):
     """The mutating body of ``apply_proportion_edge``, on a validated effective edge."""
 
-    # Mark the rig mid-apply. A value left at this sentinel == a crash between here
-    # and the success stamp below → the geometry is half-transformed.
-    # avatarprep_base is deliberately untouched HERE; it is written only on success,
-    # just before the final state write (base first, state last).
+    # A value left at this sentinel means a crash between here and the success stamp
+    # below, so the geometry is half-transformed.
     scene_utils.write_stamp(armature, scene_utils.STAMP_STATE, scene_utils.STATE_APPLYING)
 
     if stage_hook:

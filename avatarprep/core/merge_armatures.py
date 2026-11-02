@@ -2,16 +2,13 @@
 compatibility report that fails loud on the rename / restructure cases CATS silently
 mishandles (which would produce a doubled skeleton).
 
-Pure ``bpy`` — callable headless. An independent implementation of the union
-bone-merge algorithm (reproduced from the documented behavior, not copied).
+An independent implementation of the union bone-merge algorithm (reproduced from
+the documented behavior, not copied).
 
-``compare_armatures`` reports how two skeletons differ (matched / only-in-base /
-only-in-merge / suspected renames / parent & position mismatches) without mutating
-anything; ``merge_armatures`` unions them by bone name behind that report — refusing
-to run (FAIL verdict, named offenders, scene untouched) on a rename/restructure
-unless the caller resolves it via ``rename_map`` or overrides with ``force``.
-``whatif=True`` runs the same gates for real and returns the predicted verdict with
-the scene untouched (postcheck outcomes are not predicted).
+``compare_armatures`` reports how two skeletons differ without mutating anything;
+``merge_armatures`` unions them by bone name behind that report, refusing to run
+(FAIL verdict, named offenders, scene untouched) on a rename/restructure unless the
+caller resolves it via ``rename_map`` or overrides with ``force``.
 """
 
 import math
@@ -23,10 +20,6 @@ from . import scene_utils
 
 
 def _validate_tols(tol: float, noise_tol: float) -> None:
-    """Both finite and ``0 <= tol <= noise_tol`` — anything else silently
-    inverts the tier's semantics (a loosened ``tol`` above ``noise_tol`` turns
-    passes into offenders and narrows rename co-location; ``noise_tol=inf``
-    waves every positional offender past the destructive merge)."""
     if not (math.isfinite(tol) and math.isfinite(noise_tol)) \
             or tol < 0 or noise_tol < tol:
         raise ValueError("tolerances must be finite with 0 <= tol <= noise_tol, "
@@ -34,10 +27,7 @@ def _validate_tols(tol: float, noise_tol: float) -> None:
 
 
 def _world_heads(arm: bpy.types.Object) -> Dict[str, Any]:
-    """Map bone name -> world-space rest head. ``matrix_world`` folds in the
-    object's own transform, so this is valid before transforms are applied (the
-    one exception, a non-identity parent object, is guarded in ``merge_armatures``).
-    """
+    """Map bone name -> world-space rest head, valid before transforms are applied."""
     mw = arm.matrix_world
     return {b.name: mw @ b.head_local for b in arm.data.bones}
 
@@ -49,13 +39,12 @@ def compare_armatures(base_arm: bpy.types.Object,
     """Read-only diff of two armature skeletons. Mutates nothing.
 
     Two positional thresholds: a matched bone further apart than ``noise_tol``
-    (1 mm) is a ``position_mismatches`` offender (gates the merge); one in
-    ``(tol, noise_tol]`` lands in ``position_noise`` — named in warnings, never
-    an offender. Calibration: our own export/import round-trip is ~1e-7, but two
-    *separately authored* vendor FBXes (outfit vs the base it was built for)
-    carry sub-millimeter rounding (0.000222 measured on the canonical case), so
-    a single strict threshold false-FAILs exactly the compare this tool exists
-    for. Rename co-location uses ``noise_tol`` for the same reason."""
+    (1 mm) is a ``position_mismatches`` offender that gates the merge; one in
+    ``(tol, noise_tol]`` lands in ``position_noise``, named in warnings and never an
+    offender. Two *separately authored* vendor FBXes (an outfit and the base it was
+    built for) carry sub-millimeter rounding (0.000222 measured), so a single strict
+    threshold false-FAILs exactly the compare this tool exists for. Rename
+    co-location uses ``noise_tol`` for the same reason."""
     _validate_tols(tol, noise_tol)
     base_heads = _world_heads(base_arm)
     merge_heads = _world_heads(merge_arm)
@@ -70,8 +59,6 @@ def compare_armatures(base_arm: bpy.types.Object,
     merge_parent = {b.name: (b.parent.name if b.parent else None)
                     for b in merge_arm.data.bones}
 
-    # Suspected renames: an only-in-merge bone co-located (<= noise_tol) with an
-    # only-in-base bone. Nearest-distance, stable secondary sort on base name.
     suspected_renames: List[Dict[str, Any]] = []
     for m in only_in_merge:
         mh = merge_heads[m]
@@ -96,10 +83,6 @@ def compare_armatures(base_arm: bpy.types.Object,
         elif dist > tol:
             position_noise.append({"bone": n, "dist": round(dist, 8)})
 
-    # Stamp dimensions — base identity + proportion state. This per-dimension
-    # (KEY, label) list encodes the gate-vs-advisory choice: base + state feed the
-    # gating offenders; a future advisory-only stamp would append to ``warnings``
-    # instead, so the namespace leaves room without redesign.
     stamp_mismatches: List[Dict[str, Any]] = []
     warnings: List[str] = []
     for key, label in ((scene_utils.STAMP_BASE, "base"),
@@ -200,7 +183,7 @@ def _merge_vgroup(mesh, vg_from, vg_to) -> None:
 
 def _process_vertex_groups(meshes) -> None:
     """Rename ``X.merge`` vertex groups back to ``X`` (or fold into an existing
-    ``X`` twin). In the no-Join-Meshes flow the rename branch normally fires."""
+    ``X`` twin)."""
     for mesh in meshes:
         for vg in list(mesh.vertex_groups):
             if vg.name.endswith('.merge'):
@@ -224,13 +207,8 @@ def _preflight_offenders(base_arm, merge_arm,
         # matrix_world to decide and replay the axis-convention clear: a
         # constraint makes matrix_world depsgraph-derived, so the write does not
         # stick and both the clear and the carry silently do nothing of what they
-        # say. Gated on ``apply_transforms`` because a preflight offender is NOT
-        # force-overridable, and refusing a --skip-apply-transforms merge for a
-        # reason that cannot apply to it would cost the operator their constraint
-        # setup with no escape hatch. The same writes land on bound MESHES, so
-        # they are checked too — guarding only the armatures leaves a constrained
-        # mesh stranded in the vendor frame while both skeletons take the delta,
-        # and the apply bakes that mismatch permanently.
+        # say. Bound meshes take the same writes, and a constrained one stays in
+        # the vendor frame while both skeletons take the delta.
         if apply_transforms:
             constrained = [(arm.name, arm.constraints)] if arm.constraints else []
             constrained += [(m.name, m.constraints)
@@ -266,11 +244,10 @@ def structural_offenders(report) -> List[str]:
 
 
 def stamp_offenders(report) -> List[str]:
-    """One-grammar lines matching the structural ``parent mismatch: …`` shape:
-    ``base mismatch: base=%r merge=%r`` / ``state mismatch: …`` /
-    ``state interrupted: …`` / ``state corrupt: …`` (dimension label + kind).
-    Distinct by design from proportions' edge-relative ``state mismatch:`` — this
-    is the two-rig merge-gate comparison."""
+    """Lines in the structural ``parent mismatch: …`` shape: ``base mismatch:
+    base=%r merge=%r`` / ``state mismatch: …`` / ``state interrupted: …`` /
+    ``state corrupt: …``. ``state mismatch:`` here is the two-rig merge gate, distinct
+    from proportions' edge-relative line of the same prefix."""
     _verb = {"different": "mismatch", "interrupted": "interrupted", "corrupt": "corrupt"}
     out = []
     for r in report["stamp_mismatches"]:
@@ -280,8 +257,7 @@ def stamp_offenders(report) -> List[str]:
 
 
 def report_offenders(report) -> List[str]:
-    """Public name — all offender lines (structural + stamp). Compat CLI/operator
-    report overall PASS/FAIL, so they get both categories."""
+    """All offender lines, structural and stamp."""
     return structural_offenders(report) + stamp_offenders(report)
 
 
@@ -289,37 +265,22 @@ def remedy_lines(report) -> List[str]:
     """Named remedies for offender sets whose fix is not legible from the
     offenders alone. Empty when there is nothing specific to say.
 
-    Today's one case: every only-in-merge bone is a suspected rename of a
-    co-located base bone, with no parent or position mismatch. The offenders name
-    the pairs but nothing names the resolution, and the FAIL reads like skeleton
-    incompatibility when the merge side and the base coincide bone-for-bone —
-    two vendor rigs authored with different separator conventions (``Foot_L`` vs
-    ``Foot.L``) hit this on every bone at once.
-
-    Deliberately NOT a report field: the condition is ``renames == only_in_merge
-    and parent_mismatch == 0 and position_mismatch == 0``, four integers already
-    on the summary line, so a stored boolean would only restate them and bind
-    every consumer to keeping it true. A line-maker instead, like
-    ``structural_offenders`` — every door gets it, the schema gains nothing."""
+    The one case: every only-in-merge bone is a suspected rename of a co-located
+    base bone, with no parent or position mismatch. Two vendor rigs authored with
+    different separator conventions (``Foot_L`` vs ``Foot.L``) hit this on every
+    bone at once, and the FAIL reads like skeleton incompatibility."""
     out: List[str] = []
     renames = report["suspected_renames"]
-    # The base-side uniqueness test is load-bearing, not belt-and-braces:
-    # compare_armatures picks each only-in-merge bone's NEAREST only-in-base
-    # candidate with no injectivity constraint, so two co-located merge bones
-    # (twist/end bones) can both claim one base bone. The counts still match, and
-    # a rename_map built from the pairs would be rejected downstream as "maps
-    # multiple sources to the same target(s)" — a remedy that cannot be followed.
+    # The base-side uniqueness test: compare_armatures picks each only-in-merge
+    # bone's NEAREST only-in-base candidate with no injectivity constraint, so two
+    # co-located merge bones (twist/end bones) can both claim one base bone. The
+    # counts still match, and a rename_map built from the pairs would be rejected
+    # as mapping multiple sources to one target.
     if (renames and not report["parent_mismatches"]
             and not report["position_mismatches"]
             and len(renames) == len(report["only_in_merge"])
             and len({r["base"] for r in renames}) == len(renames)):
         worst = max(r["dist"] for r in renames)
-        # Two deliberate hedges. Scoped to the MERGE side, because only_in_base
-        # may be large (a base body against an outfit's partial rig) and "the
-        # skeletons match" would be false. And "consistent with", because
-        # parent_mismatches is computed only over MATCHED bones — every bone this
-        # line is about is only-in-merge, so its parent has not been compared to
-        # anything yet. The rename re-run is what actually settles that.
         out.append("all %d only-in-merge bones are renames of co-located base "
                    "bones (worst %.2e) — the merge side introduces no bone the "
                    "base lacks positionally, which is consistent with a "
@@ -333,9 +294,8 @@ def remedy_lines(report) -> List[str]:
 
 
 def postcheck_offenders(postcheck) -> List[str]:
-    """Named offender lines from a Phase-5 postcheck dict. Empty on a clean
-    postcheck. Shared by every face so a postcheck FAIL names what's wrong (the
-    scene is half-merged and must not be saved)."""
+    """Named offender lines from a Phase-5 postcheck dict, empty on a clean one. On
+    a postcheck FAIL the scene is half-merged and must not be saved."""
     out: List[str] = []
     for n in postcheck.get("leftover_merge_bones", []):
         out.append("leftover .merge bone: %r" % n)
@@ -361,15 +321,12 @@ def merge_armatures(base_arm: bpy.types.Object,
                     noise_tol: float = 1e-3) -> Dict[str, Any]:
     """Union-merge ``merge_arm`` into ``base_arm`` by bone name. Single-shot and
     destructive — checkpoint (git/save) before calling. ``whatif=True`` stops at the
-    compat gate: preflight + rename_map validation + compat run for real, then the
-    rename_map is rolled back and the predicted verdict returned — scene untouched,
-    no join. See module docstring."""
+    compat gate: preflight, rename_map validation and compat run for real, then the
+    rename_map is rolled back and the predicted verdict returned with the scene
+    untouched; postcheck outcomes are not predicted."""
     _validate_tols(tol, noise_tol)  # before Phase 2 — a raise must precede any mutation
     rename_map = dict(rename_map or {})
 
-    # Same-object base==merge is a catastrophic self-merge (two typos both
-    # falling back to one rig, or --base X --merge X). Guard in core so the CLI,
-    # the operator, AND the execute_blender_code path are all protected at once.
     if base_arm is merge_arm:
         return {"verdict": "FAIL", "reason": "same-armature",
                 "offenders": [base_arm.name], "report": None}
@@ -380,12 +337,10 @@ def merge_armatures(base_arm: bpy.types.Object,
         return {"verdict": "FAIL", "reason": "preflight",
                 "offenders": offenders, "report": None}
 
-    # Validate rename_map BEFORE any mutation: every source must exist, and no
-    # target may collide with a current merge bone. Swaps/chains (target is also
-    # a source) are rejected too — _edit_rename applies pairs in order with no
-    # temp staging, so it can't permute, and a partial rename would break the
-    # "scene untouched on FAIL" rollback. Spec renames always map a merge name to
-    # a base name, never to another merge bone, so this loses no real use case.
+    # Validate rename_map BEFORE any mutation. Swaps/chains (target is also a
+    # source) are rejected too: _edit_rename applies pairs in order with no temp
+    # staging, so it can't permute, and a partial rename would break the "scene
+    # untouched on FAIL" rollback.
     if rename_map:
         merge_bone_names = {b.name for b in merge_arm.data.bones}
         rm_offenders = []
@@ -409,10 +364,8 @@ def merge_armatures(base_arm: bpy.types.Object,
         _edit_rename(merge_arm, applied)
 
     # --- Phase 3: compatibility gate (no destructive mutation yet) ---
-    # Split override: ``force`` overrides STRUCTURAL offenders only (the
-    # safety-critical skeleton-doubling gate); ``force_stamps`` overrides the
-    # advisory STAMP offenders only — so forcing past a harmless base mislabel
-    # cannot silently wave past a real structural mismatch, and vice versa.
+    # ``force`` overrides STRUCTURAL offenders only and ``force_stamps`` STAMP
+    # offenders only, so forcing past one cannot silently wave past the other.
     report = compare_armatures(base_arm, merge_arm, tol=tol, noise_tol=noise_tol)
     structural_fail = (not report["structural_clean"]) and not force
     stamp_fail = (not report["stamp_clean"]) and not force_stamps
@@ -434,8 +387,6 @@ def merge_armatures(base_arm: bpy.types.Object,
     forced_stamp = stamp_offenders(report) if not report["stamp_clean"] else []
 
     if whatif:
-        # Preview ends at the gate. Reaching here means the real call would proceed
-        # to mutate; roll back the rename_map and report that, scene untouched.
         if applied:
             _edit_rename(merge_arm, [(new, old) for old, new in applied])
         return {"verdict": "PASS", "reason": "whatif", "offenders": [],
@@ -445,56 +396,28 @@ def merge_armatures(base_arm: bpy.types.Object,
 
     # --- Phase 4: mutate ---
     if apply_transforms:
-        # What the apply bakes into bone/mesh data is permanent, and the export's
-        # residue gate cannot see it afterwards (the merged rig carries an
-        # identity object rotation either way) — so a wrong frame baked here is
-        # unrecoverable downstream, not merely wrong.
-        #
-        # Which frame is right is clear_axis_convention_rotation's rule, not this
-        # block's: a residue that leaves the up axis fixed is importer residue and
-        # must NOT be baked (clear it first, undo discarded — the apply below
-        # consumes the state); one that MOVES the up axis is the source's up-axis
-        # conversion and MUST be baked, or the merged rig lies down in the .blend.
-        # The helper decides, and this gate only asks whether ONE decision can
-        # serve both rigs — which it can exactly when their world rotations are
-        # equal, whatever their origins.
+        # Which frame is right is clear_axis_convention_rotation's rule (fbx_export's
+        # orientation docstring); the helper decides, and this gate only asks whether
+        # ONE decision can serve both rigs, which it can exactly when their world
+        # rotations are equal.
         bpy.context.view_layer.update()  # matrix_world is stale after direct rotation writes
         # .copy(): matrix_world is a LIVE wrapper and the clear and carry below
         # rewrite both rigs, so an aliased read here would mean something else by
-        # the time the warning uses it. (The shift below happens to survive the
-        # aliasing — delta preserves distance from its own axis, so 2r*sin(t/2)
-        # reads the same either way — but nothing should have to depend on that.)
+        # the time the warning uses it.
         bw, mw = base_arm.matrix_world.copy(), merge_arm.matrix_world.copy()
         bq, mq = bw.to_quaternion(), mw.to_quaternion()
-        # abs(dot), not rotation_difference().angle: quaternions double-cover and
-        # mat3_to_quat flips its sign branch exactly at 180° — the (0,0,-180)
-        # front-axis class this branch exists for. Measured, two rigs whose 3x3s
-        # differ by 1.7e-07 read 360° apart through .angle and miss the gate.
-        # Deliberately looser than the 1e-6 rad it replaces: 1e-9 on 1-|dot| is
-        # ~0.005°, which over a 1 m rig is ~70 µm — an order under the compat
-        # gate's own 1 mm noise_tol, so nothing it admits can matter downstream.
+        # abs(dot), not .angle: the comment at scene_utils._ROT_EQUAL_EPS owns why.
         if scene_utils.rotations_equal(bq, mq):
-            # Equal world rotations, so the helper returns the same verdict for
-            # both rigs. Decide once on the base, then REPLAY its delta onto the
-            # merge rig rather than clearing that rig too: a clear rotates a rig
-            # about its OWN origin, so two rigs with differing origins would be
-            # pulled apart by (I - R^-1)(o_base - o_merge) — the world alignment
-            # the compat gate just certified. One delta keeps them rigid and
-            # still lands both object rotations at identity.
+            # Equal world rotations: decide once on the base and replay its delta
+            # onto the merge rig (apply_world_delta owns why).
             #
             # Seeded with the merge rig's parented meshes: they ride along with
             # the carry below, so the base's clear must not also move the ones it
-            # is modifier-bound to (that lands them at delta**2).
-            # BOTH rigs' descendants, not just the merge rig's. The base's clear
-            # cannot be relied on to record its own deep descendants — it only
-            # walks get_bound_meshes(base_arm), whose parent limb reaches two
-            # levels — so a mesh three levels under the BASE and modifier-bound to
-            # the merge rig rode the base's clear and was then moved again by the
-            # carry below. delta**2, baked permanently by the apply.
+            # is modifier-bound to (that lands them at delta**2). BOTH rigs'
+            # descendants (carried_by_parenting owns why).
             moved: set = (scene_utils.carried_by_parenting(base_arm)
                           | scene_utils.carried_by_parenting(merge_arm))
-            # Surface the helper's verdict: a preserved residue returns an
-            # identity delta, so nothing downstream can infer it happened.
+            # Surface the helper's verdict (its Returns says why).
             status, delta, _undo = scene_utils.clear_axis_convention_rotation(
                 base_arm, moved)
             if status == 'preserved':
@@ -506,11 +429,9 @@ def merge_armatures(base_arm: bpy.types.Object,
                     "docstring)" % (base_arm.name, merge_arm.name))
             elif status == 'cleared':
                 scene_utils.apply_world_delta(merge_arm, delta, moved)
-                # Measure the MERGE rig's origin, not the base's: delta rotates
-                # about the base's origin, so the base's origin is its fixed
-                # point and reads 0.0000 for every input — including the case
-                # this sentence exists to disclose. A rotation displaces
-                # different points by different amounts, so the line names which.
+                # Measure the MERGE rig's origin: delta rotates about the base's
+                # origin, so the base's origin is its fixed point and reads 0.0000
+                # for every input.
                 shift = ((delta @ mw.translation) - mw.translation).length
                 report["warnings"].append(
                     "%r and %r carried an up-axis-preserving object rotation; "
@@ -524,31 +445,23 @@ def merge_armatures(base_arm: bpy.types.Object,
                        base_arm.name, base_arm.name, merge_arm.name, shift))
         else:
             # No pre-clear happens here, so the apply bakes each rig's CURRENT
-            # world frame permanently. Reaching this branch means the rotations
-            # genuinely DIFFER, so no single delta can clear both — the
-            # equal-rotation path above handles every origin arrangement.
+            # world frame permanently, and the rotations differ, so no single delta
+            # can clear both.
             #
             #   * A rig carrying an up-axis-PRESERVING rotation stranded here has
             #     its front-axis residue baked, so the merged rig ships 180° off
             #     its vendor frame under an identity object rotation the export
-            #     gate can no longer see. Measured, and unrecoverable. A re-import
-            #     cannot adjudicate it either — the importer symmetrically undoes
+            #     gate can no longer see. This is unrecoverable, and a re-import
+            #     cannot adjudicate it because the importer symmetrically undoes
             #     the exporter.
-            #   * Rigs whose rotations only MOVE the up axis are baked correctly
-            #     (that is what the equal-rotation branch does deliberately), so
-            #     for them this is a note about which frame was used, not a defect.
+            #   * Rigs whose rotations only MOVE the up axis are baked correctly,
+            #     so for them this is a note about which frame was used, not a
+            #     defect.
             #
-            # Both ``.angle`` reads below are safe, and deliberately left as
-            # ``.angle`` — neither is a recurrence of the double-cover defect the
-            # ``abs(dot)`` gate above exists for. The ``rotation_difference()`` one
-            # CAN come back antipodal (that is exactly the 1.7e-07 case), which is
-            # what the fold on the next line is for, and it feeds a display number
-            # only. The ``matrix_world`` one cannot: measured, sweeping euler-Z
-            # 0-720 deg and five rotation axes 0-720 deg, ``mat3_normalized_to_quat``
-            # never returns w<0 (min +0.0000000, at 540 deg and at (1,1,1)/180 deg),
-            # so ``.angle`` on a matrix-derived quaternion is bounded to [0, pi].
-            # The gate above measured ``rotation_difference`` BETWEEN two matrix
-            # quaternions, which is the different — and genuinely unsafe — thing.
+            # Both ``.angle`` reads below are safe. ``rotation_difference()`` can
+            # come back antipodal, which the fold below handles, and it feeds a
+            # display number only. ``mat3_normalized_to_quat`` never returns w<0, so
+            # ``.angle`` on a matrix-derived quaternion is bounded to [0, pi].
             angle = bq.rotation_difference(mq).angle
             deg = math.degrees(min(angle, 2.0 * math.pi - angle))
             stranded = [a.name for a in (base_arm, merge_arm)
@@ -568,11 +481,7 @@ def merge_armatures(base_arm: bpy.types.Object,
                     "rotations differ by %.1f° — baking the current world frame "
                     "rather than either source's own; verify the merged rig's "
                     "orientation before export" % deg)
-        # Parent-before-child, descendants included — see
-        # ``scene_utils.hierarchy_ordered``. Applying an armature does not push
-        # its transform into a child's data, so a flat armature-then-bound-meshes
-        # walk stranded the value on any intermediate EMPTY, and could not
-        # converge at all where a parent and child carry reciprocal scales.
+        # Parent-before-child, descendants included: ``scene_utils.hierarchy_ordered``.
         for arm in (base_arm, merge_arm):
             # Seeded from the bound set, not the parent tree: a modifier-bound
             # NON-descendant mesh is bound but not a child, and dropping it here
@@ -586,14 +495,12 @@ def merge_armatures(base_arm: bpy.types.Object,
                         for b in merge_arm.data.bones}
     base_bone_names = {b.name for b in base_arm.data.bones}
 
-    # Collision-rename merge bones that share a base name -> '.merge'.
     _edit_rename(merge_arm,
                  [(b.name, b.name + '.merge')
                   for b in list(merge_arm.data.bones)
                   if b.name in base_bone_names])
 
-    # Capture the avatar's meshes (base's + merge's) BEFORE the join, so the
-    # post-merge checks can be scoped to them rather than the whole scene.
+    # Captured BEFORE the join; Phase 5 scopes its checks to these.
     base_meshes = scene_utils.get_bound_meshes(base_arm)
     merge_meshes = scene_utils.get_bound_meshes(merge_arm)
     _join(base_arm, merge_arm)          # merge_arm object is consumed by the join
@@ -602,12 +509,11 @@ def merge_armatures(base_arm: bpy.types.Object,
     # Re-establish parents by stripped name (merge-unique bones attach under base).
     # ``original_parents`` is keyed by merge-bone name, so a surviving BASE copy of
     # a shared bone must be skipped — otherwise force=True (parent-mismatch case)
-    # would rewrite the base hierarchy with the merge's topology. We touch only
-    # merge-unique bones and the soon-deleted '.merge' duplicates.
+    # would rewrite the base hierarchy with the merge's topology.
     with scene_utils.edit_mode(armature) as ebs:
         for b in ebs:
             if b.name in base_bone_names and not b.name.endswith('.merge'):
-                continue  # base's own copy of a shared bone — leave its hierarchy
+                continue
             base_n = b.name[:-6] if b.name.endswith('.merge') else b.name
             pname = original_parents.get(base_n)
             if pname:
@@ -615,7 +521,6 @@ def merge_armatures(base_arm: bpy.types.Object,
                 if p and p != b:
                     b.parent = p
 
-    # Reparent merge meshes onto the unified armature; repoint their modifiers.
     for m in merge_meshes:
         m.parent = armature
         _repair_mesh(m, armature)
@@ -623,20 +528,16 @@ def merge_armatures(base_arm: bpy.types.Object,
     # Rename '.merge' vertex groups back so merge-mesh weights follow base bones.
     _process_vertex_groups(scene_utils.get_bound_meshes(armature))
 
-    # Delete leftover '.merge' bones (merge's duplicates of shared bones).
     with scene_utils.edit_mode(armature) as ebs:
         for b in [eb for eb in ebs if eb.name.endswith('.merge')]:
             ebs.remove(b)
 
-    # Normalize the armature name (invariant: avatar armature is always 'Armature').
     armature.name = "Armature"
     armature.data.name = "Armature"
 
     # --- Phase 5: post-merge verification ---
-    # Scope every object-level check to the AVATAR's own objects (the unified
-    # armature + the meshes that were bound to base/merge going in) — never the
-    # whole scene, so an unrelated prop, camera, or static mesh can't force a
-    # spurious FAIL.
+    # Object-level checks are scoped to the AVATAR's own objects, never the whole
+    # scene, so an unrelated prop, camera, or static mesh can't force a spurious FAIL.
     existing = set(bpy.data.objects)
     avatar_meshes = [m for m in (base_meshes + merge_meshes) if m in existing]
     scene_arms = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
@@ -658,8 +559,6 @@ def merge_armatures(base_arm: bpy.types.Object,
     dup_objects = [n for n in avatar_names
                    if n[-4:-3] == '.' and n[-3:].isdigit() and n[:-4] in avatar_name_set]
     merge_gone = merge_arm not in existing
-    # Every mesh bound going in must still be bound to the unified armature —
-    # using get_bound_meshes' own (parent OR modifier) definition of "bound".
     bound_now = set(scene_utils.get_bound_meshes(armature))
     unbound_meshes = [m.name for m in avatar_meshes if m not in bound_now]
 
@@ -673,10 +572,8 @@ def merge_armatures(base_arm: bpy.types.Object,
         "merge_object_removed": merge_gone,
         "unbound_meshes": unbound_meshes,
     }
-    # ``merge_gone`` + the single-name invariant prove the merge consumed the
-    # merge armature and produced one unified skeleton; ``armatures_in_scene`` is
-    # kept informational rather than gated, so an unrelated scene armature can't
-    # force a spurious FAIL (same scoping rationale as the mesh checks above).
+    # ``armatures_in_scene`` is informational, not gated: an unrelated scene
+    # armature can't force a spurious FAIL.
     ok = (merge_gone and armature.name == "Armature"
           and not leftover_merge and not dup_bones and not dup_vgs
           and not dup_objects and not unbound_meshes)

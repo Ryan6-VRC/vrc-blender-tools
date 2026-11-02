@@ -6,12 +6,10 @@ Run with::
         --python cli/import_fbx.py -- --fbx <in.fbx> --out <out.blend> [--global-scale N] \
         [--fit-reference <base.blend>]
 
-Wraps avatarprep.core.import_fbx (Blender's current importer — never the legacy one,
-which reorients bones ~90deg). Prints the observe_import sanity snapshot.
+Wraps avatarprep.core.import_fbx. Prints the observe_import sanity snapshot.
 
-``--fit-reference`` links the base body the import will be fitted to, as objects by a
-``//``-relative path (``scene_utils.link_fit_reference``): its rig and the meshes it carries,
-in a local collection ``<stem>_ref``. The doors that pick an armature unnamed skip it, so the vendor
+``--fit-reference`` links the base body the import will be fitted to
+(``scene_utils.link_fit_reference``). The doors that pick an armature unnamed skip it, so the vendor
 rig keeps its ``Armature`` name through the edge and the rename, and
 ``apply_proportion_edge --absent-bones stub`` reads its bones.
 
@@ -22,8 +20,6 @@ import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -77,9 +73,7 @@ def main():
              snap["bones"], snap["shapekeys"], snap["height_m"]))
     for m in snap["unparented_meshes"]:
         print("AVATARPREP: WARNING unparented mesh", m)
-    # height_m counts these at their UNDEFORMED shape: the depsgraph will not evaluate
-    # them, and no measure in this repo escapes that. Staying silent would let the height
-    # read as a clean measurement.
+    # height_m counts these at their UNDEFORMED shape: the depsgraph will not evaluate them.
     for m in snap["unevaluated_meshes"]:
         print("AVATARPREP: WARNING mesh not evaluated, measured undeformed:", m)
 

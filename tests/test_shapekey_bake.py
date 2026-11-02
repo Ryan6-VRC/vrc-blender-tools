@@ -1,8 +1,4 @@
-"""Synthetic headless test for avatarprep.core.shapekey_bake, cli/bake_shapekey.py and cli/bake_shapekey_normals.py.
-
-Run: blender --background --factory-startup --python tests/test_shapekey_bake.py
-Prints BAKE_TEST OK / BAKE_TEST FAIL: <reason>.
-"""
+"""Synthetic headless test for avatarprep.core.shapekey_bake, cli/bake_shapekey.py and cli/bake_shapekey_normals.py."""
 import math
 import os
 import subprocess
@@ -63,9 +59,8 @@ def test_bake_moves_basis_and_retains_morph():
     _add_key(ob, "Hip", lambda i, co: co + Vector((0,0,1)) if co.x < 0.5 else co)
     basis = ob.data.shape_keys.key_blocks["Basis"]
     hip = ob.data.shape_keys.key_blocks["Hip"]
-    # The real guarantee: editing Basis drags relative keys uniformly, so the
-    # sibling's relative delta (key.co - basis.co), and thus its effect, is
-    # preserved at EVERY vertex -- including those the bake moves.
+    # Editing Basis drags relative keys uniformly, so the sibling's relative delta
+    # (key.co - basis.co) is preserved at EVERY vertex, including those the bake moves.
     rel_before = [Vector(hip.data[i].co) - Vector(basis.data[i].co)
                   for i in range(len(ob.data.vertices))]
     rep = B.bake_shapekey_to_basis(ob, "Chest", 1.0)
@@ -86,7 +81,7 @@ def test_protect_group_case_insensitive():
     vg = ob.vertex_groups.new(name="Neck")  # capitalized; default arg is "neck"
     vg.add([0,1], 1.0, 'REPLACE')
     me.normals_split_custom_set([(0.0,0.0,1.0)] * len(me.loops))
-    rep = B.bake_shapekey_to_basis(ob, "Chest", 1.0)  # default protect_group="neck"
+    rep = B.bake_shapekey_to_basis(ob, "Chest", 1.0)
     check(rep["protected_loops"] > 0, "case-insensitive protect_group should match 'Neck'")
 
 def test_refuses_head_mesh():
@@ -121,8 +116,6 @@ def test_protected_normals_retained():
           "non-protected loop recomputed away from +Z")
 
 def test_bake_zeros_slider():
-    # The morph's live slider, if left nonzero (proportions.apply_shapekeys sets it),
-    # would add the delta again on top of the now-baked Basis -> double-application.
     # The bake must zero the baked key's slider.
     from avatarprep.core import shapekey_bake as B
     ob = _grid_mesh()
@@ -163,7 +156,7 @@ def test_baked_map_snaps_zero():
     ob = _grid_mesh()
     _add_key(ob, "Chest", lambda i, co: co + Vector((0,0,1)) if co.x > 0.5 else co)
     B.bake_shapekey_to_basis(ob, "Chest", 0.5)
-    rep = B.bake_shapekey_to_basis(ob, "Chest", -0.5)  # cumulative → 0.0
+    rep = B.bake_shapekey_to_basis(ob, "Chest", -0.5)
     cum = rep.get("baked_cumulative")
     check(cum == 0.0, "±-reversal should snap cumulative to exactly 0.0, got %r" % cum)
 
@@ -176,10 +169,9 @@ def test_baked_map_nonmap_raises():
     _add_key(ob, "Chest", lambda i, co: co + Vector((0,0,1)) if co.x > 0.5 else co)
     basis = ob.data.shape_keys.key_blocks["Basis"]
     before = [Vector(basis.data[i].co) for i in range(len(ob.data.vertices))]
-    ob[scene_utils.STAMP_BAKED] = "not-a-map"  # corrupt: a scalar where a map is expected
+    ob[scene_utils.STAMP_BAKED] = "not-a-map"
     expect_raises(lambda: B.bake_shapekey_to_basis(ob, "Chest", 1.0),
                   "not a map", "non-map baked stamp")
-    # Fail-loud ordering: the guard fires BEFORE the fold, so Basis is untouched.
     after = [Vector(basis.data[i].co) for i in range(len(ob.data.vertices))]
     drift = max((after[i] - before[i]).length for i in range(len(before)))
     check(drift < 1e-9, "non-map guard must fire before folding Basis (drift=%g)" % drift)
@@ -295,7 +287,6 @@ def test_bake_shapekey_normals():
     expect_raises(lambda: B.bake_shapekey_normals(ob, "Basis"), "is the basis", "the Basis")
     expect_raises(lambda: B.bake_shapekey_normals(ob, "Dome", fade=(1.0, 0.5)), "two angles", "a reversed fade")
 
-    # a mesh with authored normals keeps them off the footprint
     ob2 = _smooth_grid("Garment2")
     _add_key(ob2, "Dome", _dome)
     _tilt(ob2)

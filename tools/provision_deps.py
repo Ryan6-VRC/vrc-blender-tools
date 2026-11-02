@@ -4,20 +4,15 @@ Run under any Python 3.11+ (no bpy):
 
     python tools/provision_deps.py [--blender <path-to-blender.exe>]
 
-The Blender binary comes from ``--blender`` or the ``BLENDER`` env var, as in
-``tests/run_all.py``. Blender's own bundled interpreter runs pip, so the wheels
-match the ABI the doors run under. Two folders are filled:
+Blender's own bundled interpreter runs pip, so the wheels match the ABI the doors run
+under. Two folders are filled:
 
 * ``avatarprep/wheels/`` - the wheel files ``blender_manifest.toml`` lists, for an
   extension build (``blender --command extension build``).
 * ``deps/`` - those wheels installed with ``--no-deps``, which ``cli/_common.py``'s
   ``ensure_deps()`` appends to ``sys.path`` for the headless doors.
 
-Both are built in temporary folders and swapped in together, only when pip succeeded
-and the downloaded file names equal the manifest's ``wheels`` list, so a failed or
-offline run leaves the previous folders working (``swap_in`` owns how the swap keeps
-that promise when a folder is held open). ``--no-deps`` keeps numpy out: Blender
-bundles its own. The pins below and the manifest's ``wheels`` list move together.
+``--no-deps`` keeps numpy out: Blender bundles its own.
 """
 import argparse
 import glob
@@ -46,12 +41,11 @@ def bundled_python(blender):
 
 def swap_in(pairs):
     """Move each staged ``(new, dest)`` folder into place, all or none. Every existing ``dest``
-    is renamed to ``dest + ASIDE`` before any ``new`` moves, so a folder a running Blender or
-    a scanner holds open fails the swap with nothing replaced; a failure after that moves the
-    placed ``new`` folders back and renames every original home. ``new`` sits on ``dest``'s
-    volume, so each move is a rename. Returns the set-aside folders it could not delete once
-    all are in place. Raises ``OSError`` with every ``dest`` as it was, or ``RuntimeError``
-    naming what the rollback could not restore."""
+    is renamed aside before any ``new`` moves, so a folder a running Blender or a scanner holds
+    open fails the swap with nothing replaced. ``new`` must sit on ``dest``'s volume, so each
+    move is a rename. Returns the set-aside folders it could not delete. Raises ``OSError``
+    with every ``dest`` as it was, or ``RuntimeError`` naming what the rollback could not
+    restore."""
     aside, placed = [], []
     try:
         for _, dest in pairs:

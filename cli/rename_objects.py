@@ -9,14 +9,10 @@ Run:
   blender <in.blend> --background --factory-startup --python cli/rename_objects.py -- \
       --in <in.blend> --whatif --rename OLD=NEW [...] [--report <report.json>]
 
-Renames as a SET, so ``own-base``'s canonical ``Face=Body Body=Body_Base`` swap works
-where a pair-by-pair rename would silently land ``Face`` on ``Body.001``. The report
-carries ``source_map`` ({ourName: sourceName}) — the map the Unity material-copy step
-needs, so it stops being maintained by hand.
+The report carries ``source_map``.
 
-Object names only; the mesh datablock name is left alone. Both decisions, and the
-scan's deliberately scene-wide reach, are justified on
-avatarprep.core.rename_objects.
+Object names only; the mesh datablock name is left alone. The collision scan spans every
+scene; reasons on avatarprep.core.rename_objects.
 
 Exit codes: 0 = renamed (--out saved) · 1 = REFUSED (--out NOT saved) · 2 = ERROR
 (bad --rename grammar, unopenable --in, write failure, --out with --whatif).
@@ -25,8 +21,6 @@ import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -36,12 +30,9 @@ from cli._common import (enable_avatarprep, write_report, open_blend, run_cli,
 
 def _parse_renames(items):
     """Parse repeated ``OLD=NEW`` into a dict, refusing the two grammar errors that
-    ``_common.kv`` would silently absorb.
-
-    ``kv`` is right for its other callers and stays as it is; here a dropped ``=``
-    would become ``{'Body': ''}`` and rename the object to ``Object``, and a repeated
-    OLD would collapse last-wins with one pair vanishing unreported. Both are the
-    caller's mistake and both must fail in grammar, not in geometry."""
+    ``_common.kv`` would silently absorb: a dropped ``=`` would become ``{'Body': ''}``
+    and rename the object to ``Object``, and a repeated OLD would collapse last-wins
+    with one pair vanishing unreported."""
     pairs = {}
     for item in items:
         if "=" not in item:
@@ -68,7 +59,7 @@ def _parse_args():
     p = argparse.ArgumentParser(prog="rename_objects")
     p.add_argument("--in", dest="in_path", required=True,
                    help=".blend holding the objects to rename")
-    p.add_argument("--out", dest="out_path", default=None,   # not required under --whatif
+    p.add_argument("--out", dest="out_path", default=None,
                    help="Where to save the renamed .blend; omit under --whatif")
     p.add_argument("--rename", action="append", default=[], metavar="OLD=NEW",
                    help="Rename object OLD to NEW. Repeatable, and resolved as a SET, "
@@ -121,8 +112,6 @@ def main():
             write_report(args.report, result)
         return
 
-    # Save the deliverable BEFORE the diagnostic report, so a report-write failure
-    # cannot discard a successful rename (prune_bones' ordering, same reason).
     out_path = os.path.abspath(args.out_path)
     try:
         d = os.path.dirname(out_path)

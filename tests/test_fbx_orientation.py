@@ -1,38 +1,19 @@
 """File-level regression oracle for export_unity_fbx's orientation contract.
 
-Run:
-  blender --background --factory-startup --python tests/test_fbx_orientation.py
+Two defects pull in opposite directions (``fbx_export``'s orientation docstring is
+the canon), so a fix for either alone re-breaks the other and this file pins both.
 
-``wm.fbx_import`` represents a source FBX's axis convention as an object rotation
-on the armature, and the exporter re-derives its own -90 X presuming Z-up data.
-Two defects live in that composition and they pull in OPPOSITE directions — this
-file pins both, because a fix for either alone re-breaks the other.
+A re-import cannot see an up-axis-preserving rotation carried through, because the
+importer undoes the exporter, so that oracle parses the written FBX: the armature
+node's ``Lcl Rotation`` must read (-90, 0, 0). The Felis fixture's own identity node
+is not the value to match.
 
-**Carrying an up-axis-PRESERVING rotation through** (Felis parks -180 deg Z)
-double-counts it: the file gains an extra 180 deg and the avatar faces backwards
-in Unity. A Blender re-import CANNOT detect this — the importer symmetrically
-undoes the exporter (measured: identity to ~1e-7 even on the defective export) —
-so the oracle parses the written FBX: the armature node's ``Lcl Rotation`` must be
-pure axis conversion (-90, 0, 0). The Felis fixture encodes the same world layout
-differently, as an identity node in a self-declared Z-up file, so its own node
-rotation is not the value ours must match.
+A re-import does see an up-axis-moving rotation cleared, so that oracle is a
+world-bbox round-trip. That class writes an IDENTITY node rotation, so (-90, 0, 0)
+is not universal.
 
-**Clearing an up-axis-MOVING rotation** (a Y-up source with an identity root node
-parks 90 deg X) double-counts the up-axis conversion instead, and the rig exports
-tipped onto its face — measured on Chocolat as re-import height 1.1992 -> 0.4574 m.
-A re-import DOES see this one, so its oracle is a world-bbox round-trip. That
-class is preserved rather than cleared, so it writes an IDENTITY node rotation:
-(-90, 0, 0) is the up-axis-preserving case's contract, not a universal one.
-
-The gate deciding between them is ``scene_utils.clear_axis_convention_rotation``;
-``fbx_export``'s orientation docstring is the canon.
-
-Scope limit: this oracle sees only the file. The same 180 deg also has a switch
-in the consumer, Unity's per-asset ``bakeAxisConversion``, so a green run here
-does not mean the avatar faces forward in a project. ``fbx_export`` documents
-the polarity; checking it takes a Unity import at a named setting, not a parse.
-
-Prints FBXORIENT_TEST OK / FBXORIENT_TEST FAIL: <reason>.
+Scope limit: this oracle sees only the file, so a green run does not mean the avatar
+faces forward in a project (``fbx_export`` documents the polarity).
 """
 import math
 import os
@@ -161,8 +142,6 @@ def test_merge_path_geometry():
           and _close(rot[2], 0.0),
           "merged export node rotation: %s (want ~(-90,0,0))" % (rot,))
     ymin, ymax = _vertex_y_extremes(out)
-    # Authored local frame: TailM at y=-0.2, BodyM at y=+0.1. A baked park flip
-    # negates both — the exact defect the node rotation cannot show.
     check(abs(ymin - (-0.2)) < 1e-4 and abs(ymax - 0.1) < 1e-4,
           "merge baked the object rotation into geometry: y extremes "
           "%.4f..%.4f (want -0.2..0.1)" % (ymin, ymax))
@@ -218,11 +197,9 @@ def _write_yup_source(path, cm_unit):
     rotation, raw Y-up vertex data. Built by parking the rig at Rx(+90) so the
     exporter's own -90 X cancels to an identity node.
 
-    ``cm_unit`` picks the half of the class: the survey found it split 35 cm-unit
-    to 18 meter-unit, and only the cm half also parks a 0.01 object scale — so
-    both halves are pinned, and neither is described as the class.
-    ``export_unity_fbx`` refuses a non-1 ``scale_length``, so the fixture is
-    written with the raw operator and the scene restored after."""
+    ``cm_unit`` picks the half of the class (``fbx_export``'s scale section), so
+    both are pinned. ``export_unity_fbx`` refuses a non-1 ``scale_length``, so the
+    fixture is written with the raw operator and the scene restored after."""
     from mathutils import Vector
     _clear_scene()
     scene = bpy.context.scene
@@ -269,7 +246,7 @@ def _write_yup_source(path, cm_unit):
 
 def test_yup_source_preserved(cm_unit, scoped):
     """A Y-up source's 90 deg X residue must be PRESERVED, both export doors and
-    both unit halves. Clearing it exports the rig tipped onto its face."""
+    both unit halves."""
     import io
     import contextlib
     import tempfile
@@ -284,24 +261,17 @@ def test_yup_source_preserved(cm_unit, scoped):
     arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
     bpy.context.view_layer.update()
 
-    # Witness precondition: without the 90 deg X park this test exercises nothing.
     park_x = math.degrees(arm.rotation_euler[0])
     check(abs(park_x - 90.0) < 0.5,
           "%s: fixture no longer parks 90 deg X (x=%.2f) — the defect scenario "
           "is gone, re-derive this test" % (label, park_x))
     src_lo, src_hi = _world_bbox()
     src_height = src_hi[2] - src_lo[2]
-    # Both halves import to the SAME world height: the importer normalizes a
-    # cm-unit file into a 0.01 object scale over 100x data, so world space is
-    # unit-agnostic. World height therefore cannot distinguish the halves — the
-    # object scale below is what pins which one this is.
+    # The importer normalizes a cm-unit file into a 0.01 object scale over 100x
+    # data, so world height cannot distinguish the halves; the object scale below does.
     check(src_height > 0.5,
           "%s: source imports at height %.4f, expected upright" % (label, src_height))
 
-    # Pin that the cm half really IS cm — otherwise both halves are the same
-    # fixture wearing different labels and only the meter class is covered. The
-    # 0.01 object scale is the half of the class the survey found paired with a
-    # UnitScaleFactor=1 file; the identity class parks 1.0.
     want_scale = 0.01 if cm_unit else 1.0
     got_scale = arm.matrix_world.to_scale()[0]
     check(abs(got_scale - want_scale) < want_scale * 0.05,
@@ -315,8 +285,7 @@ def test_yup_source_preserved(cm_unit, scoped):
     emitted = buf.getvalue()
 
     # The diagnostic IS the oracle for the silent-preserve failure: the bbox
-    # assertions below stay green with the message deleted, because a preserved
-    # residue returns an identity delta exactly like a rig that never had one.
+    # assertions below stay green with the message deleted.
     check("preserved object rotation" in emitted,
           "%s: export preserved the residue but said nothing (emitted: %r)"
           % (label, emitted.strip()[:200]))
@@ -339,17 +308,13 @@ def test_yup_source_preserved(cm_unit, scoped):
 
 
 def test_merge_path_yup_geometry():
-    """The merge path must BAKE an up-axis-moving rotation, not clear it. Clearing
-    first leaves raw Y-up data under an identity object rotation — the rig lying
-    down in the .blend, where the export's residue gate can no longer see it."""
+    """The merge path must BAKE an up-axis-moving rotation, not clear it."""
     import tempfile
     from avatarprep.core import fbx_export
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
-    # Y-up CONTENT, like the real class: bones authored along +Y, then parked at
-    # Rx(+90) so the rig stands up in Blender. (_parked_rig authors Z-up content,
-    # so parking it 90 X would lay it DOWN — the mirror image of this scenario,
-    # where a bbox assertion can pass on mesh spread rather than on uprightness.)
+    # Y-up content: bones authored along +Y and parked at Rx(+90) so the rig stands
+    # up. Z-up bones parked the same way would lie down, the mirror of this scenario.
     base = _parked_rig("Armature", [("Hips", (0, 1.0, 0), None)],
                        mesh_name="BodyM", mesh_y=0.0, park_z=0.0)
     merge = _parked_rig("Armature.Out",
@@ -361,9 +326,8 @@ def test_merge_path_yup_geometry():
     res = merge_armatures(base, merge)
     check(res["verdict"] == "PASS", "yup merge FAILed: %r" % res.get("offenders"))
     bpy.context.view_layer.update()
-    # Assert on the BONE, not a bbox: after a correct bake the Y-up content has
-    # become Z-up data, so Hips' world head sits up the world Z axis. A wrongly
-    # cleared rotation leaves the raw Y-up data in place, putting it along +Y.
+    # Assert on the bone, not a bbox, which can pass on mesh spread rather than on
+    # uprightness: a wrongly cleared rotation leaves Hips' head along +Y.
     hips = base.data.bones["Hips"]
     head = base.matrix_world @ hips.head_local
     check(abs(head[2] - 1.0) < 1e-3 and abs(head[1]) < 1e-3,
@@ -379,7 +343,7 @@ def test_merge_path_yup_geometry():
 
 
 def _world_heads(arm):
-    """{bone name: world head} — the frame-sensitive quantity the merge moves."""
+    """{bone name: world head}."""
     bpy.context.view_layer.update()
     return {b.name: arm.matrix_world @ b.head_local for b in arm.data.bones}
 
@@ -397,8 +361,8 @@ def _clear_delta(arm):
 
 def _offset_rig(arm, origin):
     """Move ``arm``'s object origin to ``origin`` and compensate its bone and mesh
-    data so world layout is unchanged — the shape a source FBX whose ARMATURE node
-    carries a translation imports as (measured), and the only way into the
+    data so world layout is unchanged: the shape a source FBX whose ARMATURE node
+    carries a translation imports as, and the only way into the
     equal-rotation/differing-origin case with the compat gate still passing."""
     from mathutils import Vector
     bpy.context.view_layer.update()
@@ -412,10 +376,8 @@ def _offset_rig(arm, origin):
         eb.head = eb.head - shift
         eb.tail = eb.tail - shift
     bpy.ops.object.mode_set(mode='OBJECT')
-    # Only PARENTED meshes need compensating: they ride the armature, so the
-    # move has to be cancelled in their data. An unparented modifier-bound mesh
-    # does not ride it at all — touching it here would displace it from the
-    # skeleton, which is the opposite of what this function promises.
+    # Only parented meshes ride the armature, so only their data is compensated;
+    # touching an unparented modifier-bound mesh would displace it from the skeleton.
     for m in [o for o in bpy.data.objects
               if o.type == 'MESH' and o.parent == arm]:
         for v in m.data.vertices:
@@ -426,41 +388,36 @@ def _offset_rig(arm, origin):
 
 def test_merge_differing_origins_keeps_vendor_frame():
     """Two up-axis-PRESERVING rigs whose origins differ must still bake the VENDOR
-    frame. Clearing each rig about its own origin would pull them apart by
-    (I - R^-1)(o_base - o_merge), so the merge replays the base's clear delta onto
-    the merge rig: one rigid map for both.
+    frame.
 
-    The exported-geometry oracle alone cannot police this — measured, a naive
-    per-rig clear writes byte-identical y extremes to the correct fix. The
-    discriminator is that EVERY bone on BOTH rigs lands at delta @ its pre-merge
-    world head; that is true only when one delta moved the whole assembly."""
+    The exported-geometry oracle alone cannot police this: a naive per-rig clear
+    writes byte-identical y extremes to the correct fix. The discriminator is that
+    EVERY bone on BOTH rigs lands at delta @ its pre-merge world head, true only when
+    one delta moved the whole assembly."""
     import tempfile
     from avatarprep.core import fbx_export
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
     base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
-                       mesh_name="BodyM", mesh_y=0.1)          # parks -180 Z
+                       mesh_name="BodyM", mesh_y=0.1)
     merge = _parked_rig("Armature.Out",
                         [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
-                        mesh_name="TailM", mesh_y=-0.2)        # parks -180 Z
-    # An UNPARENTED modifier-bound mesh: without it the whole mesh-carry loop in
-    # apply_world_delta can be deleted and every other assertion here still
-    # passes (measured) — the merge path's counterpart to test_unparented_bound_mesh.
+                        mesh_name="TailM", mesh_y=-0.2)
+    # An unparented modifier-bound mesh: without it the mesh-carry loop in
+    # apply_world_delta can be deleted and every other assertion here still passes.
     tail_mesh = bpy.data.objects["TailM"]
     tail_mesh.parent = None
     tail_mesh.rotation_euler = (0.0, 0.0, math.pi)
     _offset_rig(merge, (0.5, 0.0, 0.0))
 
     pre_base, pre_merge = _world_heads(base), _world_heads(merge)
-    # Preconditions. _parked_rig writes rotation_euler without a depsgraph update,
-    # so a fixture built without one silently ends up 1.0 apart in world space and
-    # the compat gate FAILs on a fixture bug rather than on the code under test.
+    # _parked_rig writes rotation_euler without a depsgraph update; a fixture built
+    # without one ends up 1.0 apart in world space and the compat gate FAILs on it.
     check((base.matrix_world.translation - merge.matrix_world.translation).length > 1e-3,
           "fixture no longer has differing origins — this test exercises nothing")
     for bone, head in pre_base.items():
-        # 1e-5, tighter than the 1e-4 the post-merge assertion demands: a fixture
-        # drifting into the band between them would fail there instead, blaming
-        # the code under test for a fixture defect.
+        # 1e-5, tighter than the post-merge 1e-4, so a drifting fixture fails here
+        # rather than blaming the code under test.
         check((head - pre_merge[bone]).length < 1e-5,
               "fixture bones are not world-aligned (%s: %s vs %s) — the compat "
               "gate would refuse this for a fixture bug, not the defect"
@@ -473,11 +430,8 @@ def test_merge_differing_origins_keeps_vendor_frame():
     check(res["verdict"] == "PASS",
           "differing-origin merge FAILed unforced: %r" % res.get("offenders"))
 
-    # The discriminating assertion: one rigid map moved everything. Shared bone
-    # names are unified into the base's copy by the merge, so iterating the merge
-    # rig's shared names would re-assert the BASE's bone and police nothing —
-    # only merge-ONLY bones carry the merge rig's frame, and the check demands at
-    # least one so a fixture that lost them cannot pass vacuously.
+    # The merge unifies shared bone names into the base's copy, so only merge-only
+    # bones carry the merge rig's frame.
     post = _world_heads(base)
     merge_only = {b: h for b, h in pre_merge.items() if b not in pre_base}
     check(merge_only, "fixture has no merge-only bone — nothing polices the "
@@ -502,10 +456,8 @@ def test_merge_differing_origins_keeps_vendor_frame():
     check("carried by" in warns and repr(merge_name) in warns,
           "the cleared-with-carry warning does not say the merge rig was carried "
           "(warnings: %r)" % warns)
-    # The DISTANCE, not just the sentence: a 180 deg turn about the base's origin
-    # moves this rig's origin the full 1.0 (2 x 0.5). Measuring the base's origin
-    # instead would print 0.0000 here — it is the delta's fixed point — so the
-    # one disclosure of a permanent world-space move would say nothing moved.
+    # A 180 deg turn about the base's origin moves this rig's origin 1.0 (2 x 0.5);
+    # measuring the base's origin would print 0.0000, the delta's fixed point.
     check("moves 'Armature.Out''s origin 1.0000" in warns,
           "the warning does not disclose the true world-space displacement "
           "(want 1.0000; warnings: %r)" % warns)
@@ -513,13 +465,7 @@ def test_merge_differing_origins_keeps_vendor_frame():
 
 def test_export_parented_gate_sees_non_euler_rotation_modes():
     """The parented-armature gate must read the rotation the object actually has,
-    not ``rotation_euler``.
-
-    Those are separate RNA fields. Measured: an armature in QUATERNION mode
-    carrying 180 deg reads ``rotation_euler == (0,0,0)`` while ``matrix_world``
-    reads -180, so a euler-keyed gate calls it unrotated and lets through exactly
-    the parent/object rotation split it declares unjudgeable. AXIS_ANGLE behaves
-    identically."""
+    not ``rotation_euler``."""
     import tempfile
     from avatarprep.core import fbx_export
     from mathutils import Quaternion
@@ -551,11 +497,8 @@ def test_export_parented_gate_sees_non_euler_rotation_modes():
 
 
 def test_export_constrained_candidate_refuses():
-    """A constraint makes matrix_world depsgraph-derived, so the clear's carry
-    does not stick and silently does nothing of what it says. merge_armatures
-    preflights this on its own apply path. check_scale_normalizable does not
-    cover it — that refuses only scale-affecting constraints, and only at a
-    non-unit evaluated scale."""
+    """A constrained candidate refuses: check_scale_normalizable covers only
+    scale-affecting constraints at a non-unit evaluated scale."""
     import tempfile
     from avatarprep.core import fbx_export
     _clear_scene()
@@ -576,9 +519,8 @@ def test_export_constrained_candidate_refuses():
 
 
 def test_export_sole_parented_candidate_still_exports():
-    """The carve-out that keeps item 3's win. One armature under a rotated EMPTY —
-    the cm-unit root-Null shape — has no second rig to disagree with, so it must
-    still export rather than being swept up by the refusal above."""
+    """One armature with no rotation of its own under a rotated EMPTY must still
+    export, not be swept up by the parented-armature refusal."""
     import tempfile
     from avatarprep.core import fbx_export
     _clear_scene()
@@ -602,14 +544,8 @@ def test_export_sole_parented_candidate_still_exports():
 
 
 def test_merge_deep_cross_bound_mesh_moves_once():
-    """The merge path's half of the ride-along seed hole.
-
-    ``merge_armatures`` seeds ``already_moved`` from ``carried_by_parenting`` too,
-    so the same TWO-level reach in get_bound_meshes stranded a mesh buried deeper
-    than that under the merge rig while modifier-bound to the base rig: the base's
-    clear moved it explicitly AND it rode the apply_world_delta carry, landing at
-    delta**2. A mesh bound to NEITHER rig cannot police this — nothing ever moves
-    it explicitly, so such a test passes with the hole wide open."""
+    """A mesh buried past get_bound_meshes' two-level reach under one rig and
+    modifier-bound to the other must move exactly once."""
     from avatarprep.core import scene_utils
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
@@ -619,9 +555,7 @@ def test_merge_deep_cross_bound_mesh_moves_once():
                         [("Hips", (0, 0, 1.0), None), ("Tail", (0, -0.2, 1.0), "Hips")],
                         mesh_name="TailM", mesh_y=-0.2)
     _offset_rig(merge, (0.5, 0.0, 0.0))
-    # BOTH directions. The seed used to come from the merge rig alone, so only the
-    # first of these was covered; the mirror — deep under the BASE, bound to the
-    # MERGE rig — rode the base's clear and was then moved again by the carry.
+    # BOTH directions.
     deep = _deep_cross_bound_mesh("DeepMerge", merge, base, depth=2)
     deep_b = _deep_cross_bound_mesh("DeepBase", base, merge, depth=2)
     for m, under, bound_to in ((deep, merge, base), (deep_b, base, merge)):
@@ -650,8 +584,7 @@ def test_merge_deep_cross_bound_mesh_moves_once():
 
 def _deep_cross_bound_mesh(name, chain_root, modifier_arm, depth=2):
     """A mesh buried ``depth`` EMPTY levels under ``chain_root`` and modifier-bound
-    to ``modifier_arm``. Past get_bound_meshes' TWO-level parent reach, which is
-    what made this shape invisible to the ride-along seed."""
+    to ``modifier_arm``."""
     from mathutils import Vector
     parent = chain_root
     for i in range(depth):
@@ -675,10 +608,7 @@ def _deep_cross_bound_mesh(name, chain_root, modifier_arm, depth=2):
 
 def test_export_multi_rig_refuses():
     """A whole-scene export with two armatures in scope must refuse up front,
-    naming the rigs and all three remedies. The machinery that once served this
-    path is deleted; the refusal is also what stops an appended disposable
-    reference body from silently shipping (own-mergeable's accident, previously
-    only warned about)."""
+    naming the rigs and all three remedies."""
     import tempfile
     from avatarprep.core import fbx_export
     _clear_scene()
@@ -699,10 +629,9 @@ def test_export_multi_rig_refuses():
 
 
 def test_export_scoped_from_two_armature_scene_exports():
-    """The own-mergeable shape: an owned rig beside an appended disposable
-    reference body, exported SCOPED. Scoping pins candidates to the one named
-    rig, so the multi-rig refusal must not fire — and the reference body must
-    stay out of the written file."""
+    """An owned rig beside an appended disposable reference body (the own-mergeable
+    shape), exported scoped: the multi-rig refusal must not fire and the reference
+    body must stay out of the written file."""
     import tempfile
     from avatarprep.core import fbx_export
     _clear_scene()
@@ -721,7 +650,6 @@ def test_export_scoped_from_two_armature_scene_exports():
 
 
 def _model_node_names(path):
-    """Names of every Model node in the written file."""
     from io_scene_fbx import parse_fbx
     root, _ = parse_fbx.parse(path)
     objects = next(e for e in root.elems if e.id == b"Objects")
@@ -754,10 +682,7 @@ def _world_verts(mesh_obj):
 
 
 def test_merge_cross_bound_mesh_moves_once():
-    """A mesh bound to BOTH rigs must be moved by the delta exactly once. Parented
-    to one rig it rides along with that rig; if the other rig's clear or carry also
-    moves it explicitly it lands at delta**2 — measured at 180 deg off the skeleton
-    it is bound to, in both parent/modifier orientations."""
+    """A mesh bound to BOTH rigs must be moved by the delta exactly once."""
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
     base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
@@ -786,8 +711,8 @@ def test_merge_cross_bound_mesh_moves_once():
 
 
 def test_merge_differing_origins_identity_rotation_noop():
-    """The plurality class through the collapsed gate: identity rotations, origins
-    differing. There is no residue to clear, so nothing may move."""
+    """Identity rotations with differing origins have no residue to clear, so nothing
+    may move."""
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
     base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
@@ -810,18 +735,16 @@ def test_merge_differing_origins_identity_rotation_noop():
 
 
 def test_merge_differing_rotations_warns():
-    """The other branch, now reachable ONLY with differing rotations: no single
-    delta clears both rigs, so their frames are baked as they stand and the
-    warning is the only signal that exists. It must name the stranded rig, and its
-    remedy must be one the operator can actually execute — 'align the origins' is
-    not (measured: doing it by hand FAILs the compat gate on the re-run)."""
+    """With differing rotations no single delta clears both rigs, so their frames are
+    baked as they stand and the warning is the only signal. It must not offer 'align
+    the origins': doing that by hand FAILs the compat gate on the re-run."""
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
     base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
-                       mesh_name="BodyM", mesh_y=0.1)              # parks -180 Z
+                       mesh_name="BodyM", mesh_y=0.1)
     # Bones authored in the merge rig's OWN frame (R^-1 @ world target) so the two
-    # rigs are world-aligned despite differing rotations — the gate passes on the
-    # seam and the apply branch is what gets tested, no force needed.
+    # rigs are world-aligned despite differing rotations and the compat gate passes
+    # with no force.
     merge = _parked_rig("Armature.Out",
                         [("Hips", (0, 0, 1.0), None), ("Tail", (-0.2, 0, 1.0), "Hips")],
                         mesh_name="TailM", mesh_y=-0.2, park_z=math.pi / 2)
@@ -841,10 +764,8 @@ def test_merge_differing_rotations_warns():
 
 
 def test_merge_antipodal_quaternion_is_equal_rotation():
-    """Two rigs parked at +180 and -180 Z are the SAME rotation, but their
-    quaternions are antipodal and rotation_difference().angle reads 2*pi — measured
-    on 3x3s differing by 1.7e-07. Keyed on that, the gate misses the very
-    (0,0,-180) front-axis class the clear exists for and bakes it."""
+    """Two rigs parked at +180 and -180 Z are the SAME rotation, so the merge must
+    clear them, not bake."""
     from avatarprep.core.merge_armatures import merge_armatures
     _clear_scene()
     base = _parked_rig("Armature", [("Hips", (0, 0, 1.0), None)],
@@ -874,8 +795,6 @@ def main():
     import_fbx.import_fbx(felis)
     arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
 
-    # Witness precondition: the fixture's import parks a nonzero Z rotation on
-    # the armature object — without it this test exercises nothing.
     park_z = math.degrees(arm.rotation_euler[2])
     check(abs(park_z) > 90.0,
           "fixture no longer parks an object rotation (z=%.2f deg) — "
@@ -883,7 +802,6 @@ def main():
 
     tmp = tempfile.mkdtemp()
 
-    # 1. Default export: node rotation must be pure axis conversion (-90, 0, 0).
     out = os.path.join(tmp, "felis_default.fbx")
     fbx_export.export_unity_fbx(out, armature_obj=arm)
     rot = _armature_node_rotation(out)
@@ -893,13 +811,10 @@ def main():
               "default export carries extra rotation: node rot=%s (want ~(-90,0,0))"
               % (rot,))
 
-    # ...and the scene is left as found (rotation restored after export).
     check(_close(math.degrees(arm.rotation_euler[2]), park_z),
           "export did not restore the armature object rotation")
 
-    # 1b. Geometry oracle: exported vertex data must sit in the VENDOR frame,
-    # not a park-rotated one. The vendor file's own vertex extremes are the
-    # truth; a baked 180° flip negates them.
+    # The vendor file's own vertex extremes are the truth; a baked 180° flip negates them.
     v_ymin, v_ymax = _vertex_y_extremes(felis)
     o_ymin, o_ymax = _vertex_y_extremes(out)
     check(abs(v_ymin - v_ymax) > 5e-3 and abs(abs(v_ymin) - abs(v_ymax)) > 5e-3,
@@ -909,8 +824,8 @@ def main():
           "exported geometry not in the vendor frame: y extremes %.4f..%.4f "
           "(vendor %.4f..%.4f)" % (o_ymin, o_ymax, v_ymin, v_ymax))
 
-    # 2. keep_object_rotation=True preserves the park (the defect stays
-    # representable, so the oracle can tell the two apart).
+    # keep_object_rotation=True preserves the park, so the defect stays representable
+    # and the oracle can tell the two apart.
     out_keep = os.path.join(tmp, "felis_keep.fbx")
     fbx_export.export_unity_fbx(out_keep, armature_obj=arm,
                                 keep_object_rotation=True)
@@ -922,45 +837,26 @@ def main():
               "keep_object_rotation=True produced the same node rotation as the "
               "cleared export (%s) — the flag does nothing" % (rot_keep,))
 
-    # 3. The merge path: merge_armatures(apply_transforms=True) must not bake
-    # the park into data — an import→merge→export flow has an IDENTITY object
-    # rotation at export time, so only geometry can reveal a baked flip.
+    # An import, merge, export flow has an identity object rotation at export time,
+    # so only geometry can reveal a flip the merge baked.
     test_merge_path_geometry()
 
-    # 4. A modifier-bound UNPARENTED mesh (a bound shape get_bound_meshes
-    # supports) must be carried by the clear — else the file ships its geometry
-    # 180° off the skeleton.
     test_unparented_bound_mesh()
 
-    # 5. The OTHER direction: an up-axis-moving residue must be PRESERVED, not
-    # cleared. Both export doors (the sighting hit whole-scene and --armature
-    # alike) and both unit halves of the class (only the cm half also parks a
-    # 0.01 object scale, so neither half alone is "the class").
     for cm_unit in (False, True):
         for scoped in (True, False):
             test_yup_source_preserved(cm_unit, scoped)
 
-    # 6. And the merge path, where a wrongly-baked frame is unrecoverable.
     test_merge_path_yup_geometry()
 
-    # 7. Differing ORIGINS with a shared rotation: one delta must move both rigs,
-    # so the vendor frame survives and the two stay rigid. Plus the identity
-    # (noop) path through the same gate, and the antipodal-quaternion trap that
-    # would route the front-axis class away from the clear.
     test_merge_differing_origins_keeps_vendor_frame()
     test_merge_cross_bound_mesh_moves_once()
     test_merge_deep_cross_bound_mesh_moves_once()
     test_merge_differing_origins_identity_rotation_noop()
     test_merge_antipodal_quaternion_is_equal_rotation()
 
-    # 8. Differing ROTATIONS — the only way into the else branch now. Nothing can
-    # clear both, so the warning is the whole contract.
     test_merge_differing_rotations_warns()
 
-    # 9. The EXPORT path serves exactly ONE rig. A multi-rig whole-scene export
-    # refuses up front (the machinery that once served it is deleted); scoped
-    # export from a two-armature scene — the own-mergeable shape — must keep
-    # working and keep the reference rig out of the file.
     test_export_parented_gate_sees_non_euler_rotation_modes()
     test_export_constrained_candidate_refuses()
     test_export_sole_parented_candidate_still_exports()

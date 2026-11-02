@@ -5,23 +5,14 @@ Run:
       --in <in.blend> (--out <out.blend> | --whatif) --mesh <MeshName> --key <KeyName> \
       [--fade-deg 0.1,1.0] [--head-mesh-names Body] [--force-load-repair]
 
-Adds to every corner's custom normal (its computed normal when the mesh has none) the
-change the key at weight 1 makes to the computed corner normal, so the surface shades as
-the key at full weight whatever weight Unity plays it at. The use: a nipple dome a key
-raises under a skin-tight top must read domed at a weight of 20 too, and Unity imports
-blendshape normals as None, so without this the keyed shape shades with the flat Basis
-normals. The change is faded in by its own angle, from nothing at the first
-``--fade-deg`` to whole at the second (a smoothstep), so float noise off the key's
-footprint writes nothing. Computed normals are those of a copy with its custom normals
-cleared, so sharp edges still split them. No vertex moves; the key must be relative to
-the Basis.
+Moves no vertex; the mechanism and the ``--fade-deg`` smoothstep are
+``shapekey_bake.bake_shapekey_normals``'s. The key must be relative to the Basis.
 
 A saving run records ``{key: recipe}`` in the mesh object's ``avatarprep_normals``, the
 canonical command line printed as ``recipe:``; a key already recorded refuses, since a
 second pass would add the change twice: re-derive from the blend before that bake.
-``--whatif`` runs the same and saves nothing. ``--head-mesh-names`` is the same
-head-refusal list as ``bake_shapekey`` (its docstring has the reasoning): the head's
-normals are never rewritten.
+``--head-mesh-names`` is the same head-refusal list as ``bake_shapekey`` (its docstring
+has the reasoning): the head's normals are never rewritten.
 
 Exit 0 on success; 1 on an ``AVATARPREP: ERROR`` refusal (nothing saved); 2 on bad args
 or a crash.
@@ -30,8 +21,6 @@ import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

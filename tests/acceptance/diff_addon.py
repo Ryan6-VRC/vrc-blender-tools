@@ -5,31 +5,19 @@ Local only, outside ``tests/run_all.py``. Run:
     AVATARPREP_RWT_ADDON=<add-on dir> blender --background --factory-startup \
         --python tests/acceptance/diff_addon.py [-- --report <json>]
 
-The add-on (GPL) is executed from its install folder, never copied: its ``util`` and
-``weighttransfer`` modules load by path with its own ``deps`` on ``sys.path``. The reference
-pipeline is the one the venue's recorded transfers ran: the add-on's matching, point-cloud
-inpaint, smoothing and smoothed influence limit, composed with the write policy the core
-now owns (garment bones kept, body share ``1 - p``). Both sides run on the same in-memory
-fixture (``tests/_weight_fixture.py``) in one session, one case per knob family.
+The add-on (GPL) is executed from its install folder, never copied. The reference pipeline
+composes the add-on's matching, point-cloud inpaint, smoothing and smoothed influence limit
+with the core's write policy. The ``venue_*`` functions re-implement a venue script's
+narrowing and world-axis blend independently of the core's, so the blend is not compared
+against itself.
 
-The venue's narrowing and world-axis blend (``--exclude-blend=+Y,...`` from the Hips head,
-lateral along world X, leg-hole smoothing) are re-implemented here from the venue script,
-independently of the core's blend functions, so the blend is not compared against itself.
-
-Per case it prints: whether the evaluated positions and normals are identical; every vertex
-whose matched/unmatched verdict differs, with its distance and angle margins; the largest
-weight difference on commonly matched vertices; the inpaint solver difference on identical
-inputs; the final per-vertex max |dw| on vertices neither limit touched and no flip moved;
-and every capped vertex (ours: rows cut to their allowance; the add-on's: rows its dilated
-limit mask or hard cap changed) with its |dw|. Pass is identical positions and
-max |dw| <= 1e-5 off the capped and flipped vertices. Three design differences are listed,
-never tolerated: the core clips to [0, 1] before smoothing where the add-on clipped at 0
-after it; its smoothing set is the straight-line ball where the add-on walks edges in vertex
-order (the smoothing-set line); and it limits per vertex where the add-on's mask dilates
-into neighbours (the capped list). ``puffed_smooth_4_0.2`` exceeds the tolerance by design:
-its inpainted region is large enough for the clip order and the smoothing set to move
-weights. The choice is recorded at ``weight_transfer.smooth``; every other case is expected
-to pass.
+Pass is identical positions and max |dw| <= 1e-5 off the capped and flipped vertices. Three
+design differences are listed, never tolerated: the clip order and the smoothing set
+(``weight_transfer.smooth`` records both; the second prints as the smoothing-set line), and
+the per-vertex limit where the add-on's mask dilates into neighbours (the capped list).
+``puffed_smooth_4_0.2`` exceeds the tolerance by design: its inpainted region is large enough
+for the clip order and the smoothing set to move weights. Every other case is expected to
+pass.
 """
 import fnmatch
 import importlib.util
@@ -66,8 +54,6 @@ def load_addon(root):
         mods.append(m)
     return mods
 
-
-# --- the reference pipeline: add-on functions under the venue's composition --------------------
 
 def ref_arrays(util, WT, source, target):
     """Add-on arrays for the source (copy, Armature modifier off) and target (rest state)."""
@@ -242,8 +228,6 @@ def write_policy(target, source_deform, snames, T, limiter, mask=None):
     return final, active, capped
 
 
-# --- comparison ------------------------------------------------------------------------------------
-
 def puff(s):
     """Flare the band's and left cuff's lower rows outward past the match distance, so a
     contiguous region is inpainted from matched neighbours (the fixture otherwise inpaints only
@@ -267,7 +251,6 @@ def _build(F, case):
 
 def run_case(util, wt, WT, F, case):
     out = {"case": case["name"]}
-    # ours, end to end
     s = _build(F, case)
     kw = {k: case[k] for k in ("max_distance", "normal_angle", "flip", "smooth") if k in case}
     for k, ck in (("exclude", "exclude"), ("exclude_max", "exclude_max"), ("blend", "blend"),
@@ -278,7 +261,6 @@ def run_case(util, wt, WT, F, case):
     ours_final = F.weights_by_name(s["garment"])
     ours_matched = row["matched_mask"]
 
-    # ours, stage arrays on a fresh build (for positions, match and capped set)
     s = _build(F, case)
     src = WT.source_arrays(s["body"], {})
     with WT._rest_state([s["garment"]], {}):
@@ -293,7 +275,6 @@ def run_case(util, wt, WT, F, case):
         SF, _ = WT.narrow_source(src["F"], src["W"], src["names"], xb, case["exclude_max"])
     m = WT.match(src["V"], SF, src["N"], src["W"], TV, TN, case["max_distance"], case["normal_angle"], case["flip"])
 
-    # reference on the same build
     ref = ref_pipeline(util, wt, WT, s, case)
     out["positions_identical"] = bool(np.array_equal(src["V"], ref["SV"]) and np.array_equal(TV, ref["TV"]))
     out["normals_identical"] = bool(np.array_equal(src["N"], ref["SN"]) and np.array_equal(TN, ref["TN"]))
@@ -308,7 +289,6 @@ def run_case(util, wt, WT, F, case):
     both = m["matched"] & ref["runs"][0 if case.get("blend") else -1][0]
     out["max_dw_matched_interp"] = float(np.abs(m["weights"][both] - ref["runs"][0 if case.get("blend") else -1][1][both]).max()) if both.any() else 0.0
 
-    # inpaint solver on identical inputs
     r_matched, r_W2 = ref["runs"][0][0], ref["runs"][0][1]
     ours_T = WT.inpaint(ref["TV"], r_W2, r_matched)
     addon_T = wt.inpaint(ref["TV"], None, r_W2, r_matched, True)
@@ -330,7 +310,6 @@ def run_case(util, wt, WT, F, case):
         out["smooth_set_only_ours"] = int((ours_set & ~addon_set).sum())
         out["smooth_set_only_addon"] = int((addon_set & ~ours_set).sum())
 
-    # final weights: ours end to end vs the reference composed through the same write policy
     deform = src["deform"]
     ref_final, active, ref_changed = write_policy(s["garment"], deform, ref["snames"], ref["T"],
                                                   lambda T, allow: ref_limit(wt, T, ref["adj"], allow))

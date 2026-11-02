@@ -1,10 +1,4 @@
-"""Synthetic headless test for avatarprep.core.proportions.
-
-Run:
-  blender --background --factory-startup --python tests/test_proportions.py
-
-Prints PROP_TEST OK and exits 0 on success; PROP_TEST FAIL: <reason> exit 1 otherwise.
-"""
+"""Synthetic headless test for avatarprep.core.proportions."""
 import math
 import os
 import sys
@@ -55,7 +49,6 @@ def test_load_edge():
     expect_raises(lambda: load_edge({"source": "a"}), "target", "missing target")
     expect_raises(lambda: load_edge({"source": "a", "target": "b"}),
                   "source_base", "missing source_base")
-    # origin and bbox_center are both valid object pivots; anything else raises.
     check(load_edge({"source": "a", "target": "b", "source_base": "base",
                      "object": {"pivot": "origin", "scale": 1.0}})
           ["object"]["pivot"] == "origin", "origin pivot should be accepted")
@@ -129,7 +122,6 @@ def test_validate():
     rep2 = P.validate_proportion_edge(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
     check(not rep2["offenders"], "overrides should clear offenders: %r" % rep2["offenders"])
-    # skip_shapekeys suppresses the missing-shapekey offender (body edge onto an outfit)
     rep_skip = P.validate_proportion_edge(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, skip_shapekeys=True)
     check(not any("shapekey" in o for o in rep_skip["offenders"]),
@@ -138,8 +130,6 @@ def test_validate():
     rep3 = P.validate_proportion_edge(arm, [mesh], edge,
         bone_overrides={"Ghost":"Spine"}, shapekey_overrides={"Missing": None})
     check(any("state" in o.lower() for o in rep3["offenders"]), "state mismatch should be an offender")
-    # A rig at the reserved 'unproportioned' origin validates clean against an
-    # unproportioned-source edge (exact match); base must also match source_base.
     arm["avatarprep_base"] = "a"
     arm["avatarprep_state"] = "unproportioned"
     edge_u = dict(edge); edge_u["source"] = "unproportioned"; edge_u["source_base"] = "a"
@@ -147,24 +137,20 @@ def test_validate():
     check(not any("state" in o.lower() or "base" in o.lower() for o in rep_u["offenders"]),
           "unproportioned+matching-base must not offend: %r" % rep_u["offenders"])
 
-    # A named-source-state edge on an 'unproportioned' rig now OFFENDS (wildcard removed).
     edge_named = dict(edge); edge_named["source"] = "custom"; edge_named["source_base"] = "a"
     rep_named = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_named), skip_shapekeys=True)
     check(any("state mismatch" in o.lower() for o in rep_named["offenders"]),
           "named-source on unproportioned rig must offend: %r" % rep_named["offenders"])
 
-    # base absent -> offender.
     del arm["avatarprep_base"]
     rep_nobase = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
     check(any("base absent" in o.lower() for o in rep_nobase["offenders"]),
           "base-absent must offend: %r" % rep_nobase["offenders"])
-    # base corrupt (present but not a str) -> distinct offender, not conflated with 'mismatch'.
     arm["avatarprep_base"] = 123
     rep_badbase = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_u), skip_shapekeys=True)
     check(any("base corrupt" in o.lower() for o in rep_badbase["offenders"]),
           "base-corrupt must offend distinctly: %r" % rep_badbase["offenders"])
     del arm["avatarprep_base"]
-    # A rig left at the mid-apply sentinel (a crashed apply_proportion_edge) hard-FAILs distinctly.
     from avatarprep.core import scene_utils
     arm["avatarprep_state"] = scene_utils.STATE_APPLYING
     rep_int = P.validate_proportion_edge(arm, [mesh], edge,
@@ -176,7 +162,7 @@ def test_validate():
     del arm["avatarprep_state"]
     rep_med = P.validate_proportion_edge(arm, [mesh], edge_med)
     check(any("median" in o for o in rep_med["offenders"]), "median pivot with 1 bone should offend")
-    # this arm has two parentless bones (Root, Spine); an object edge must offend pre-mutation
+    # This arm has two parentless bones (Root, Spine).
     edge_obj = P.load_edge({"source":"a","target":"b","source_base":"a","object":{"scale":1.1}})
     rep_obj = P.validate_proportion_edge(arm, [mesh], edge_obj, skip_shapekeys=True)
     check(any("root bone" in o for o in rep_obj["offenders"]),
@@ -276,8 +262,6 @@ def test_apply_proportion_edge():
 
 
 def test_apply_proportion_edge_skip_shapekeys():
-    # Covers skip_shapekeys (a body edge applied to a mesh lacking its shape keys)
-    # AND a baked geometric check that an origin-pivot object scale maps z -> 2z.
     from avatarprep.core import proportions as P
     arm = _make_arm(bones=(("Hips",(0,0,0.0),(0,0,0.6)),))
     mesh = _make_mesh(arm, groups=("Hips",))   # NO shape keys
@@ -285,7 +269,7 @@ def test_apply_proportion_edge_skip_shapekeys():
     z0 = (mesh.matrix_world @ mathutils.Vector(mesh.data.vertices[0].co)).z
     edge = {"source":"unproportioned","target":"custom","source_base":"a",
             "object":{"pivot":"origin","scale":2.0,"translate":[0,0,0]},
-            "shapekeys":{"Big":0.5}}           # mesh lacks 'Big'
+            "shapekeys":{"Big":0.5}}
     raised = []
     try:
         P.apply_proportion_edge(arm, [mesh], edge)     # aborts before any mutation
@@ -307,8 +291,7 @@ def test_apply_proportion_edge_median():
     edge = {"source":"unproportioned","target":"custom","source_base":"a",
             "scales":[{"bones":["Breast.L","Breast.R"],"value":[1.4,1.4,1.4],
                        "space":"normal","pivot":"median"}]}
-    # value is uniform 1.4, so vertex distance from the median pivot must scale x1.4
-    # (frame-independent) -- a geometric check that catches a pivot/scale regression.
+    # A uniform value keeps the distance check independent of the bone frame.
     piv = mathutils.Vector((0.0, 0.0, 1.0))   # median of the two breast bone heads
     d0 = ((mesh.matrix_world @ mathutils.Vector(mesh.data.vertices[0].co)) - piv).length
     rep = P.apply_proportion_edge(arm, [mesh], edge)
@@ -320,7 +303,6 @@ def test_apply_proportion_edge_median():
           "uniform 1.4 about median pivot should scale vertex dist %.4f -> ~%.4f, got %.4f"
           % (d0, 1.4 * d0, d1))
 
-    # apply transitions (base, state): reproportion keeps base, equivalency moves it.
     arm["avatarprep_base"] = "shinano"; arm["avatarprep_state"] = "unproportioned"
     repro = {"source": "unproportioned", "target": "custom",
              "source_base": "shinano", "target_base": "shinano"}
@@ -341,7 +323,7 @@ def test_baked_coupling():
     from avatarprep.core import proportions as P
     arm = _make_arm()
     mesh = _make_mesh(arm, shapekeys=("Big",))
-    mesh["avatarprep_baked"] = {"Big": 0.5}   # pretend 'Big' is already baked
+    mesh["avatarprep_baked"] = {"Big": 0.5}
     arm["avatarprep_base"] = "shinano"; arm["avatarprep_state"] = "unproportioned"
     edge_bk = {"source": "unproportioned", "target": "custom",
                "source_base": "shinano", "target_base": "shinano",
@@ -349,7 +331,6 @@ def test_baked_coupling():
     rep_bk = P.validate_proportion_edge(arm, [mesh], P.load_edge(edge_bk))
     check(any("already baked" in w.lower() for w in rep_bk["warnings"]),
           "driving an already-baked key must warn: %r" % rep_bk["warnings"])
-    # a key with no baked entry must NOT produce the warning
     arm2 = _make_arm()
     mesh2 = _make_mesh(arm2, shapekeys=("Big",))
     arm2["avatarprep_base"] = "shinano"; arm2["avatarprep_state"] = "unproportioned"
@@ -362,7 +343,7 @@ def test_baked_coupling():
 
 
 
-# --- staged --whatif geometry (R8) ---------------------------------------------
+# --- staged --whatif geometry ---------------------------------------------
 
 def _sk_with_delta(ob, name, dz):
     """Add a shape key that actually MOVES geometry. ``shape_key_add`` alone makes a
@@ -374,9 +355,8 @@ def _sk_with_delta(ob, name, dz):
         p.co = p.co + Vector((0.0, 0.0, dz))
     kb.slider_min = min(kb.slider_min, 0.0)
     kb.slider_max = max(kb.slider_max, 1.0)
-    # shape_key_add returns the block ALREADY at value 1.0 (measured on 5.2.0), so a
-    # morph left as-is is live before the edge touches it -- and an edge driving it to
-    # 1.0 would then move nothing, making the stage look inert when it is not.
+    # shape_key_add returns the block ALREADY at value 1.0 (measured on 5.2.0), so an
+    # edge driving a morph left as-is to 1.0 would move nothing.
     kb.value = 0.0
     return kb
 
@@ -399,9 +379,7 @@ def _rig_for_measure(no_inherit=False):
 
 
 def test_measure_geometry_skips_empty_meshes():
-    """bound_box on a zero-vertex mesh is eight all-zero corners, which would inject
-    world z=0 as if it were geometry. measure_geometry reads evaluated vertices and
-    skips such a mesh; this pins that it contributes nothing."""
+    """measure_geometry skips a zero-vertex mesh; this pins that it contributes nothing."""
     _clear_scene()
     from avatarprep.core import measure
     arm, mesh = _rig_for_measure()
@@ -415,7 +393,6 @@ def test_measure_geometry_skips_empty_meshes():
           % m["aggregate"]["min"][2])
     check(abs(m["aggregate"]["min"][2] - m["per_mesh"]["Body"]["min"][2]) < 1e-9,
           "aggregate should equal the only real mesh's bounds")
-    # No mesh with vertices at all -> no aggregate, rather than a fabricated zero box.
     m2 = measure.measure_geometry(arm, [empty])
     check(m2["aggregate"] is None, "no measurable mesh should give aggregate None")
 
@@ -433,7 +410,6 @@ def test_stage_hook_order():
     check(seen == ["pre", "object", "scales", "shapekeys"],
           "stage hook should fire once per stage in order, got %s" % seen)
 
-    # A stage the edge does not have must not fire.
     _clear_scene()
     arm, mesh = _rig_for_measure()
     seen2 = []
@@ -446,10 +422,9 @@ def test_stage_hook_order():
 
 
 def test_whatif_geometry_equals_real_apply():
-    """The claim the whole feature rests on: numbers measured by the in-memory trial
-    equal the numbers a real apply produces. Uses an edge with a NON-EMPTY shapekeys
-    block whose morph reaches the bounds -- both shipped longlimb edges carry no
-    shapekeys at all, so an edge without one cannot validate this stage."""
+    """Numbers measured by the in-memory trial equal the numbers a real apply produces.
+    The edge's shapekeys block is non-empty and its morph reaches the bounds, because an
+    edge without one cannot validate that stage."""
     from avatarprep.core import proportions as P, measure
     edge = {"source": "s0", "target": "s1", "source_base": "a",
             "object": {"scale": 1.0, "translate": [0, 0, 0.05]},
@@ -487,8 +462,7 @@ def test_whatif_geometry_equals_real_apply():
 
 def test_collateral_lengths():
     """The spread report: a child that inherits its parent's scale changes length
-    without being named, and inherit_scale NONE is supposed to stop it. Nothing before
-    this proved either."""
+    without being named, and inherit_scale NONE stops it."""
     from avatarprep.core import proportions as P, measure
     edge = {"source": "s0", "target": "s1", "source_base": "a",
             "scales": [{"bones": ["Root"], "value": [1.0, 1.5, 1.0]}]}
@@ -515,7 +489,7 @@ def test_collateral_lengths():
 
     named = measure.bone_length_deltas(pre, post, ["Root"])
     # Bone coords are float32, so the achieved percentage lands within ~1e-5 of nominal,
-    # not on it. Tightening this past float32 would make the suite flaky, not stricter.
+    # not on it.
     check(len(named) == 1 and abs(named[0]["pct"] - 50.0) < 1e-3,
           "the named bone's achieved pct should be +50%%, got %s" % named)
     check(measure.bone_length_deltas(pre, post, ["NoSuchBone"]) == [],
@@ -523,9 +497,8 @@ def test_collateral_lengths():
 
 
 def test_local_scale_op_does_not_compound_down_a_chain():
-    """One op naming a whole chain lands its value once per bone, as Blender's resize on
-    a selected chain does — not compounded through inheritance. Measured on a hand-made
-    reference: every finger segment at 1.02, where the naive apply gave 1.02/1.04/1.06."""
+    """One op naming a whole chain lands its value once per bone, not compounded through
+    inheritance."""
     from avatarprep.core import proportions as P, scene_utils
     chain = (("Root", (0, 0, 0), (0, 0, 0.1)),
              ("Mid", (0, 0, 0.1), (0, 0, 0.2)),
@@ -545,9 +518,6 @@ def test_local_scale_op_does_not_compound_down_a_chain():
         arm["avatarprep_base"] = "a"; arm["avatarprep_state"] = "s0"
         return arm, mesh
 
-    # Every inherit mode Blender offers, on the tip and on the middle link: the vector
-    # modes carry the parent's scale, AVERAGE carries only its uniform volume-equivalent,
-    # and the two NONE modes carry nothing. In all of them each bone must land at 1.5x once.
     modes = ('FULL', 'FIX_SHEAR', 'ALIGNED', 'AVERAGE', 'NONE', 'NONE_LEGACY')
     for tip_mode in modes:
         for mid_mode in ('FULL', 'AVERAGE', 'NONE_LEGACY'):
@@ -558,7 +528,6 @@ def test_local_scale_op_does_not_compound_down_a_chain():
                   "tip=%s mid=%s: every bone should be 1.5x once, got %s"
                   % (tip_mode, mid_mode, lens))
 
-    # Separate ops compound, as separate manual resizes do.
     arm, mesh = build()
     two = dict(edge); two["scales"] = [{"bones": ["Root"], "value": [1.0, 1.5, 1.0]},
                                        {"bones": ["Mid"], "value": [1.0, 1.5, 1.0]}]
@@ -569,8 +538,8 @@ def test_local_scale_op_does_not_compound_down_a_chain():
 
 
 def test_cli_whatif_writes_nothing_and_reports_geometry():
-    """Drive the door. The byte-identity assertion is the guard that an in-memory trial
-    can never become a write, however the code around it is refactored later."""
+    """Drive the door. The byte-identity assertion guards that an in-memory trial can
+    never become a write."""
     import hashlib
     import json
     import subprocess
@@ -638,8 +607,7 @@ def test_cli_whatif_writes_nothing_and_reports_geometry():
     check("per_mesh" not in out,
           "per-mesh detail belongs in --report, not in the printed tier")
 
-    # Offenders must short-circuit: no trial runs on a rig that failed the gate, so no
-    # geometry is reported and nothing claims to know what the edge would do.
+    # Offenders short-circuit: no trial runs on a rig that failed the gate.
     report2 = os.path.join(tmp, "r2.json")
     rc, out = run(["--edge", bad_edge_path, "--whatif", "--report", report2])
     check(rc == 1, "offenders under whatif should exit 1, got %s" % rc)
@@ -729,7 +697,6 @@ def test_absent_bones_drop():
     check(rep_full["scales_applied"] == 3 and rep_full["dropped"] == [],
           "full rig applies every op and drops nothing: %r" % rep_full["dropped"])
 
-    # Default refuse is unchanged: the absent bones offend, nothing is dropped.
     arm, mesh = _absent_rig(delete=("Hand.L", "Toe.L"))
     val = P.validate_proportion_edge(arm, [mesh], P.load_edge(copy.deepcopy(_ABSENT_EDGE)),
                                      skip_shapekeys=True)
@@ -740,8 +707,6 @@ def test_absent_bones_drop():
                                                   skip_shapekeys=True),
                   "bone not found", "default apply on an absent bone")
 
-    # Drop: the all-absent op and the absent no_inherit_scale entry go, the partial
-    # local/individual op applies to its present bones.
     arm, mesh = _absent_rig(delete=("Hand.L", "Toe.L"))
     rep = P.apply_proportion_edge(arm, [mesh], copy.deepcopy(_ABSENT_EDGE),
                                   skip_shapekeys=True, absent_bones="drop")
@@ -762,9 +727,8 @@ def test_absent_bones_drop():
     check(not _close(full_verts[1], (0.45, 0, 1.3)),
           "the fixture must actually move the LowerArm vertex, or the equality proves nothing")
 
-    # A partly-absent median op stays an offender under drop, and so does a framed
-    # individual one: both are computed over the whole bone set. The local/median case
-    # keeps two present bones, so only the partial-op rule can refuse it.
+    # The local/median case keeps two present bones, so only the partial-op rule can
+    # refuse it.
     for space, pivot, names, gone in (
             ("normal", "median", ["Breast.L", "Breast.R"], "Breast.R"),
             ("normal", "individual", ["Breast.L", "Breast.R"], "Breast.R"),
@@ -779,7 +743,6 @@ def test_absent_bones_drop():
               and not val["dropped"],
               "partial %s/%s op must refuse under drop: %r" % (space, pivot, val["offenders"]))
 
-    # A --bone-override onto an absent bone is never dropped.
     arm, mesh = _absent_rig(delete=("Hand.L",))
     edge = {"source": "s0", "target": "s1", "source_base": "a",
             "scales": [{"bones": ["Paw.L"], "value": [1.1, 1.1, 1.1]}]}
@@ -835,10 +798,7 @@ def test_cli_whatif_reports_dropped():
 
 
 def test_bbox_center_skips_empty_meshes():
-    """pivot 'bbox_center' scales about the meshes' own centre. A mesh with no geometry
-    must contribute nothing: counting it drags that centre toward the object's origin
-    and the whole avatar scales about the wrong point. (The centre now comes from
-    measure._world_bounds; this pins the skip behaviour across that move.)"""
+    """A mesh with no geometry contributes nothing to the bbox_center pivot."""
     from avatarprep.core import proportions as P
     _clear_scene()
     arm = _make_arm()
@@ -852,19 +812,13 @@ def test_bbox_center_skips_empty_meshes():
     check((both - solo).length < 1e-9,
           "an empty mesh moved the bbox centre from %r to %r" % (solo[:], both[:]))
 
-    # Only empty meshes is not a centre at the origin -- it is no centre at all.
     expect_raises(lambda: P._world_bbox_center([empty]), "no mesh geometry",
                   "bbox centre of only empty meshes")
 
 
 def test_bbox_center_refuses_unevaluated_meshes():
-    """The pivot refuses what the measuring doors only report. _world_bounds does not
-    skip an unevaluated mesh — it measures it, off unevaluated geometry and a
-    matrix_world that never re-evaluated — so a pivot computed from it moves the avatar
-    by an unbounded amount. apply_proportion_edge's preflight refuses on the same
-    predicate first, so this guard is unreachable on every shipped path; it is pinned
-    here because the core is built to be called directly and a second caller must not
-    inherit the trap by omission."""
+    """The pivot refuses what the measuring doors only report (_world_bbox_center's
+    docstring)."""
     from avatarprep.core import proportions as P
     _clear_scene()
     arm = _make_arm()
@@ -877,12 +831,8 @@ def test_bbox_center_refuses_unevaluated_meshes():
     expect_raises(lambda: P._world_bbox_center([mesh, hidden]), "not evaluated",
                   "bbox centre refusal names the predicate")
 
-    # The negative direction, because the tempting predicate gets it wrong: visible_get()
-    # reads False for hide_set, which evaluates fine, so a "simplification" of
-    # _world_bounds' flag to a visibility test would start refusing working files. This
-    # door consumes _world_bounds' own list, so pinning the predicate in test_rest_pose
-    # does not cover it. (That suite pins the LAYER-collection eye against the same
-    # mutation; one case here kills it at this door too.)
+    # The negative direction at this door, which consumes _world_bounds' own list, so
+    # test_rest_pose's pin does not cover it.
     eyed = _make_mesh(arm, name="EyeHidden")
     eyed.hide_set(True)
     bpy.context.view_layer.update()
@@ -892,10 +842,8 @@ def test_bbox_center_refuses_unevaluated_meshes():
         FAILURES.append("hide_set evaluates fine and must not be refused: %s" % e)
     bpy.data.objects.remove(eyed, do_unlink=True)
 
-    # The two cases must not collapse into one another. A VISIBLE zero-vertex mesh is
-    # skipped silently and does not raise (test_bbox_center_skips_empty_meshes owns why),
-    # so it is visible here deliberately: _world_bounds appends to `unevaluated` BEFORE
-    # the zero-vertex skip, which makes a HIDDEN empty mesh refuse instead.
+    # _world_bounds appends to `unevaluated` BEFORE the zero-vertex skip, so a VISIBLE
+    # zero-vertex mesh is skipped silently and a HIDDEN one refuses.
     empty = bpy.data.objects.new("EmptyMesh", bpy.data.meshes.new("EmptyData"))
     bpy.context.collection.objects.link(empty)
     bpy.context.view_layer.update()
@@ -917,8 +865,8 @@ def _bounds_height(meshes):
 
 
 def test_world_bounds_reads_the_evaluated_result():
-    """The five shapes bound_box gets wrong. Each is a size-2 cube whose TRUE height is
-    known, so a cage read is a specific wrong number rather than 'some drift'."""
+    """The generative-modifier and rotated shapes bound_box gets wrong. Each is a size-2
+    cube whose TRUE height is known, so a cage read is a specific wrong number."""
     def _subsurf(o):
         o.modifiers.new("s", 'SUBSURF').levels = 2
 
@@ -932,8 +880,6 @@ def test_world_bounds_reads_the_evaluated_result():
     def _rotate(o):
         o.rotation_euler = (math.radians(45), 0, 0)
 
-    # Every setup lives in the table and is called unconditionally: a dispatch chain in
-    # the body would silently drop a row added here into whichever branch was last.
     for label, setup, want in (
         ("subsurf L2", _subsurf, 1.679013),
         ("solidify", _solidify, 2.346410),
@@ -962,19 +908,10 @@ def test_world_bounds_reads_the_evaluated_result():
 def test_world_bounds_transform_is_the_full_affine():
     """ABSOLUTE bounds under translation AND a non-axis-aligned rotation.
 
-    The helper hand-rolls the object transform as ``co @ mw[:3,:3].T + mw[:3,3]``, and
-    every other assertion in this file is blind to getting that wrong: they measure a
-    HEIGHT, which is translation-invariant, about an ORIGIN-CENTRED cube, whose bounds
-    are identical under R and R-transpose. Both mutations -- dropping the translation
-    (``mw[3,:3]``) and transposing the rotation -- pass the rest of the suite. This is
-    the assertion that fails on them, and it matters most for
-    ``proportions._world_bbox_center``, whose result MOVES the avatar.
-
-    The fixture has to be built for this and cannot be a plain cube at an angle: a cube
-    is symmetric about its own origin, and transposing a single-axis rotation is the same
-    as negating it, so R and R-transpose give it identical bounds. It needs geometry
-    asymmetric about the object origin AND rotation about two axes. The test proves that
-    discrimination below rather than assuming it."""
+    A HEIGHT about an origin-centred cube is blind to dropping the translation or
+    transposing the rotation. A cube under a single-axis rotation has identical bounds
+    under R and R-transpose, so this fixture needs geometry asymmetric about the object
+    origin AND rotation about two axes."""
     _clear_scene()
     bpy.ops.mesh.primitive_cube_add(size=2.0, location=(1, 2, 10))
     o = bpy.context.object
@@ -985,8 +922,8 @@ def test_world_bounds_transform_is_the_full_affine():
     from avatarprep.core import measure
     got = measure._world_bounds([o])
 
-    # Ground truth from the evaluated vertices, via mathutils rather than the helper's
-    # numpy -- an independent path, so a shared error cannot cancel out.
+    # Ground truth via mathutils rather than the helper's numpy, an independent path so
+    # a shared error cannot cancel out.
     dg = bpy.context.evaluated_depsgraph_get()
     ev = o.evaluated_get(dg)
     mw = o.matrix_world
@@ -999,9 +936,8 @@ def test_world_bounds_transform_is_the_full_affine():
         check(abs(got["max"][i] - want_max[i]) < 1e-6,
               "max.%s: expected %.6f, got %.6f" % (axis, want_max[i], got["max"][i]))
 
-    # Prove the fixture can SEE each mutation: recompute bounds the wrong ways and
-    # require them to differ from the truth. Without this, a later fixture edit could
-    # quietly restore the symmetry that made the suite blind in the first place.
+    # Prove the fixture can SEE each mutation: bounds recomputed the wrong ways must
+    # differ from the truth.
     R = mw.to_3x3()
     t = mw.translation
     for label, bad in (
@@ -1016,9 +952,8 @@ def test_world_bounds_transform_is_the_full_affine():
 
 
 def test_world_bounds_is_not_a_lagging_cache():
-    """bound_box returns the PREVIOUS shape-key value's box: set 1.0 and it reads the
-    0.0 box, set 0.5 and it reads the 1.0 box. The evaluated read must track the value
-    it is asked about, on the first read, with no intervening evaluation."""
+    """The evaluated read tracks the value it is asked about, on the first read, with no
+    intervening evaluation."""
     _clear_scene()
     bpy.ops.mesh.primitive_cube_add(size=2.0)
     o = bpy.context.object
@@ -1035,14 +970,9 @@ def test_world_bounds_is_not_a_lagging_cache():
 
 
 def test_world_bounds_forces_the_view_layer_update():
-    """matrix_world is stale after a reparent until something forces an evaluation, and
-    reading it unforced reported -50% on a real avatar.
-
-    This pins the OUTCOME, not the mechanism: it stays green if the explicit
+    """Pins the OUTCOME, not the mechanism: it stays green if the explicit
     view_layer.update() is deleted, because the evaluated_depsgraph_get() beside it
-    forces the evaluation too. That is measured, not assumed -- and it is why the helper
-    must fetch its own depsgraph per call rather than accept one from a caller, since a
-    handle fetched before the mutation reads stale."""
+    forces the evaluation too."""
     _clear_scene()
     bpy.ops.mesh.primitive_cube_add(size=2.0)
     o = bpy.context.object
@@ -1058,16 +988,14 @@ def test_world_bounds_forces_the_view_layer_update():
 
 
 def test_world_bounds_measurability_is_the_evaluated_count():
-    """'Has vertices' means the EVALUATED count. A mesh with zero authored verts under a
-    generative modifier has real geometry, and the original count calls it empty --
-    which is what the two bound_box readers used to do."""
+    """'Has vertices' means the EVALUATED count (_world_bounds' docstring)."""
     _clear_scene()
     o = bpy.data.objects.new("Generated", bpy.data.meshes.new("GenData"))
     bpy.context.collection.objects.link(o)
     check(len(o.data.vertices) == 0, "fixture must start with zero authored verts")
 
-    # A node group that generates a 2 m cube from nothing. Built explicitly rather than
-    # via the default group, which outputs the (empty) input geometry unchanged.
+    # Built explicitly because the default group outputs the (empty) input geometry
+    # unchanged.
     ng = bpy.data.node_groups.new("GenCube", 'GeometryNodeTree')
     ng.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
     out = ng.nodes.new("NodeGroupOutput")
@@ -1115,8 +1043,8 @@ def test_load_moves():
         "from on a bone an earlier move moves")
 
 
-# Hips -> Thigh -> Shin -> Foot. The left shin and foot are connected, as a vendor import
-# carries them; the right side is unconnected, as the owned body carries it.
+# The left shin and foot are connected, as a vendor import carries them; the right side
+# is unconnected, as the owned body carries it.
 _MOVE_RIG = (("Hips", None, False, (0, 0, 0.9), (0, 0, 1.0)),
              ("Thigh.L", "Hips", False, (0.1, 0.01, 0.85), (0.1, 0.0, 0.5)),
              ("Shin.L", "Thigh.L", True, (0.1, 0.0, 0.5), (0.1, 0.03, 0.1)),
@@ -1228,7 +1156,6 @@ def test_moves_apply():
     check(arm.get("avatarprep_state") == "s1" and arm.get("avatarprep_base") == "a",
           "the stamps transition as for any edge")
 
-    # parent_tail "follow" keeps the connection and re-aims the parent.
     arm, ob = _move_rig()
     before = _rest(arm)
     P.apply_proportion_edge(arm, [ob], _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
@@ -1240,7 +1167,6 @@ def test_moves_apply():
           and after["Shin.L"]["connect"],
           "parent_tail follow moves the thigh's tail with the head and stays connected")
 
-    # tail + children "follow" translate the subtree rigidly, connections intact.
     arm, ob = _move_rig()
     before = _rest(arm)
     P.apply_proportion_edge(arm, [ob], _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
@@ -1253,7 +1179,6 @@ def test_moves_apply():
               "%s translates rigidly under tail+children follow" % n)
     check(after["Foot.L"]["connect"], "the foot stays connected when tail and foot co-move")
 
-    # tail "follow", children "keep": the foot stays and its connection is cleared.
     arm, ob = _move_rig()
     before = _rest(arm)
     rep = P.apply_proportion_edge(arm, [ob], _moves_edge([{"bones": ["Shin.L"], "value": _KNEE,
@@ -1330,7 +1255,6 @@ def test_moves_absent_bones():
               "%s: the rig is unchanged" % mode)
         check(arm.get("avatarprep_state") == "s0", "%s: the stamps still transition" % mode)
 
-    # One side present: the present bone moves under its from guard; the absent one drops.
     arm, ob = _move_rig(delete=("Foot.R", "Shin.R"))
     before = _rest(arm)
     rep = P.apply_proportion_edge(arm, [ob], edge, skip_shapekeys=True, absent_bones="drop")
@@ -1339,7 +1263,6 @@ def test_moves_absent_bones():
           and _vclose(_rest(arm)["Shin.L"]["head"], before["Shin.L"]["head"] + Vector(_KNEE)),
           "a partly-absent move applies to its present bone: %r" % rep["dropped"])
 
-    # A --bone-override onto an absent bone is never dropped, under drop or stub.
     for mode in ("drop", "stub"):
         arm, ob = _move_rig(delete=legless)
         val = P.validate_proportion_edge(
@@ -1433,7 +1356,6 @@ def test_moves_cumulative():
     expect_raises(lambda: P.apply_moves(arm, moves), "half-applied",
                   "apply_moves on a collapsing op list")
 
-    # A --bone-override alias does not get a second move past from.
     arm, ob = _move_rig()
     knee = list(arm.matrix_world @ arm.data.bones["Shin.L"].head_local)
     edge = _moves_edge([{"bones": ["Knee.L"], "value": _KNEE},
@@ -1443,7 +1365,6 @@ def test_moves_cumulative():
     check(any("moves first" in o for o in val["offenders"]),
           "from on a bone an aliased earlier move moves offends: %r" % val["offenders"])
 
-    # Two ops along one chain apply in sequence.
     arm, ob = _move_rig()
     before = _rest(arm)
     P.apply_proportion_edge(arm, [ob], _moves_edge(
@@ -1458,7 +1379,6 @@ def test_moves_cumulative():
           and not after["Foot.L"]["connect"],
           "two ops on one chain land in sequence: %r" % {n: after[n] for n in ("Shin.L", "Foot.L")})
 
-    # Siblings connected to one parent tail, moved together under parent_tail "follow".
     _clear_scene()
     arm = _make_arm(bones=(("P", (0, 0, 1), (0, 0, 0.5)), ("C1", (0, 0, 0.5), (0.1, 0, 0)),
                            ("C2", (0, 0, 0.5), (-0.1, 0, 0))))

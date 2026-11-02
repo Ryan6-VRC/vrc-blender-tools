@@ -1,10 +1,6 @@
 """Synthetic headless test for avatarprep.core.fit and cli/report_fit.py, compare_fit.py, push_garment.py, offset_garment.py.
 
-Run: blender --background --factory-startup --python tests/test_fit.py
-Prints FIT_TEST OK / FIT_TEST FAIL: <reason>.
-
 Needs no provisioned wheels: the fit doors run on Blender's own numpy and mathutils.
-Fixture: ``tests/_weight_fixture.py`` (the tail and the thigh bands are this suite's).
 """
 import json
 import os
@@ -708,7 +704,6 @@ def test_cli(tmp):
     check(rc == 0 and "Band [zone:front] new-pen" in txt and pngs and all(os.path.exists(p) for p in pngs),
           "a region report renders its worst steps (rc=%d)\n%s" % (rc, txt))
 
-    # a literal group name holding a glob bracket, and a slot term, through the door
     lit = bpy.data.objects["Band"]
     half = [v.index for v in lit.data.vertices if v.co.y < 0]
     lit.vertex_groups.new(name="Front[1]").add(half, 1.0, 'REPLACE')
@@ -741,7 +736,6 @@ def test_cli(tmp):
     rc, txt = _blender("compare_fit", ["--in", a_blend, "--targets", "Band"])
     check(rc == 2, "one --in without --simulate-transfer is bad args\n%s" % txt)
 
-    # push: static contact, posed contact, the stamp, --whatif
     s = F.build()
     _keyed_band(s, "Band", {"UpperLeg.L": 1.0}, 0.0003)
     static = os.path.join(tmp, "static.blend")

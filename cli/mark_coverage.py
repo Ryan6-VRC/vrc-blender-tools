@@ -12,14 +12,12 @@ Run:
 Measures on the costume blend, where the body is normally a library link. A coverage
 measurement is of a CONFIGURATION: the shapes that configuration sets on the body and the
 garments (a waist slimmer, a heel lift, a collar removed) go on with ``--shape`` first, or
-the skin is measured where it does not sit in game. ``--whatif`` measures and reports,
-renders the three sheets when ``--render`` names a directory, and writes no body blend.
-Without it the door opens the base blend the body's mesh links from, checks the body there
-against what it measured (vertex count and Basis hash), writes the carrier shape key on
-it, and saves to ``--out`` (or over the base with ``--in-place``). A local body needs no
-second file and is written in ``--in`` itself, saved to ``--out``. ``--out-marked`` saves
-a copy of the costume scene with the marked and carrier-removed bodies beside the
-garments, in the measured configuration, for inspecting hems at the cut.
+the skin is measured where it does not sit in game. ``--whatif`` measures, reports and
+renders, and writes no body blend. Without it the door opens the base blend the body's mesh
+links from, checks the body there against what it measured (vertex count and Basis hash),
+writes the carrier shape key on it, and saves to ``--out`` (or over the base with
+``--in-place``). A local body needs no second file and is written in ``--in`` itself, saved
+to ``--out``.
 
 Exit 0 on ``=> OK``; 1 on ``=> FAIL:`` (ran, refused: nothing covered, changed body, key
 exists); 2 on unresolvable input (missing body/garment/shape, bad args) or a crash.
@@ -137,8 +135,7 @@ def _resolve_mesh(name, role):
 
 def _render_sheets(body, result, garments, label, out_dir, shapes):
     """Three sheets through render_mesh: the marked body alone; the marked body beside the
-    garments (solid, so silhouettes read); the body with the carrier polygons removed. The
-    garments render in the measured configuration."""
+    garments; the body with the carrier polygons removed."""
     from avatarprep.core import coverage
     from avatarprep.core.render_mesh import render
     names = [g.name for g in garments]

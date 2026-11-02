@@ -1,24 +1,9 @@
 """Synthetic headless test for import_fbx --fit-reference, the edge door's linked-armature skip, and apply_proportion_edge --absent-bones stub.
 
-Run: blender --background --factory-startup --python tests/test_fit_reference.py
-Prints FITREF_TEST OK / FITREF_TEST FAIL: <reason>; exit 1 on any failure.
-
-A reference base blend holds the full rig ``Armature`` with its body mesh, plus a second rig,
-its mesh and a camera that must not be linked. A garment rig named ``Armature`` too, lacking
-the reference's ``Chest`` and ``LowerLeg.L``, is exported to FBX and driven through the order
-the records use: ``import_fbx --fit-reference`` → ``stamp_base`` → ``apply_proportion_edge``
-(no ``--armature``) → ``rename_objects Armature=Armature.G`` → scoped ``export_unity_fbx``.
-
-  * the import links the rig and its body as objects by a ``//`` path in ``ref_ref`` and
-    nothing else (not the second rig, the camera, or the rig the reference itself links from a
-    nested blend), stamps only the local rig, and the link resolves from another cwd;
-  * the edge door picks the local rig past the linked one: ``refuse`` offends on the absent
-    bones, ``stub`` prints a STUB per absent bone and applies, leaving no stub behind;
-  * a stubbed apply moves the present bones exactly as an apply on a rig that carries those
-    bones for real (non-deforming, at the reference's rest) does;
-  * ``stub`` refuses without a linked fit reference, naming ``--fit-reference``; refuses an
-    absent bone whose descendant the rig keeps, and a rig that does not sit on the reference;
-  * re-linking a reference whose collection is gone says so.
+A garment rig named ``Armature`` like the reference's, lacking its ``Chest`` and ``LowerLeg.L``,
+is driven through the order the records use: ``import_fbx --fit-reference``, ``stamp_base``,
+``apply_proportion_edge`` (no ``--armature``), ``rename_objects Armature=Armature.G``, and a
+scoped ``export_unity_fbx``.
 """
 import json
 import os

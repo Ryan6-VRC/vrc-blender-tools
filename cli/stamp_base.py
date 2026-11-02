@@ -4,10 +4,11 @@ Run:
   blender <in.blend> --background --factory-startup --python cli/stamp_base.py -- \
       --in <in.blend> --out <out.blend> --armature <armatureObjectName> --base <label>
 
-NOTE the deliberate divergence from compat/merge's ``--base``: here ``--armature``
-names the armature OBJECT (as prune_bones does) and ``--base`` is the lineage LABEL
-STRING to stamp (e.g. ``shinano``), NOT an armature object. Base identity is an
-agent assertion, never guessed — this door is the only writer of avatarprep_base.
+Unlike ``--base`` on ``compare_armatures`` and ``merge_armatures``, which names an
+armature object, ``--base`` here is the lineage label string to stamp (e.g.
+``shinano``); ``--armature`` names the object. Base identity is an agent assertion,
+never guessed: the only other writers of avatarprep_base are this door's N-panel
+twin and an edge's ``target_base``.
 
 Exit codes: 0 = stamped (--out saved) · 1 = REFUSED (--out NOT saved; the source
 loaded only with repairs — --force-load-repair accepts them deliberately) ·
@@ -17,8 +18,6 @@ import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

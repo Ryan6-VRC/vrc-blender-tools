@@ -2,50 +2,42 @@
 
 Two intents, two doors naming each other: ``cli/stage_handedit.py`` builds the edit
 scene and ``cli/harvest_handedit.py`` copies the operator's edit from it into the
-garment blend. Generalised from a personal venue's pair of hand-edit scripts; every
-trap those scripts named is kept and named again at the line that handles it.
+garment blend.
 
-Pure ``bpy`` data access plus the ``scene_utils`` mode helpers; no UI. The doors own
-every file open and save. The stage reads its inputs as plain data (:func:`read_body`,
-:func:`read_garment`, :func:`read_poses`, each on the blend the door has open), then
-builds into an empty file (:func:`build_scene`). The harvest snapshots the scene
-(:func:`read_edit`), then checks and copies into the open garment blend
+The doors own every file open and save. The stage reads its inputs as plain data
+(:func:`read_body`, :func:`read_garment`, :func:`read_poses`, each on the blend the door
+has open), then builds into an empty file (:func:`build_scene`). The harvest snapshots
+the scene (:func:`read_edit`), then checks and copies into the open garment blend
 (:func:`check_harvest`, :func:`apply_harvest`).
 
-**Stage.** The body armature and one body mesh are appended (append, not link: they
-must be posable and editable), then the garment meshes. Each garment mesh is
-re-parented to the body armature keeping its world transform, and its Armature
-modifier is re-pointed at the body rig with ``show_in_editmode`` and ``show_on_cage``
-on. **A garment rig of its own keeps its bones, not its object**: every bone a garment
-vertex group weights that the body rig lacks (a skirt chain, a ribbon) is copied onto
-the body rig at its rest, with its garment-only ancestors, under its parent's name; the
-garment's armature object leaves the scene, so the one rig the operator poses deforms
-every vertex. A weighted garment vertex group naming a bone on neither rig refuses by
-name: the harvest renormalises each vertex over all its groups, so a non-bone group
-would come back rescaled. Shape-key actions on the body and garment meshes are cleared,
-the row's key values are set, the body opens at its rest pose, and every garment
-mesh's active key is parked on Basis. The garment rig's bone constraints do not come
-along, and a modifier pointing at an object the scene does not carry keeps a dangling
-target; both are named as warnings.
+**Stage.** The body armature and one body mesh are appended, then the garment meshes.
+Each garment mesh is re-parented to the body armature keeping its world transform, and
+its Armature modifier is re-pointed at the body rig with ``show_in_editmode`` and
+``show_on_cage`` on. **A garment rig of its own keeps its bones, not its object**: every
+bone a garment vertex group weights that the body rig lacks is copied onto the body rig
+at its rest, with its garment-only ancestors, under its parent's name; the garment's
+armature object leaves the scene, so the one rig the operator poses deforms every vertex.
+Shape-key actions on the body and garment meshes are cleared, the row's key values are
+set, the body opens at its rest pose, and every garment mesh's active key is parked on
+Basis. The garment rig's bone constraints do not come along, and a modifier pointing at
+an object the scene does not carry keeps a dangling target; both are named as warnings.
 
 **Poses.** With a pose corpus, the corpus's one animated armature is the pose rig and
-only the channels in its own action slot are read. Every channel must be a bone's
-``rotation_quaternion`` with all four components; anything else refuses by bone name.
-Each timeline marker is one pose; frame 0 is added as the rest pose, and the markers
-carry over. Each pose bone's rotation is rebuilt on the body bone of the same name
-(or the ``bone_overrides`` spelling) by carrying its world-space rotation across both
-rests; for two armature objects with equal rotation that is the armature-space rotation.
-Each bone's rotation is carried as its own local delta, so the body reproduces the
-corpus's world pose wherever the mapped bones' parent chains match, whatever their rolls;
-where a chain differs (a dropped bone between two mapped ones) the bones below it miss
-that bone's rotation. A corpus bone the body lacks refuses unless
-``absent_bones='drop'``, which leaves its rotation out and names it; a dropped bone whose
-name matches a body bone but for case, ``_`` and ``.`` still refuses, since it is that
-bone spelled differently and wants ``--bone-override``.
+only the channels in its own action slot are read, since another slot in the same action
+animates another ID. Every channel must be a bone's ``rotation_quaternion`` with all four
+components. Each timeline marker is one pose; frame 0 is added as the rest pose. Each
+pose bone's rotation is rebuilt on the body bone of the same name (or the
+``bone_overrides`` spelling) by carrying its world-space rotation across both rests, as
+its own local delta, so the body reproduces the corpus's world pose wherever the mapped
+bones' parent chains match, whatever their rolls; where a chain differs (a dropped bone
+between two mapped ones) the bones below it miss that bone's rotation. A corpus bone the
+body lacks refuses unless ``absent_bones='drop'``, which leaves its rotation out and
+names it; a dropped bone whose name matches a body bone but for case, ``_`` and ``.``
+still refuses, since it is that bone spelled differently and wants ``--bone-override``.
 
 **Editing aids.** Every bone with a parent is location-locked and the pivot is
 individual origins, so a multi-bone rotation does not pull bones out of their sockets;
-a root bone keeps its location free. Proportional editing is on, smooth, 0.02 m.
+a root bone keeps its location free.
 """
 import array
 import re
@@ -181,8 +173,7 @@ def read_garment(names: Sequence[str], body: Dict[str, Any]) -> Dict[str, Any]:
     """Resolve the garment meshes in the open garment blend, as plain data.
 
     Each must be a local mesh with exactly one Armature modifier, all on one rig, and
-    must not share a name with the body armature or body mesh (the harvest finds
-    meshes by name, and append would rename the second one). Returns each mesh's
+    must not share a name with the body armature or body mesh. Returns each mesh's
     world matrix, key names, and the garment-only bones to copy onto the body rig."""
     offenders = [n for n in names if _local(n) is None or _local(n).type != 'MESH']
     if offenders:
@@ -280,10 +271,8 @@ def read_poses(body: Dict[str, Any], bone_overrides: Optional[Dict[str, str]] = 
                absent_bones: str = "refuse") -> Dict[str, Any]:
     """Read the open pose corpus as per-body-bone local quaternions per marker frame.
 
-    The pose rig is the corpus's one local armature with an action. Only the channels
-    of the rig's own action slot are read: another slot in the same action animates
-    another ID. ``bone_overrides`` maps a corpus bone name onto the body's spelling,
-    and wins over a same-named body bone."""
+    ``bone_overrides`` maps a corpus bone name onto the body's spelling, and wins over
+    a same-named body bone."""
     bone_overrides = dict(bone_overrides or {})
     rigs = sorted((o for o in bpy.data.objects
                    if o.library is None and o.type == 'ARMATURE' and o.animation_data
@@ -540,8 +529,6 @@ def build_scene(body_path: str, garment_path: str, body: Dict[str, Any],
     ts.use_proportional_edit = True
     ts.proportional_edit_falloff = 'SMOOTH'
     ts.proportional_size = 0.02
-    # Individual origins + locked locations: a multi-bone rotation otherwise translates
-    # bones out of their sockets. A root bone keeps its location free.
     ts.transform_pivot_point = 'INDIVIDUAL_ORIGINS'
     for pb in arm.pose.bones:
         pb.lock_location = (pb.parent is not None,) * 3
@@ -653,7 +640,7 @@ def _snapshot(obj) -> Dict[str, Any]:
 
 def read_edit(names: Sequence[str]) -> Dict[str, Dict[str, Any]]:
     """Snapshot each named mesh of the open edit scene: geometry, keys, normalised
-    weights, custom normals and the gate fields. Leaves Edit Mode first."""
+    weights, custom normals and the gate fields."""
     _leave_edit_mode()
     missing = [n for n in names if _local(n) is None or _local(n).type != 'MESH']
     if missing:
@@ -717,8 +704,6 @@ def check_harvest(snaps: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str
                for x, y in zip(r1, r2)):
             mine.append("matrix_world differs from the garment mesh's: the rig or garment was "
                         "moved in the scene or in the garment blend; move it back or re-stage")
-        # The copy is by vertex index, valid only on identical topology; an added or
-        # removed vertex would scramble the mesh.
         if (s["verts"] != len(me.vertices) or s["edges"] != _ints(me.edges, 'vertices', 2)
                 or s["loops"] != _ints(me.loops, 'vertex_index')
                 or s["polys"] != _ints(me.polygons, 'loop_total')):
@@ -778,8 +763,8 @@ def check_harvest(snaps: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str
 def apply_harvest(snaps: Dict[str, Dict[str, Any]]) -> None:
     """Copy Basis, every key, normalised weights and custom normals by index into the
     open garment blend's meshes. Call only after :func:`check_harvest` returned no
-    offenders. UVs, other attributes, shape-key values, sharp flags and materials do
-    not travel."""
+    offenders. UVs, seams, other attributes, shape-key values, sharp flags, materials,
+    and vertex-group names and order do not travel."""
     for n, s in snaps.items():
         t = _local(n)
         me = t.data

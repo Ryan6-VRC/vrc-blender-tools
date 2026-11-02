@@ -6,21 +6,13 @@ Blender auto-suffixes on collision, so ``Face`` lands on ``Body.001`` and the mi
 is silent — reported names look right while the object carries the wrong one, and it
 surfaces much later as a Unity clip binding that resolves to nothing.
 
-Object names are unique across ``bpy.data.objects`` — spanning every SCENE and every
-object TYPE — so the collision scan has to be wider than the per-scene resolvers
-elsewhere in this package (``resolve_arm``, ``find_armature``, ``get_bound_meshes``),
-which are correctly per-scene for their own purposes. An armature named ``Body`` in
-another scene collides with a mesh rename here; measured.
+Object names are unique across ``bpy.data.objects``, spanning every scene and object
+type, so the collision scan is file-wide: an armature named ``Body`` in another scene
+collides with a mesh rename here.
 
-The mesh DATABLOCK name is deliberately untouched. It diverges from the object name
-routinely on real assets (``Svak (Owned)``, a shipped owned base, carries object
-``Body`` over datablock ``Plane.002``; an FBX-imported base measured 22 of 22
-diverged), it is vendor modelling residue, and nothing downstream reads it: Unity's
-clip paths and name-based material matching key on the object name, which is what
-becomes the GameObject. Syncing them would rename residue no consumer reads and bury
-the load-bearing renames in noise.
-
-Pure bpy: no operator, no UI.
+The mesh datablock name is deliberately untouched. It diverges from the object name
+routinely and nothing downstream reads it: Unity's clip paths and name-based material
+matching key on the object name, which is what becomes the GameObject.
 """
 from typing import Any, Dict, List
 
@@ -28,8 +20,8 @@ import bpy
 
 
 class RenameRefused(Exception):
-    """Raised before any mutation when the requested set cannot be applied as asked.
-    Carries ``offenders`` (list of str) so a door can print them individually."""
+    """Raised when the requested set cannot be applied as asked: before any mutation when
+    the plan refuses, mid-set when an apply step loses its object or name. Carries ``offenders`` (list of str) so a door can print them individually."""
 
     def __init__(self, message, offenders):
         super().__init__(message)
@@ -72,9 +64,7 @@ def plan_renames(pairs) -> Dict[str, Any]:
             warnings.append("rename %r -> itself; no-op" % old)
             continue
         holder = objs.get(new)
-        # A name freed by another pair in the same set is NOT a collision -- that is
-        # the whole point of resolving as a set. A name held by an object nobody is
-        # renaming away is.
+        # A name freed by another pair in the set is not a collision.
         if holder is not None and new not in pairs:
             offenders.append("target name %r is already held by %s %r (not being "
                              "renamed away by this set)" % (new, holder.type, holder.name))
@@ -87,8 +77,6 @@ def plan_renames(pairs) -> Dict[str, Any]:
     if offenders:
         return {"offenders": offenders, "warnings": warnings, "order": [], "cycles": []}
 
-    # Topological order: apply a pair once its target name is free. Whatever is left
-    # when nothing is free is a cycle, which no ordering can solve.
     remaining = {o: n for o, n in pairs.items() if o != n}
     taken = {ob.name for ob in objs}
     order: List[Dict[str, Any]] = []
@@ -119,16 +107,15 @@ def rename_objects(pairs, *, whatif=False) -> Dict[str, Any]:
     anything when the plan does not hold.
 
     Returns ``{"renamed", "source_map", "order", "cycles", "warnings", "whatif"}``.
-    ``renamed`` is read back OFF THE OBJECTS after assignment, never echoed from the
-    request: Blender silently auto-suffixes on a collision, so a report built from what
-    was asked for is exactly the lie this door exists to prevent. A residual suffix is
+    ``renamed`` is read back off the objects after assignment, never echoed from the
+    request, because Blender silently auto-suffixes on a collision. A residual suffix is
     a refusal, not a warning.
 
-    ``source_map`` is ``{ourName: sourceName}`` — the inverse the Unity material-copy
-    step consumes, emitted so nobody maintains it by hand.
+    ``source_map`` is ``{ourName: sourceName}``, the inverse the Unity material-copy step
+    consumes.
 
-    Under ``whatif`` the set-level checks and the ordering are real and nothing is
-    touched; the read-back assertion cannot run, since there is nothing to read back."""
+    Under ``whatif`` the checks and the ordering run and nothing is touched, so the
+    read-back does not run."""
     plan = plan_renames(pairs)
     if plan["offenders"]:
         raise RenameRefused("rename_objects refused %d name(s)" % len(plan["offenders"]),
@@ -138,7 +125,6 @@ def rename_objects(pairs, *, whatif=False) -> Dict[str, Any]:
               "cycles": plan["cycles"], "warnings": list(plan["warnings"]),
               "whatif": bool(whatif)}
     if whatif:
-        # The plan's final resting name per original object, temp hops collapsed.
         chain = {}
         for step in plan["order"]:
             origin = chain.pop(step["from"], step["from"])

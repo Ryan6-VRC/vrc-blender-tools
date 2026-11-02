@@ -1,19 +1,17 @@
 """The repo gate: run every suite headless and enforce exit code AND token.
 
-A suite passes only when its Blender process exits 0 AND its ``<TOKEN> OK``
-line printed — either signal alone can lie (``_harness.py`` owns the why).
+Either signal alone can lie; ``_harness.py`` owns the why.
 
 Runs under plain Python, not Blender:
 
     python tests/run_all.py [--blender <path-to-blender.exe>]
 
-The Blender binary comes from ``--blender`` or the ``BLENDER`` env var; there
-is no default, because a hardcoded machine path in a public repo rots.
+One suite: --only, or directly ``blender --background --factory-startup
+--python tests/<suite>.py``, which prints ``<TOKEN> OK`` or
+``<TOKEN> FAIL: <reason>`` and exits 1 on failure.
 
-The suite list is explicit — no discovery magic decides what runs. But a
-``tests/test_*.py`` that is neither listed nor in EXCLUDE fails the gate by
-name: an unlisted suite would otherwise silently never run, which is the same
-crash-reads-as-pass hole one level up.
+The Blender binary comes from ``--blender`` or the ``BLENDER`` env var, with no
+default.
 """
 import argparse
 import glob
@@ -51,8 +49,7 @@ SUITES = {
     "test_weight_transfer.py": "WEIGHTS_TEST",
 }
 
-# test_*.py deliberately not run by the gate (none today; name and justify any
-# addition here, or it fails below).
+# test_*.py deliberately not run by the gate; justify any addition here.
 EXCLUDE = set()
 
 # Wide enough for test_cli_seam, which spawns its own Blender subprocesses.
@@ -102,10 +99,9 @@ def main():
             code = proc.returncode
         except subprocess.TimeoutExpired:
             out, code = "", None
-        # Whole-line anchor, not a substring: Blender exits 0 on an unhandled
-        # script exception, so the token is the only trustworthy signal — and a
-        # SyntaxError beside the OK print echoes that source line into the
-        # traceback, where a substring match would read the crash as a pass.
+        # Line-start anchor, not a substring: a SyntaxError beside the OK print
+        # echoes that source line into the traceback, where a substring match
+        # would read the crash as a pass.
         token_ok = any(ln.strip().startswith("%s OK" % token)
                        for ln in out.splitlines())
         ok = code == 0 and token_ok
@@ -123,8 +119,6 @@ def main():
         print("RUN_ALL FAIL:", ", ".join(failures))
         sys.exit(1)
     if args.only:
-        # Never the gate's verdict line — anything grepping for the gate must
-        # not mistake a hand-picked subset for a full pass.
         print("RUN_ALL PARTIAL %d/%d — not the gate"
               % (len(selected), len(SUITES)))
     else:

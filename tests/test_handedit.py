@@ -1,34 +1,9 @@
 """Synthetic headless test for avatarprep.core.handedit and its two doors,
 cli/stage_handedit.py and cli/harvest_handedit.py.
 
-Run: blender --background --factory-startup --python tests/test_handedit.py
-Prints HANDEDIT_TEST OK / HANDEDIT_TEST FAIL: <reason>.
-
-Fixtures, built fresh into a temp folder:
-
-- ``body.blend``: ``Rig`` (``Hips -> Spine``, ``Hips -> Thigh.L -> Shin.L``), its object
-  turned 90 degrees about X with its bones counter-rotated, so the body's object
-  rotation enters both the pose carry and the garment's re-parenting. It deforms
-  ``Skin`` (keys ``Basis``, ``Cover``) and ``Head``, so discovery without
-  ``--body-mesh`` refuses; ``body_one.blend`` is the same without ``Head``.
-- ``garment.blend``: ``GarmentRig`` at an offset, carrying ``Hips``, ``Thigh.L`` and the
-  garment-only chain ``Hips -> Frill -> Frill.001``, with a bone constraint on
-  ``Frill``. ``Skirt`` is parented to it with a non-identity parent inverse and its own
-  rotation (the appended-``matrix_world`` trap), weighted to ``Hips``, ``Thigh.L`` and
-  ``Frill.001`` only, with keys ``Basis``, ``Flare`` and ``Tuck`` (relative to
-  ``Flare``), a shape-key action, custom normals and a sharp edge. ``Band`` has no
-  shape keys and a Mirror modifier mirroring about an empty the scene will not carry.
-  ``Patch`` carries a weighted non-bone group ``Mask``.
-- ``poses.blend``: ``Poser``, its object turned 90 degrees about Z with its bones
-  counter-rotated and rolled differently from ``Rig``'s, so only a world-space carry
-  across both rests reproduces its pose; it keys ``Hips``, ``Thigh_L`` (the body's
-  ``Thigh.L`` spelled differently) and ``Extra`` (no body bone) at two markers.
-  Variants add a location channel, drop a quaternion component, or add a marker at
-  frame 0.
-
-The round trip stages a scene, applies a Basis move, a key move, a weight change, a
-move on a keyless mesh and a custom-normal change by script, harvests into a garment
-blend saved in Edit Mode, and diffs the garment blend against the edited scene.
+``Skirt`` carries a non-identity parent inverse and its own rotation for the
+appended-``matrix_world`` trap. ``Poser`` is rotated and rolled differently from the
+body's ``Rig``, so only a world-space carry across both rests reproduces its pose.
 """
 import hashlib
 import math

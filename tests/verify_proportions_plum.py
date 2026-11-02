@@ -1,21 +1,19 @@
-"""Reference-verification harness for the 'Custom Plum' chain (Task 10).
+"""Reference-verification harness for the 'Custom Plum' chain.
 
-Custom Plum = Plum -> Chiffon -> Custom Chiffon (two edges). This harness imports
-the vendor Plum FBX, applies edges/plum-to-chiffon.json then
-edges/chiffon-to-custom_chiffon.json via avatarprep.core.proportions.apply_proportion_edge, then
-compares the resulting armature's bone REST positions (bone heads, in WORLD space
-metres) against the hand-made BasePlum.blend reference for every commonly-named
-bone. World space is used because the vendor import and the hand-made reference may
-carry different armature object matrices (the vendor rig is 0.01-scaled, rotated);
-world position is the frame-independent ground truth (Shinano hit 0.00000 m here).
+Custom Plum is vendor Plum taken through Chiffon to Custom Chiffon by two edges,
+edges/plum-to-chiffon.json then edges/custom_chiffon.json. This harness applies both to
+the vendor Plum FBX, then compares the bone REST heads, in WORLD space, against the
+hand-made BasePlum.blend reference for every commonly-named bone. World space is used
+because the vendor import and the reference may carry different armature object matrices
+(the vendor rig is 0.01-scaled, rotated).
 
-Also reports body-mesh bbox height/width vs BasePlum and renders ortho FRONT/SIDE
-of the result to a scratch dir.
+Also reports body-mesh bbox H/W/D vs BasePlum and renders ortho FRONT/SIDE of both to a
+scratch dir.
 
 Run:
   blender --background --factory-startup --python tests/verify_proportions_plum.py -- \
       --fbx <vendor_Plum.fbx> --ref <BasePlum.blend> \
-      --p1 <plum-to-chiffon.json> --p2 <chiffon-to-custom_chiffon.json> --out <scratch_dir>
+      --p1 <plum-to-chiffon.json> --p2 <custom_chiffon.json> --out <scratch_dir>
 
 Prints VERIFY: lines; exits 0 always (measurement/report harness, not a gate).
 """
@@ -40,8 +38,6 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -75,8 +71,7 @@ def _find_body(meshes):
 
 def _eval_bbox(mesh):
     """World-space bbox from the DEPSGRAPH-evaluated mesh (honours shape keys +
-    any live modifiers; bound_box is stale after rest-pose foreach_set and ignores
-    shape keys, so it is not trustworthy here)."""
+    any live modifiers)."""
     deps = bpy.context.evaluated_depsgraph_get()
     ev = mesh.evaluated_get(deps)
     me = ev.to_mesh()
@@ -148,7 +143,6 @@ def main():
     enable_avatarprep()
     from avatarprep.core import import_fbx, scene_utils, proportions
 
-    # ---- Apply the chain to vendor Plum ----
     _clear()
     import_fbx.import_fbx(os.path.abspath(args.fbx))
     arm = scene_utils.find_armature()
@@ -175,7 +169,6 @@ def main():
     res_meshes = [o for o in bpy.data.objects if o.type == 'MESH']
     front_r, side_r = _render_pair(out_dir, "plum_result", res_meshes)
 
-    # ---- Reference BasePlum ----
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.ref))
     enable_avatarprep()
     from avatarprep.core import scene_utils as su2
@@ -187,7 +180,6 @@ def main():
     ref_armW = [tuple(round(c, 5) for c in row) for row in ref_arm.matrix_world]
     front_ref, side_ref = _render_pair(out_dir, "plum_ref", ref_meshes)
 
-    # ---- Bone-rest delta report ----
     common = sorted(set(res_heads) & set(ref_heads))
     only_res = sorted(set(res_heads) - set(ref_heads))
     only_ref = sorted(set(ref_heads) - set(res_heads))
@@ -198,7 +190,6 @@ def main():
     print("VERIFY: bone counts result=%d ref=%d common=%d (only_result=%d only_ref=%d)"
           % (len(res_heads), len(ref_heads), len(common), len(only_res), len(only_ref)))
 
-    # Focus set: core humanoid body bones present in both.
     focus_names = ["Hips", "Spine", "Chest", "Neck", "Head",
                    "Shoulder.L", "Shoulder.R", "UpperArm.L", "UpperArm.R",
                    "LowerArm.L", "LowerArm.R", "Hand.L", "Hand.R",
@@ -245,7 +236,6 @@ def main():
             print("VERIFY:   %s: mean=%+.5f absmean=%.5f min=%+.5f max=%+.5f spread=%.5f"
                   % (ax, s["mean"], s["absmean"], s["min"], s["max"], s["spread"]))
         print("VERIFY:   |delta| mean=%.5f m  max=%.5f m" % (stats["dist_mean"], stats["dist_max"]))
-        # uniform-offset vs position-dependent judgement
         max_spread = max(stats[k]["spread"] for k in range(3))
         if max_spread < 1e-4:
             print("VERIFY:   -> deltas ~UNIFORM (pure offset; spread<0.1mm)")
@@ -255,7 +245,6 @@ def main():
             print("VERIFY:   -> deltas POSITION-DEPENDENT (spread=%.4f m) -> not a pure offset"
                   % max_spread)
 
-    # Worst offenders (focus set if available else common)
     pick = focus if focus else common
     stats, rows = _delta_stats(pick)
     rows.sort(key=lambda r: -r[1].length)

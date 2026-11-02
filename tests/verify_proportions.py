@@ -1,11 +1,10 @@
-"""Reference-verification harness for the Shinano proportion profile (Task 10).
+"""Reference-verification harness for the Shinano proportion profile.
 
-Headless. Imports the vendor Shinano FBX, applies edges/custom_shinano.json via
-avatarprep.core.proportions.apply_proportion_edge, measures the body mesh world bbox, opens
-the hand-made BaseShinano.blend reference and measures ITS body mesh, prints % deltas,
-and renders orthographic FRONT/SIDE views of both to a scratch dir for visual review.
+Headless. Applies edges/custom_shinano.json to the vendor Shinano FBX, prints its body
+mesh's % bbox deltas against the hand-made BaseShinano.blend reference, and renders
+orthographic FRONT/SIDE views of both to a scratch dir for visual review.
 
-Also runs two deferred checks from the Task 3 review:
+Also checks that:
   (1) the breast median/normal op leaves the breast Y-extent ~unchanged (value Y==1.0),
   (2) a per-bone LOCAL op actually baked into the rest pose (Upper_leg length grew ~Y).
 
@@ -14,9 +13,8 @@ Run:
       --fbx <vendor_Shinano.fbx> --ref <BaseShinano.blend> \
       --profile <custom_shinano.json> --out <scratch_dir>
 
-Prints VERIFY: lines. Exits 0 when the two deferred checks (breast-Y-unchanged,
-leg-length-baked) pass; exits 1 if either lands in REVIEW. The H/W/D deltas and the
-renders are for human judgement of overall proportions, not gated.
+Prints VERIFY: lines. Exits 0 when those two checks pass; exits 1 if either lands in
+REVIEW. The H/W/D deltas and the renders are for human judgement, not gated.
 """
 import os
 import sys
@@ -39,8 +37,6 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -68,7 +64,6 @@ def _find_body(meshes):
     for m in meshes:
         if m.type == 'MESH' and m.name.lower() == BODY_MESH:
             return m
-    # fallback: tallest mesh
     cand = [m for m in meshes if m.type == 'MESH']
     return max(cand, key=lambda m: (_world_bbox([m])[1] - _world_bbox([m])[0]).z) if cand else None
 
@@ -81,13 +76,11 @@ def _dims(mesh):
 
 def _setup_render(out_dir, tag, all_meshes):
     scene = bpy.context.scene
-    # Workbench: deterministic headless solid shading, ideal for silhouette/proportion review.
     scene.render.engine = 'BLENDER_WORKBENCH'
     scene.render.resolution_x = 700
     scene.render.resolution_y = 1000
     scene.render.film_transparent = False
 
-    # Sun (honours the brief; Workbench uses studio light but we add it for parity with EEVEE runs).
     if "VERIFY_Sun" not in bpy.data.objects:
         sd = bpy.data.lights.new("VERIFY_Sun", 'SUN')
         sun = bpy.data.objects.new("VERIFY_Sun", sd)
@@ -128,7 +121,7 @@ def _render_pair(out_dir, prefix, all_meshes):
 
 
 def _measure_breast_y(meshes):
-    """Y-extent of vertices weighted to the breast bones, in world space."""
+    """World-space extent vector of the vertices weighted to the breast bones, or None."""
     return _region_extent(meshes, ("Breast_root", "Breast_1", "Breast_2"))
 
 
@@ -158,7 +151,7 @@ def main():
     enable_avatarprep()
     from avatarprep.core import import_fbx, scene_utils, proportions
 
-    # ---- Deferred check setup: measure breast Y-extent on a clean import first ----
+    # The two checks' baseline comes from a clean import.
     _clear()
     import_fbx.import_fbx(os.path.abspath(args.fbx))
     arm0 = scene_utils.find_armature()
@@ -166,7 +159,6 @@ def main():
     breast_before = _measure_breast_y(meshes0)
     upperleg0 = arm0.data.bones["Upper_leg.L"].length
 
-    # ---- Phase A: apply full profile to vendor Shinano, measure + render ----
     _clear()
     import_fbx.import_fbx(os.path.abspath(args.fbx))
     arm = scene_utils.find_armature()
@@ -188,7 +180,6 @@ def main():
 
     front_r, side_r = _render_pair(out_dir, "shinano", meshes)
 
-    # ---- Phase C: reference BaseShinano ----
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(args.ref))
     enable_avatarprep()
     from avatarprep.core import scene_utils as su2
@@ -199,7 +190,6 @@ def main():
     front_ref, side_ref = _render_pair(out_dir, "shinano_ref",
                                        [o for o in bpy.data.objects if o.type == 'MESH'])
 
-    # ---- Report ----
     def pct(a, b):
         return 100.0 * (a - b) / b if b else float('nan')
 

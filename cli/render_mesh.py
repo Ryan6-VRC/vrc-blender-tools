@@ -6,27 +6,16 @@ Run:
       [--angles front,back] [--shading solid|vertexcolor] [--resolution 1024] \
       [--out <dir>]
 
-``--out`` writes the sheet into that directory instead of the default persistent
-temp home (``<TEMP>/avatarprep_rendermesh``, 30-day self-pruned); an explicit
-directory is the caller's to manage and is never pruned.
-
-Opens ``--in`` read-only via wm.open_mainfile (never saved), calls
-``avatarprep.core.render_mesh.render()``, prints the one-line summary, and exits:
-  0 — render() returned an ``=> OK`` line.
-  1 — render() returned an ``=> FAIL`` line (a ran-but-failed refusal the agent acts on).
-  2 — setup/infra: --in failed to open, or render() raised unexpectedly.
-
-``--only`` and ``--angles`` split on comma into lists before the call (so an object name
-containing a comma cannot be targeted — rename it, or use the default whole-scene render).
-A bare traceback must never escape the result grammar: exit-2 paths emit an in-grammar
-``AVATARPREP: rendermesh ? => FAIL: ...`` line.
+Exit 0 when ``avatarprep.core.render_mesh.render()`` returns an ``=> OK`` line; 1 on an
+``=> FAIL`` line (a ran-but-failed refusal the agent acts on); 2 on bad args, an ``--in``
+that fails to open, or render() raising. Every exit-2 path prints an in-grammar line:
+``AVATARPREP: rendermesh ? => FAIL: ...``, or ``AVATARPREP: ERROR ...`` from ``open_blend``
+(a bad ``--in``) or ``run_cli`` (a crash).
 """
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -34,8 +23,7 @@ from cli._common import enable_avatarprep, open_blend, run_cli
 
 
 class _Parser(argparse.ArgumentParser):
-    """Argparse errors (missing --in, non-int --resolution) exit IN-GRAMMAR, not bare usage —
-    a traceback/usage dump must never escape the AVATARPREP: result grammar."""
+    """Argparse errors (missing --in, non-int --resolution) exit IN-GRAMMAR, not bare usage."""
     def error(self, message):
         print("AVATARPREP: rendermesh ? => FAIL: bad args: %s" % message)
         sys.exit(2)
@@ -76,9 +64,6 @@ def main():
     args = _parse_args()
     import bpy
 
-    # A bad --in exits in open_blend's own ERROR grammar rather than this tool's
-    # `rendermesh ? => FAIL` one: the open is the shared door's verdict, not a render
-    # verdict, and one message per failure beats two spellings of it.
     open_blend(args.in_path, writes=False)
 
     try:

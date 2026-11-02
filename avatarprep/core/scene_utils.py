@@ -1,10 +1,4 @@
-"""Pure helper utilities for AvatarPrep core.
-
-This module deliberately contains NO ``bpy.types.Operator`` subclasses and NO
-UI/panel code. It only uses ``bpy`` to read and manipulate scene data so that
-every helper here is callable from a headless ``--background --python`` run with
-no operator/UI context present.
-"""
+"""Pure helper utilities for AvatarPrep core."""
 
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
@@ -16,36 +10,29 @@ import mathutils
 
 # --- AvatarPrep stamp namespace ------------------------------------------------
 # All avatarprep stamps live under an ``avatarprep_`` custom-property namespace.
-# Advisory/strippable — Git/RunLogs are authoritative; a MISSING stamp reads as
-# *unknown*, not compatible. In-``.blend`` only: never exported to FBX (the Unity
-# export recipe omits ``use_custom_props``; do not change that).
+# Stamp semantics: the meta-repo docs/blender.md, State stamps.
+# In-.blend only: the Unity export recipe omits use_custom_props; do not change that.
 STAMP_BASE = "avatarprep_base"     # armature: body lineage (str); CREATED via stamp_base,
                                    # TRANSITIONED by an edge's target_base along a gated edge
 STAMP_STATE = "avatarprep_state"   # armature: proportion state (str); import_fbx seeds the reserved
                                    # 'unproportioned' origin, apply_proportion_edge writes the edge target
-STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake
+STAMP_BAKED = "avatarprep_baked"   # mesh: {shapekey: cumulative_value} dict; shapekey_bake, shapekey_transfer
 STAMP_WEIGHTS = "avatarprep_weights"  # mesh: the canonical transfer_weights command line (str) that last
                                    # wrote its body weights; transfer_weights
-STAMP_FOLDED = "avatarprep_folded" # mesh: str, the canonical fold_bones command line; written via
-                                   # write_stamp, so it is a scalar like STAMP_BASE/STAMP_STATE, not
-                                   # a dict like STAMP_BAKED
+STAMP_FOLDED = "avatarprep_folded" # mesh: the canonical fold_bones command line (str), written via write_stamp
 STATE_APPLYING = "<applying>"      # transient mid-apply sentinel; a value left here == a crash
-STAMP_PUSHED = "avatarprep_pushed"  # mesh OBJECT: the canonical push_garment command line (str);
-                                   # a stamped mesh refuses a second push
+STAMP_PUSHED = "avatarprep_pushed"  # mesh OBJECT: the canonical push_garment command line (str)
 STAMP_AUTHORED = "avatarprep_authored"  # mesh OBJECT: {shapekey: canonical mark_parts command line}
-                                   # dict, one entry per key the door authored; a dict like
-                                   # STAMP_BAKED, written directly, not through write_stamp
-STAMP_OFFSET = "avatarprep_offset"  # mesh OBJECT: the canonical offset_garment command line (str);
-                                   # a stamped mesh refuses a second offset
+                                   # dict, one entry per key the door authored; written directly
+STAMP_OFFSET = "avatarprep_offset"  # mesh OBJECT: the canonical offset_garment command line (str)
 STAMP_NORMALS = "avatarprep_normals"  # mesh OBJECT: {shapekey: canonical bake_shapekey_normals command
-                                   # line} dict, one entry per key whose normals the door baked; a dict
-                                   # like STAMP_AUTHORED, written directly
+                                   # line} dict, one entry per key whose normals the door baked; written
+                                   # directly
 
 
 def write_stamp(obj, key, value) -> None:
-    """Set ``obj[key] = value`` (a scalar str stamp). One code path for the scalar
-    base/state stamps, so stamping is never per-tool reinvented. (The baked-map axis
-    is a dict, written directly against ``STAMP_BAKED`` — it does not route here.)"""
+    """Set ``obj[key] = value``, the one code path for scalar str stamps. The dict
+    stamps (baked, authored, normals) are written directly and do not route here."""
     obj[key] = value
 
 
@@ -54,8 +41,7 @@ def read_stamp(obj, key):
 
     Deliberately does NOT collapse the ``STATE_APPLYING`` sentinel or a wrong-type
     value — callers classify via :func:`stamp_kind` so 'interrupted' and 'corrupt'
-    stay distinct from 'absent'. Collapsing them here is the exact bug this slice
-    exists to prevent."""
+    stay distinct from 'absent'."""
     return obj.get(key)
 
 
@@ -65,9 +51,7 @@ def stamp_kind(raw) -> str:
       'absent'      — ``None``
       'interrupted' — the ``STATE_APPLYING`` sentinel (a crashed mid-apply → corrupt geometry)
       'corrupt'     — present but not a ``str``
-      'value'       — a real ``str``
-
-    Sentinel is checked before the str test because the sentinel is itself a str."""
+      'value'       — a real ``str``"""
     if raw is None:
         return "absent"
     if raw == STATE_APPLYING:
@@ -98,12 +82,12 @@ def classify_stamp(base_raw, merge_raw) -> str:
 
 # --- File-open classification --------------------------------------------------
 # ``bpy.ops.wm.open_mainfile`` raises RuntimeError for two opposite outcomes: a
-# RECOVERABLE repair, where the file loads completely and Blender reports what it
-# altered as it read, and a genuine failure, where nothing loads and the PREVIOUSLY
-# loaded main stays live. One exception, opposite meanings — so the verdict is read
-# from post-load state, never from the message text. Blender also alters data
-# WITHOUT raising (an unresolvable linked library is a WARNING), which is why the
-# raise alone cannot define 'repaired'.
+# recoverable repair, where the file loads completely and Blender reports what it
+# altered, and a genuine failure, where nothing loads and the previously loaded
+# main stays live. So the verdict is read from post-load state, never from the
+# message text. Blender also alters data without raising (an unresolvable linked
+# library becomes a placeholder and only WARNS), so the raise alone cannot define
+# 'repaired'.
 
 def classify_open(raised_msg, landed, missing_libs):
     """Classify one open attempt from post-load state. Returns ``(kind, detail)``.
@@ -144,7 +128,7 @@ def open_policy(kind, *, writes, force_load_repair) -> str:
       'refuse'  — 'repaired' on a writing invocation, no override. Saving would
                   launder Blender's alteration into the deliverable, where nothing
                   downstream can detect it (``docs/blender.md`` carries the measured
-                  case: a base body up at 0 shape keys after one such load).
+                  case).
       'forced'  — 'repaired', writing, override given. Proceed, logged loudly.
       'warn'    — 'repaired' on a reading invocation. Proceed; the reads are real but
                   they describe the repaired state.
@@ -162,9 +146,8 @@ def _baked_entry(ob) -> Dict[str, Any]:
     """The per-mesh entry. A valid ``avatarprep_baked`` map → ``{name, baked: {shapekey:
     value}}``; a present-but-non-map one → ``{name, baked: None, corrupt: <repr>}``
     (flagged, never raised); no ``avatarprep_baked`` at all → no ``baked``/``corrupt`` key
-    (a mesh can qualify on ``avatarprep_folded`` alone). ``folded`` (the stamped fold_bones
-    command line) is added only when present, so an unfolded mesh's entry shape is
-    unchanged. Only its *placement* — under an owning armature vs. ``unbound`` — is new."""
+    (a mesh can qualify on another stamp alone). Each other stamp's key is added only
+    when present; :func:`report_stamps` lists them."""
     entry: Dict[str, Any] = {"name": ob.name}
     raw = ob.get(STAMP_BAKED)
     if raw is not None:
@@ -199,10 +182,10 @@ def _baked_entry(ob) -> Dict[str, Any]:
 
 def _library_fields(ob) -> Dict[str, Any]:
     """``library`` (the object's own) and ``data_library`` (its data's), each the
-    library path as stored (``//``-relative when linked relative) or ``None``. A linked reference reads both set; an override
-    object reads ``library=None`` over a set ``data_library`` — the one bit that
-    tells a reader its data cannot be edited or baked. Always present, so a
-    consumer never branches on key-absence."""
+    library path as stored (``//``-relative when linked relative) or ``None``. A
+    linked reference reads both set; an override object reads ``library=None`` over a
+    set ``data_library`` — the one bit that tells a reader its data cannot be edited
+    or baked. Always present, so a consumer never branches on key-absence."""
     return {"library": library_path(ob),
             "data_library": library_path(getattr(ob, "data", None))}
 
@@ -235,37 +218,28 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
 
     Every armature is reported even when unstamped (``base=None``,
     ``state_kind="absent"``) so absent/interrupted/corrupt read honestly, never
-    silently blank. The ``base``/``state``/``state_kind`` fields are unchanged.
+    silently blank.
 
     **The tool groups; it does not collapse.** Each mesh's baked map is returned as
-    stored — one per-mesh entry, unchanged in shape from the old flat list — just
-    partitioned under its single owning armature's ``meshes[]``. A corrupt (non-map)
-    ``avatarprep_baked`` is flagged (``baked=None`` + ``corrupt=<repr>``), not raised.
-    No collapse / reconcile / divergence / tolerance — that coherence reasoning lives
-    in compose-mergeable step 5, where the domain knowledge already is.
+    stored under its owning armature, and a corrupt (non-map) ``avatarprep_baked`` is
+    flagged, not raised. Coherence reasoning lives in compose-mergeable step 5.
 
-    Every entry carries ``library`` / ``data_library`` (the library path as
-    stored, or None).
-    A linked fit-reference rig (own-mergeable) reports its stamps like any other
-    armature — the grouping already keeps its morphs apart — and these two fields
-    are how a reader tells the reference from the mergeable when names alone do
-    not settle it. A collection INSTANCE of a linked base is invisible here (its
-    objects are not scene objects); ``fbx_export`` refuses that shape by name.
+    Every armature and mesh entry carries ``library`` / ``data_library`` (the library
+    path as stored, or None). A linked fit-reference rig (own-mergeable) reports its
+    stamps like any other armature, and these two fields tell the reference from the
+    mergeable when names alone do not settle it.
 
     **True partition — every stamped mesh appears exactly once.** Owner resolution
     reuses ``get_bound_meshes``' union ("bound" = parent OR armature-modifier target):
     a mesh with exactly one owning armature lands in that armature's ``meshes[]``; a
-    mesh owned by zero or by >=2 armatures (ambiguous — never duplicated) lands in
-    top-level ``unbound[]``. So the armatures' ``meshes[]`` plus ``unbound[]`` are
-    disjoint. Both ``meshes`` (per armature) and ``unbound`` are always present
-    (empty ``[]``, never absent)."""
+    mesh owned by zero or by >=2 armatures lands in top-level ``unbound[]``. Both
+    ``meshes`` (per armature) and ``unbound`` are always present (empty ``[]``, never
+    absent)."""
     if scene is None:
         scene = bpy.context.scene
     objects = list(scene.objects) if scene else list(bpy.data.objects)
 
     armature_objs = [ob for ob in objects if ob is not None and ob.type == 'ARMATURE']
-    # A mesh qualifies on any of its stamps (baked, weights, folded, pushed, offset, authored, normals),
-    # so a mesh carrying only one of them is not invisible here.
     baked_objs = [ob for ob in objects
                   if ob is not None and ob.type == 'MESH'
                   and any(ob.get(k) is not None
@@ -273,7 +247,6 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
                                     STAMP_OFFSET, STAMP_AUTHORED, STAMP_NORMALS))]
     baked_names = {ob.name for ob in baked_objs}
 
-    # Owner resolution: mesh name -> owning armature names, via get_bound_meshes' union.
     owners: Dict[str, List[str]] = {ob.name: [] for ob in baked_objs}
     for arm in armature_objs:
         for m in get_bound_meshes(arm, scene=scene):
@@ -285,9 +258,9 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
     for ob in baked_objs:
         entry = _baked_entry(ob)
         owning = owners[ob.name]
-        if len(owning) == 1:            # sole owner
+        if len(owning) == 1:
             arm_meshes[owning[0]].append(entry)
-        else:                          # zero or >=2 owners → unbound (never duplicated)
+        else:
             unbound.append(entry)
 
     armatures: List[Dict[str, Any]] = []
@@ -305,13 +278,8 @@ def report_stamps(scene: Optional[bpy.types.Scene] = None) -> Dict[str, Any]:
 
 
 # --- Library data --------------------------------------------------------------
-# Three predicates, one home. Every door that could mutate, default-target, or
-# whole-scene-export reads library status through these, never through a raw
-# ``.library`` test of its own. Two shapes are sanctioned: a LINKED reference
-# (own-mergeable's fit-reference base body: read-only, excluded from every
-# export) and an OVERRIDE object over linked data (a base body whose head mesh
-# is a library override of the authoritative head: local, exported like any
-# other object, but its data cannot take a bake or an edit).
+# Three predicates, one home: the armature pick, the prune and the export read
+# library status through these (``fbx_export``'s **Linked data** holds the two shapes).
 
 def is_linked(obj) -> bool:
     """``obj`` is a linked library object — a pure reference. Never a default
@@ -354,7 +322,7 @@ def is_editable(obj) -> bool:
 def library_path(idblock) -> Optional[str]:
     """The library path of a linked ID as stored — ``//``-relative when the link
     was made relative (the sanctioned shape), otherwise absolute — or ``None``
-    for local data. The handle every linked-data diagnostic names."""
+    for local data."""
     if idblock is None or idblock.library is None:
         return None
     return idblock.library.filepath
@@ -456,20 +424,13 @@ def _is_descendant(obj, ancestor) -> bool:
     return False
 
 
-# Cosine of the angle within which a rotation counts as leaving the up axis
-# fixed. Not load-bearing: the measured separation between the two residue
-# classes is 90 deg and the float noise on a real parked rotation is ~1e-6, so
-# anything in (1e-6, 0.5 deg) decides the same way on every observed file.
 _UP_AXIS_EPS = 0.99996  # cos(0.5 deg)
 
 
 def rotation_moves_up_axis(quat) -> bool:
     """True when ``quat`` does not leave Blender's +Z fixed — i.e. it encodes an
-    up-axis change rather than a spin about the up axis.
-
-    The discriminator for the whole axis-convention question, shared by the clear
-    gate below and by the merge path's diagnostics so both answer it identically.
-    ``fbx_export``'s orientation docstring is the canon."""
+    up-axis change rather than a spin about the up axis. ``fbx_export``'s orientation
+    docstring is the canon."""
     up = mathutils.Vector((0.0, 0.0, 1.0))
     return (quat @ up).dot(up) < _UP_AXIS_EPS
 
@@ -477,19 +438,17 @@ def rotation_moves_up_axis(quat) -> bool:
 # Two world rotations this close count as equal, so ONE clear delta can serve
 # both rigs. Keyed on abs(dot), never on ``rotation_difference().angle``:
 # quaternions double-cover and ``mat3_to_quat`` flips its sign branch exactly at
-# 180 deg — the (0,0,-180) front-axis class this gate exists for — so two rigs
-# whose 3x3s differ by 1.7e-07 read 360 deg apart through ``.angle`` and miss it.
-# 1e-9 on 1-|dot| is ~0.005 deg, ~70 um over a 1 m rig: an order under the merge
-# compat gate's 1 mm noise_tol, so nothing it admits can matter downstream.
+# 180 deg, so two rigs whose 3x3s differ by 1.7e-07 read 360 deg apart through
+# ``.angle``. 1e-9 on 1-|dot| is ~0.005 deg, ~70 um over a 1 m rig, an order under
+# the merge compat gate's 1 mm noise_tol.
 _ROT_EQUAL_EPS = 1e-9
 
 
 def rotations_equal(qa, qb) -> bool:
     """True when two world rotations are equal up to double-cover and float noise.
 
-    ``merge_armatures`` asks it of its two rigs and states the reasoning at its
-    own call site; ``has_own_rotation`` reuses it as the double-cover-safe
-    identity compare."""
+    The comment above owns the reasoning; ``has_own_rotation`` reuses it as the
+    double-cover-safe identity compare."""
     return 1.0 - abs(qa.dot(qb)) < _ROT_EQUAL_EPS
 
 
@@ -499,14 +458,12 @@ def has_own_rotation(obj) -> bool:
 
     Read off ``matrix_basis``, never off ``rotation_euler``. Those are separate RNA
     fields: an object in ``QUATERNION`` or ``AXIS_ANGLE`` mode carrying 180 deg
-    reads ``rotation_euler == (0,0,0)`` (measured), so a euler-keyed gate calls it
-    unrotated and silently opens.
+    reads ``rotation_euler == (0,0,0)``, so a euler-keyed gate calls it unrotated and
+    silently opens.
 
-    Compared through :func:`rotations_equal` rather than ``.angle``, for the same
-    double-cover reason that function exists for: measured,
-    ``Euler((0,0,2*pi)).to_quaternion()`` reports ``w=-1.0`` and
-    ``angle=6.2832``, so an ``.angle`` test reads an identity rotation as 360 deg
-    and false-refuses."""
+    Compared through :func:`rotations_equal`, not ``.angle``:
+    ``Euler((0,0,2*pi)).to_quaternion()`` reports ``w=-1.0`` and ``angle=6.2832``, so
+    an ``.angle`` test reads an identity rotation as 360 deg and false-refuses."""
     return not rotations_equal(obj.matrix_basis.to_quaternion(),
                                mathutils.Quaternion())
 
@@ -516,16 +473,11 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     rotation leaves the up axis fixed. Data untouched either way; nothing moves
     relative to the rig, because child objects ride along via parenting and
     modifier-bound NON-descendant meshes (a bound shape ``get_bound_meshes``
-    supports) are carried by the same world-space delta.
+    supports) are carried by the same world-space delta. Uncarried, the file would
+    ship their geometry 180 deg off the skeleton.
 
-    **Why conditional.** ``wm.fbx_import`` parks a source FBX's axis conversion
-    here, and ``export_scene.fbx`` re-derives its own (-90 X) presuming the data
-    it is handed is Blender-Z-up. Clearing is therefore sound only for a residue
-    that leaves the up axis fixed — a FRONT-axis convention difference (a Z-up
-    source parks (0,0,-180)). A residue that MOVES the up axis (a Y-up source
-    with an identity root node parks (90,0,0)) *is* the up-axis conversion:
-    clearing it double-counts and the avatar exports tipped 90 deg onto its face.
-    ``fbx_export``'s orientation docstring is the canon for the grid.
+    Conditional because clearing is sound only for a residue that leaves the up axis
+    fixed; ``fbx_export``'s orientation docstring is the canon.
 
     Returns ``(status, delta, undo)``:
       * ``status`` — ``'cleared'`` | ``'preserved'`` | ``'noop'``. Callers MUST
@@ -556,18 +508,14 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
     if identity:
         return 'noop', delta, undo
 
-    # Decide on the DELTA, not on ``matrix_world``'s rotation. For an unparented
-    # object the two tests are equivalent (the delta rotation is the inverse, and
-    # R fixes +Z iff R^-1 does), but they diverge when the armature has a parent
-    # object: matrix_world carries the parent's rotation while only the LOCAL
-    # rotation was zeroed, so gating on world would judge one rotation and act on
-    # another. The merge path preflights parented armatures; the export path does
-    # not. Deciding on the delta also makes this scale-proof for free: S cancels
-    # in ``(T*S)(T*R*S)^-1``, so ``delta`` is a pure rotation and ``.to_3x3()``
-    # here would read the same. The scale caveat belongs to ``matrix_world`` — if
-    # you ever gate on that instead, it MUST be ``.to_quaternion()``, because its
-    # un-normalized 3x3 returns a length-0.01 up vector on a cm-unit source and
-    # every such file would read as up-axis-moving whatever its rotation.
+    # Decide on the delta, not on ``matrix_world``'s rotation: under a parent object
+    # ``matrix_world`` carries the parent's rotation while only the local rotation
+    # was zeroed, so a world gate would judge one rotation and act on another. Both
+    # paths preflight parents: merge refuses any, export only one with its own
+    # rotation. S cancels in ``(T*S)(T*R*S)^-1``, so the delta's verdict is
+    # scale-invariant. A gate on ``matrix_world`` itself must use ``.to_quaternion()``:
+    # its un-normalized 3x3 returns a length-0.01 up vector on a cm-unit source and
+    # reads every such file as up-axis-moving.
     if rotation_moves_up_axis(delta.to_quaternion()):
         restore_transforms(undo)
         bpy.context.view_layer.update()
@@ -577,13 +525,8 @@ def clear_axis_convention_rotation(obj, already_moved: Optional[set] = None):
         if m.name in already_moved:
             continue
         if _is_descendant(m, obj):
-            # It rode along with its parent, so it HAS moved — record that, or a
-            # mesh bound to two rigs (parented to this one, modifier-bound to
-            # another) gets moved a second time by the other rig and lands at
-            # delta**2, 180 deg off the skeleton it is bound to (measured).
-            # This covers the case where the PARENT rig is cleared first; the
-            # reverse order needs the caller to seed ``already_moved`` with
-            # :func:`carried_by_parenting` for the rigs it has not reached yet.
+            # It rode along with its parent, so it HAS moved; record that
+            # (carried_by_parenting owns the delta**2 case and the reverse-order seed).
             already_moved.add(m.name)
             continue
         undo.append((m, 'matrix_basis', m.matrix_basis.copy()))
@@ -597,23 +540,18 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
     """``objects`` plus every descendant, ordered parents before children.
 
     The ordering is load-bearing for anything that calls ``transform_apply``.
-    Applying a parent does not push its transform into a child's *data* —
-    Blender compensates the child's local matrix instead — so the value merely
-    moves down one level, and a child applied first strands it there. Measured
-    on ``Sio_AFK``, whose armature (0.498056) and mesh (2.007806) carry
-    reciprocal scales: parent-first leaves the child at 0.99999994, which its own
-    apply then takes to 1.0; child-first cannot converge.
+    Applying a parent does not push its transform into a child's *data*; Blender
+    compensates the child's local matrix instead, so the value moves down one level
+    and a child applied first strands it there. ``Sio_AFK``'s armature (0.498056) and
+    mesh (2.007806) carry reciprocal scales, and child-first cannot converge on them.
 
-    Descendants are included for the same reason: a set naming only an armature
-    and its bound meshes relocates the value onto any intermediate EMPTY rather
-    than removing it (measured on Monoteiru, whose meshes hang off a ``geo_grp``
-    empty tree).
+    Descendants are included because a set naming only an armature and its bound
+    meshes relocates the value onto any intermediate EMPTY rather than removing it
+    (Monoteiru's meshes hang off a ``geo_grp`` empty tree).
 
-    Scope is the caller's set closed **downward only**. Seeding from each
-    object's topmost ancestor instead would silently enlarge the caller's scope:
-    an export scoped to one armature would reach an unrelated prop sharing a
-    scene root and bake its authored scale permanently. Ordering is recovered by
-    depth-sorting the closure rather than by where the walk starts.
+    Scope is the caller's set closed **downward only**. Seeding from each object's
+    topmost ancestor instead would let an export scoped to one armature reach an
+    unrelated prop sharing a scene root and bake its authored scale permanently.
     """
     if scene is None:
         scene = bpy.context.scene
@@ -633,8 +571,7 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
         walk(o)
 
     # Depth WITHIN the closure: an ancestor outside it is not going to be applied,
-    # so it does not order anything. Sort is stable, so same-depth objects keep
-    # the caller's order.
+    # so it does not order anything.
     depth: Dict[str, int] = {}
 
     def _depth(o):
@@ -647,40 +584,22 @@ def hierarchy_ordered(objects, scene: Optional[bpy.types.Scene] = None):
     return closure
 
 
-# A scale within this of 1.0 is already normalised — the deviation-from-1.0
-# predicate (_is_unit_scale) only. 1e-4 sits between two measured bands of the
-# vendor-base corpus (131 FBX surveyed; Y:\VROutfits outfits NOT surveyed, so
-# these bands are avatar-base facts): exporter float noise tops out at 2.9e-6
-# spread (22 meshes on one Sio file; 6 distinct files over the old 1e-6, which
-# made every export of them permanently "bake" pure noise and print the
-# permanent-mutation line about it), while the smallest AUTHORED values sit at
-# 1.5e-2 spread (Uruki's non-uniform accessories) and 0.9 uniform — two orders
-# of margin on each side.
+# A scale within this of 1.0 is already normalised. 1e-4 sits between two measured
+# bands of the vendor-base corpus: exporter float noise tops out at 2.9e-6 spread,
+# while the smallest authored values sit at 1.5e-2 spread and 0.9 uniform.
 _SCALE_EPS = 1e-4
 
-# How much composed shear the bake may drop, RELATIVE to the matrix's own
-# magnitude (``_composed_shear`` normalises; its docstring owns why that quantity
-# is the exact one). Relative is required, not a refinement: the same physical
-# shape reads 4.35e-1 of ABSOLUTE shear at unit magnitude and 4.35e-3 on a
-# cm-unit rig while moving the identical 0.216 m, so an absolute threshold is at
-# once 100x too loose on the cm-unit class (42 of the 131 surveyed files) and
-# tight enough to refuse pure float noise on a 100x rig, which reaches 7.6e-6
-# absolute. Relative reads 2.7515e-1 at every magnitude.
-#
-# 1e-5 sits 32x over the measured noise ceiling (3.13e-7 across 342 random
-# hierarchies, including the residue a 90/180 deg signed permutation leaves), 10x
-# over the noise-band (1+2.9e-6 spread) + 45 deg shape that must be ADMITTED at
-# 1.07e-6, and three orders under the 1.31e-2 a real 1 deg rotation composes.
-# Displacement is linear in shear (~1.9x), so this admits ~20 um on a 1 m rig —
-# two orders under ``_POSE_TRANSLATION_TOL``, the movement this file already
-# treats as negligible.
+# How much composed shear the bake may drop, relative to the matrix's own magnitude
+# (``_composed_shear`` normalises). It must be relative: the same shape reads
+# 4.35e-1 of absolute shear at unit magnitude and 4.35e-3 on a cm-unit rig while
+# moving the identical 0.216 m. 1e-5 sits over the 3.13e-7 noise ceiling and under
+# the 1.31e-2 a real 1 deg rotation composes.
 _SHEAR_EPS = 1e-5
 _DEGENERATE_EPS = 1e-9  # below this a component destroys geometry, not scales it
 
-# Object types ``transform_apply`` has no data to write into. Blender only
-# *warns* ("Objects have no data to transform") and leaves the scale in place, so
-# these have to be refused rather than attempted: the file would ship the node
-# scale this function promises to remove.
+# Object types ``transform_apply`` has no data to write into. Blender only *warns*
+# ("Objects have no data to transform") and leaves the scale in place, so these are
+# refused rather than attempted.
 _UNAPPLIABLE_TYPES = {'LIGHT', 'CAMERA', 'SPEAKER', 'LIGHT_PROBE'}
 
 # Constraints that can rewrite an object's scale at evaluation time. A static
@@ -702,12 +621,9 @@ def _scale_is_animated(obj) -> bool:
         d.data_path in ('scale', 'delta_scale') for d in ad.drivers))
 
 
-# World displacement the bake may introduce before it counts as a real pose
-# rather than import residue. A freshly imported vendor rig carries a little:
-# measured on Chocolat, 28 of 268 bones hold a non-zero pose translation, worst
-# 5.98e-05 armature units, predicting 59 micrometres of movement. This is the
-# same order as merge_armatures' ``noise_tol``, and leaves ~17x margin over that
-# residue while still catching anything that would visibly move geometry.
+# World displacement the bake may introduce before it counts as a real pose rather
+# than import residue; a fresh vendor rig's residue predicts micrometres (59 um on
+# Chocolat).
 _POSE_TRANSLATION_TOL = 1e-3  # metres
 
 
@@ -729,24 +645,20 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     scope safely. Reads only — call it before any mutation.
 
     Split out from the apply because the apply has **no undo**: a refusal
-    discovered halfway through leaves a scene with some objects baked and some
-    not, which is worse than either end state and cannot be walked back. Every
-    condition below is a measured way the bake stops being world-preserving or
-    stops reaching identity node scales; each names the object and the remedy.
+    discovered halfway through strands the scene half-baked, with no file and no way
+    back. Every condition below is a way the bake stops being world-preserving or stops
+    reaching identity node scales, and each refusal names the object and the remedy.
 
     Checked against the whole closure, not just the currently-non-unit objects:
     applying a parent pushes its scale onto a child that reads 1.0 today, so a
     child can become an offender during the run.
 
-    **Evaluates the depsgraph first.** Most conditions here read direct RNA
-    (``o.scale``, ``o.delta_scale``, ``o.constraints``), which is never stale; the
-    out-of-scope-ancestor and shear conditions below read ``matrix_world``, which
-    is. Measured on 5.2.0: setting ``h.scale = (2,2,2)`` then reading
-    ``h.matrix_world.to_scale()`` without an update returns ``(1,1,1)``, so those
-    refusals would silently pass for any caller setting a transform and exporting
-    in one go — the shear one reading a flat 0.0 on a scene composing 0.275.
-    ``view_layer.update()`` evaluates, it does not mutate, so the reads-only
-    contract above still holds.
+    **Evaluates the depsgraph first.** The out-of-scope-ancestor and shear conditions
+    below read ``matrix_world``, which is stale after a direct write: setting
+    ``h.scale = (2,2,2)`` then reading ``h.matrix_world.to_scale()`` without an update
+    returns ``(1,1,1)``, and shear reads a flat 0.0 on a scene composing 0.275.
+    ``view_layer.update()`` evaluates, it does not mutate, so the reads-only contract
+    above still holds.
     """
     bpy.context.view_layer.update()
 
@@ -755,32 +667,23 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
 
     # An ancestor OUTSIDE the caller's scope is neither baked nor (on a scoped
     # export) written, so its scale collapses into the in-scope descendant's own
-    # node and the file ships the very node scale this function exists to remove.
-    # Measured: a scoped export whose mesh hung off an out-of-scope EMPTY at 2.0
-    # wrote ``Lcl Scaling (2,2,2)``; the same shape on a cm-unit vendor import
-    # (armature + 20 meshes under a 0.01 root EMPTY) wrote 30 of 590 Model nodes
-    # at 0.01. Worse, the ancestor is invisible to the shear condition below, so
-    # a NON-uniform one exported silently at (1.58114, 1.58114, 1.0) — the shear
-    # dropped in the re-decomposition, which is geometry movement, not layout.
+    # node. A scoped export whose mesh hung off an out-of-scope EMPTY at 2.0 wrote
+    # ``Lcl Scaling (2,2,2)``, and a cm-unit vendor import under a 0.01 root EMPTY
+    # wrote 30 of 590 Model nodes at 0.01. A NON-uniform ancestor is invisible to the
+    # shear condition below, so it exported at (1.58114, 1.58114, 1.0) with the shear
+    # dropped.
     #
-    # Refused rather than absorbed, because the fix cannot be to widen the scope:
-    # ``hierarchy_ordered`` closes the caller's set DOWNWARD only, and applying a
-    # shared ancestor relocates its scale onto every sibling's local matrix — a
-    # permanent mutation of objects the caller never named. That function's
-    # docstring owns why downward-only is load-bearing.
+    # Refused rather than absorbed, because widening the scope would relocate a
+    # shared ancestor's scale onto siblings the caller never named; see
+    # ``hierarchy_ordered``'s downward-only closure.
     #
-    # Reads the ancestor's EVALUATED, COMPOSED scale rather than ``p.scale``, so
-    # one read covers stacked out-of-scope ancestors, a ``delta_scale`` (reads
-    # through at 3.0, measured) and scale-affecting constraints. Inspecting only
-    # the nearest out-of-scope ancestor per boundary edge is complete: the
-    # closure is downward-only, so a chain leaving it does so at exactly one
-    # edge, and ``matrix_world`` carries everything above that edge.
+    # Reads the EVALUATED, COMPOSED scale rather than ``p.scale``, so one read covers
+    # stacked out-of-scope ancestors, a ``delta_scale`` and scale-affecting
+    # constraints. A chain leaves the downward-only closure at exactly one edge, so
+    # the nearest out-of-scope ancestor is enough.
     #
-    # SCALE only, deliberately: an out-of-scope ancestor's ROTATION composes
-    # faithfully into the root-ified child's node — the written world transform
-    # is the one the scene had — so there is nothing to refuse there. Scale is
-    # refused because it collapses into the child's node as the very layout this
-    # function exists to remove.
+    # Scale only: an out-of-scope ancestor's rotation composes faithfully into the
+    # root-ified child's node, so there is nothing to refuse there.
     for o in closure:
         p = o.parent
         if p is None or p.name in in_scope:
@@ -788,11 +691,9 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
         # The transform the child actually INHERITS, not the parent's own world
         # matrix. Blender's "Parent, Keep Transform" stores a cancelling
         # ``matrix_parent_inverse``, so a child under a 2.0 parent can sit at world
-        # scale 1.0 — measured, and reading ``p.matrix_world.to_scale()`` refuses
-        # it although nothing leaks: on a scoped export the out-of-scope parent is
-        # not written, the child is root-ified at its WORLD transform, and that is
-        # already unit. This repo's own fixtures build scenes this way, so the
-        # false refusal is a native shape, not a hypothetical.
+        # scale 1.0, and reading ``p.matrix_world.to_scale()`` refuses it although
+        # nothing leaks: on a scoped export the out-of-scope parent is not written and
+        # the child is root-ified at its already-unit WORLD transform.
         inherited = o.matrix_world @ o.matrix_basis.inverted_safe()
         composed = tuple(inherited.to_scale())
         if not _is_unit_scale(composed):
@@ -854,14 +755,11 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
                 "Apply or remove the constraint before exporting" % (name, bad))
 
         # A bake REACHES ``o`` only when its own authored scale is non-unit or an
-        # in-scope ancestor's is (the apply pushes scale down; ``_has_baked_ancestor``
-        # walks that chain on ``o.scale``, the same predicate the live loop
-        # re-reads — never ``matrix_world.to_scale()``, which over-refuses under a
-        # Keep-Transform parent). Data the bake never reaches is exported as-is,
-        # so shared or library data at unit scale is not a refusal: a library
-        # override of the authoritative head at unit scale is the sanctioned
-        # body-swap shape, and it was measured refusing here at "1 other user"
-        # (the override's own reference object) before this narrowing.
+        # in-scope ancestor's is (``_has_baked_ancestor`` walks ``o.scale``, the
+        # predicate the live loop re-reads; ``matrix_world.to_scale()`` over-refuses
+        # under a Keep-Transform parent). Data the bake never reaches is exported
+        # as-is, so a library override of the authoritative head at unit scale, the
+        # sanctioned body-swap shape, is not a refusal.
         reached = not _is_unit_scale(scale) or _has_baked_ancestor(o, in_scope)
         if reached and not is_editable(o):
             raise ValueError(
@@ -884,14 +782,9 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
 
         # The bake rescales an armature's REST bones but does not touch pose-bone
         # location channels, so a translation keeps its old number under a new
-        # scale: world displacement goes from L*s to L, an error of L*(1-s).
-        # Measured on a 0.01-scaled rig posed 10 units: the bone head and the
-        # deformed mesh both moved 9.9 m. Gated on the predicted error rather than
-        # on "is there any translation", because a clean vendor import carries
-        # micrometre residue on dozens of bones and would otherwise refuse.
-        # Rest-pose exports (the normal case) are unaffected — which is why the
-        # skinned-mesh measurement could not see this; ``apply_proportion_edge``
-        # exits in POSE, so the path is reachable.
+        # scale: world displacement goes from L*s to L, an error of L*(1-s). A
+        # 0.01-scaled rig posed 10 units moved 9.9 m. Gated on the predicted error
+        # because a clean vendor import carries micrometre residue on dozens of bones.
         if o.type == 'ARMATURE' and not _is_unit_scale(scale):
             err = _max_pose_translation(o) * abs(1.0 - min(abs(c) for c in scale))
             if err > _POSE_TRANSLATION_TOL:
@@ -905,65 +798,41 @@ def check_scale_normalizable(objects, scene: Optional[bpy.types.Scene] = None) -
     # SHEAR, measured rather than inferred. A non-uniform scale anywhere above an
     # object composes into a world matrix carrying shear; ``transform_apply``
     # re-decomposes into loc/rot/scale, which cannot represent it, so it is dropped
-    # silently and the geometry moves (measured: 0.041 m on a 2x-in-X rig with a
-    # 45 deg-rotated child). The object's OWN rotation is safe — scale is innermost
-    # in ``loc @ rot @ scale`` — which is why this reads descendants, not ``o``.
+    # silently and the geometry moves (0.041 m on a 2x-in-X rig with a 45 deg-rotated
+    # child). The object's OWN rotation is safe, because scale is innermost in
+    # ``loc @ rot @ scale``, which is why this reads descendants, not ``o``.
     #
-    # Measured, NOT inferred from "non-uniform ancestor AND rotated descendant".
-    # That conjunction is a proxy on both sides. It over-refuses: a rotation about
-    # an axis whose two perpendicular scale components are equal commutes with that
-    # scale and composes exactly zero shear, as does any 90/180 deg rotation about
-    # any axis (a signed permutation maps the scale frame onto itself) — 14 of 75
-    # swept shapes read 0.000000 and refused. And it under-refuses, which is the
-    # half that shipped a bug: shear entering through a sheared
-    # ``matrix_parent_inverse`` has no rotated descendant and no non-uniform
-    # ancestor to key on, so a UNIFORM (2,2,2) parent over an UNROTATED child was
-    # measured passing this gate and moving geometry 0.077 m.
+    # "Non-uniform ancestor AND rotated descendant" is a proxy wrong on both sides. It
+    # over-refuses: a rotation about an axis whose two perpendicular scale components
+    # are equal composes zero shear, as does any 90/180 deg rotation about any axis,
+    # and 14 of 75 swept shapes read zero and refused. It under-refuses: shear entering
+    # through a sheared ``matrix_parent_inverse`` has no rotated descendant to key on,
+    # so a uniform (2,2,2) parent over an unrotated child passed and moved geometry
+    # 0.077 m.
     #
-    # Only objects some in-scope ancestor's bake will actually COMPENSATE. Shear is
-    # dropped when ``transform_apply`` rewrites a child's basis, and it rewrites one
-    # only for a parent it applies — so a subtree with no non-unit ancestor loses
-    # nothing, whatever its composed matrix reads. Measured, both shapes this
-    # excludes: an all-unit scene whose shear lives in a ``matrix_parent_inverse``
-    # read 0.220534 and refused while the bake applied nothing at all, and a
-    # bone-parented child under a posed bone read 0.313383 the same way. Walking the
-    # chain rather than testing the immediate parent is required because applying a
-    # parent pushes its scale onto a unit intermediate, which is then applied in turn
-    # — the same live-re-read ``normalize_object_scale`` relies on.
+    # Only objects some in-scope ancestor's bake will COMPENSATE are judged, because
+    # ``transform_apply`` rewrites a child's basis only for a parent it applies: an
+    # all-unit scene whose shear lives in a ``matrix_parent_inverse`` reads 0.220534
+    # while the bake applies nothing. Walk the chain, because applying a parent pushes
+    # its scale onto a unit intermediate, which is then applied in turn.
     #
-    # One pass over the closure, not one per (ancestor, descendant) pair: shear does
-    # not depend on which ancestor is asking, and the pairwise form costs 0.096 s
-    # against 0.0023 s on a 590-object closure (10 s on a deep chain) for an
-    # identical offender set.
+    # Roots are skipped because a root's basis is never rewritten. An object whose
+    # parent is out of scope is a root here, and the out-of-scope-ancestor condition
+    # above owns that case.
     #
-    # Roots are skipped because only a COMPENSATED child loses shear — a root's
-    # basis is never rewritten, so it has nothing to drop. An object whose parent is
-    # out of scope is a root here for the same reason, and the out-of-scope-ancestor
-    # condition above already owns that case with a message about scoping.
+    # BONE and VERTEX parenting are not excluded, but the reading is the composed
+    # WORLD one and a bone frame the bake never rewrites sits between parent and child,
+    # so a bone frame whose shear cancels a sheared ``matrix_parent_inverse`` reads ~0
+    # here while the local matrix still loses shear. That gap is deliberately left
+    # unjudged: the exact local form needs a ``Diagonal(parent world scale) @
+    # parent_inverse @ basis`` prefactor with no measurement behind it. Object
+    # parenting is exact, per ``_composed_shear``.
     #
-    # BONE and VERTEX parenting are measured, not excluded, but the reading is the
-    # composed WORLD one and a bone frame the bake never rewrites sits between
-    # parent and child — so for those the world read and the matrix the bake
-    # actually re-decomposes can diverge, and a bone frame whose shear cancels a
-    # sheared ``matrix_parent_inverse`` reads ~0 here while the local matrix still
-    # loses shear. Deliberately left unjudged rather than approximated: the exact
-    # local form needs a ``Diagonal(parent world scale) @ parent_inverse @ basis``
-    # prefactor this file has no measurement behind, and every claim here is
-    # measured. Object parenting — the shape every vendor import and every
-    # sanctioned workflow produces — is exact, per ``_composed_shear``.
-    #
-    # Running AFTER the per-object loop is what keeps this from shadowing the mirror
-    # and zero-component refusals, and it is sufficient on its own: that loop covers
-    # the WHOLE closure, so a mirrored or degenerate object anywhere raises with its
-    # own accurate message before this pass is entered. It matters because such an
-    # object does compose real shear once rotated — measured, a child at (-1,1,1)
-    # rotated 45 deg under a (2,1,1) parent composes 2.75e-1 — so a reorder would
-    # hand the user a remedy that only half-works. Keep the pass here.
-    #
-    # No own-scale filter guards this, deliberately: it would be dead alongside the
-    # ordering above, and the degeneracy that can actually reach the division is the
-    # COMPOSED one, which authored local scale cannot see. ``_composed_shear`` owns
-    # that, at the division itself.
+    # Keep this pass AFTER the per-object loop, which covers the whole closure, so a
+    # mirrored or degenerate object raises with its own message first. Such an object
+    # composes real shear once rotated (a child at (-1,1,1) rotated 45 deg under a
+    # (2,1,1) parent composes 2.75e-1), so a reorder would answer with a remedy that
+    # only half-works.
     sheared = [(c.name, _composed_shear(c)) for c in closure
                if c.parent is not None and c.parent.name in in_scope
                and _has_baked_ancestor(c, in_scope)]
@@ -998,36 +867,26 @@ def _composed_shear(obj) -> float:
 
     This is the EXACT quantity the bake drops, not a bound on it. ``transform_apply``
     folds ``matrix_parent_inverse`` into the compensated child's basis and resets it
-    to identity (measured), so the matrix Blender re-decomposes is
-    ``parent_world_after^-1 @ matrix_world`` — and ``hierarchy_ordered`` being
-    parent-first means every in-scope ancestor is already unit-scale by then, making
-    that prefactor rigid. A rigid prefactor preserves shear, so the composed read and
-    the dropped quantity are equal. Measured across 342 random hierarchies (depth 2-5,
-    Keep-Transform parenting, bone parenting, 0.01x-100x magnitudes): zero cases where
-    this read ~0 while the bake moved geometry.
+    to identity, so the matrix Blender re-decomposes is
+    ``parent_world_after^-1 @ matrix_world``. ``hierarchy_ordered`` being parent-first
+    leaves every in-scope ancestor unit-scale by then, which makes that prefactor
+    rigid, and a rigid prefactor preserves shear.
 
-    Reads ``matrix_world``, which is depsgraph-derived and therefore stale after a
-    direct write — safe only because ``check_scale_normalizable`` evaluates first;
-    its docstring owns that contract.
+    Reads ``matrix_world``, so the caller must have evaluated the depsgraph, as
+    ``check_scale_normalizable`` does.
     """
     m3 = obj.matrix_world.to_3x3()
     _, rot, sca = obj.matrix_world.decompose()
     rec = rot.to_matrix() @ mathutils.Matrix.Diagonal(sca)
-    # Per COLUMN, not against the largest component: each column of the composed
-    # basis is scaled by its own factor, so dividing the whole residual by
-    # max|scale| lets one large unrelated axis deflate the reading. Measured, a
-    # 45 deg-rotated child under (2,1,1e5): max-normalised reads 4.35e-06 and is
-    # ADMITTED while the bake moves geometry 0.082 m; per-column reads 2.7515e-01
-    # there and at (2,1,1), (2,1,100), (2,1,1e4) alike — the magnitude invariance
-    # ``_SHEAR_EPS`` is derived against.
+    # Per COLUMN, not against the largest component: dividing the whole residual by
+    # max|scale| lets one large unrelated axis hide the shear. A 45 deg-rotated child
+    # under (2,1,1e5) reads 4.35e-06 that way and is admitted while the bake moves
+    # geometry 0.082 m.
     #
-    # The clamp keeps a degenerate COMPOSED frame from dividing by zero. It is not
-    # reachable through the per-object zero-scale refusal, which reads authored
-    # local scale: measured, a child at local (1,1,1) bone-parented to a pose bone
-    # at (0,0,0) decomposes to a world scale of (0,0,0), and this function is
-    # contracted to return a float, not to raise out of a ValueError-only gate.
-    # The residual is ~0 there too, so the clamp yields 0.0 rather than a spurious
-    # refusal.
+    # The clamp keeps a degenerate COMPOSED frame from dividing by zero. The per-object
+    # zero-scale refusal reads authored local scale, so it cannot see a child at local
+    # (1,1,1) bone-parented to a pose bone at (0,0,0), which decomposes to a world
+    # scale of (0,0,0). The residual is ~0 there too, so the clamp yields 0.0.
     return max(abs(m3[r][c] - rec[r][c]) / max(abs(sca[c]), _DEGENERATE_EPS)
                for r in range(3) for c in range(3))
 
@@ -1056,45 +915,29 @@ def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
     **Permanent, with no undo.** A parked scale cannot be cleared unapplied the
     way a rotation can: the exporter writes node scale from ``matrix_world``, so
     writing identity nodes requires the scale to actually live in the data. The
-    inverse apply would be float-lossy across every vertex and shape key, which
-    is exactly the silent degradation this repo exists to avoid, so none is
+    inverse apply would be float-lossy across every vertex and shape key, so none is
     offered. Callers that need the scene back re-import it.
 
-    **Not gated on the parked value, because the value cannot tell you what it
-    means.** Surveying 131 vendor files, a parked ``0.01`` appears both as the
-    importer's cm-unit conversion (Chocolat) and as vendor-authored scale on a
-    *meter*-unit file (``Chiffon_ver1.0.0_kaihen``, ``Karin_ver1.1.1_kaihen``),
-    while a cm-unit file can read a deviation of exactly zero (``Plum_kaihen``
-    ships an authored 100.0 that cancels the conversion). Any gate keyed on the
-    number would refuse ~43% of the library and mis-explain a third of those. The
-    gates that DO exist are about representability, not provenance — they live in
-    ``check_scale_normalizable``.
+    **Not gated on the parked value.** A parked ``0.01`` appears both as the
+    importer's cm-unit conversion and as vendor-authored scale on a meter-unit file,
+    so the gates in ``check_scale_normalizable`` are about representability, not
+    provenance.
 
-    **Where the bake is exact, and where it is not.** For a mesh's own object
-    scale it is exact even when non-uniform and even when skinned: armature
-    deformation composes as ``M-1 D M v``, so baking ``S`` into the data leaves
-    the product invariant. Measured on the one library asset shipping AUTHORED
-    non-uniform scale (``Uruki_Quad_v1.2``, ``C_hairpin`` / ``C_pouch``; five
-    further files read non-uniform only as exporter float noise, under
-    ``_SCALE_EPS`` and untouched): under a pose
-    displacing them 0.25-0.30 m the deformed result moves 2.4e-07 / 3.6e-07 m
-    across the apply, against 1.5e-07 on an untouched control on the same rig.
-    It is **not** exact for a posed armature's translation channels, nor under
-    shear a loc/rot/scale decomposition cannot carry, from wherever it composes —
-    both refused above rather than absorbed, because both were measured to move
-    geometry by metres.
+    **Where the bake is exact.** For a mesh's own object scale it is exact even when
+    non-uniform and even when skinned: armature deformation composes as ``M-1 D M v``,
+    so baking ``S`` into the data leaves the product invariant. It is **not** exact
+    for a posed armature's translation channels or under composed shear;
+    ``check_scale_normalizable`` refuses both.
 
     Scope and ordering are :func:`hierarchy_ordered`'s.
     """
-    # Validate the whole scope first: the apply has no undo, so a raise partway
-    # through would strand the scene half-baked.
     check_scale_normalizable(objects, scene)
 
     applied = []
     for o in hierarchy_ordered(objects, scene):
         # Read live, not from a pre-computed plan: applying a parent pushes its
         # scale onto children, so an object reading 1.0 at validation time can
-        # need the bake by the time its turn comes (every mesh on Chocolat does).
+        # need the bake by the time its turn comes.
         scale = tuple(o.scale)
         if _is_unit_scale(scale):
             continue
@@ -1102,9 +945,8 @@ def normalize_object_scale(objects, scene: Optional[bpy.types.Scene] = None):
                'selected_editable_objects': [o]}
         op_override(bpy.ops.object.transform_apply, ctx,
                     location=False, rotation=False, scale=True)
-        # Verify rather than assume: ``transform_apply`` reports some refusals as
-        # a warning and leaves the scale in place, which would ship the very node
-        # scale this function exists to remove.
+        # ``transform_apply`` reports some refusals as a warning and leaves the
+        # scale in place, so verify.
         if not _is_unit_scale(tuple(o.scale)):
             raise ValueError(
                 "applying scale %r on %r left it at %r, so the export would ship "
@@ -1124,24 +966,19 @@ def carried_by_parenting(arm, scene: Optional[bpy.types.Scene] = None) -> set:
 
     Seed this into an ``already_moved`` set before moving a DIFFERENT armature
     that some of those meshes are also modifier-bound to: without it that move
-    displaces the mesh explicitly and ``arm``'s own carry moves it again.
+    displaces the mesh explicitly and ``arm``'s own carry moves it again, landing it
+    at ``delta**2``, 180 deg off the skeleton it deforms with.
 
-    Riding is decided by descent alone, so binding is irrelevant here, and the
-    old ``get_bound_meshes(arm) & descendants`` intersection was a measured hole:
-    ``get_bound_meshes``' parent limb reaches only TWO levels (matching CATS),
-    while ride-along is whatever ``_is_descendant`` walks. A mesh three levels
-    under ``arm`` — a ``geo_grp``-style EMPTY tree — was therefore missing from
-    the seed, and a second rig it was modifier-bound to moved it explicitly ON
-    TOP of the ride, landing it at ``delta**2``, 180 deg off the skeleton it
-    deforms with (measured through ``export_unity_fbx`` at 0.1).
+    Seeded by descent, not binding: ``get_bound_meshes``' parent limb reaches only
+    TWO levels (matching CATS), while ride-along is any depth, as under a
+    ``geo_grp``-style EMPTY tree.
 
     **Only sound when one delta moves every candidate.** A name here suppresses
     an explicit move, which is right only if the ride actually delivers the same
     delta. ``clear_axis_convention_rotation`` returns without moving anything on
     ``'preserved'`` and ``'noop'``, and it rotates each rig about its OWN origin,
     so per-rig clearing gives same-rotation rigs at differing origins DIFFERENT
-    deltas. ``merge_armatures`` — the sole remaining caller; the export refuses
-    multi-rig scope outright — therefore decides the axis class once and replays
+    deltas. ``merge_armatures`` therefore decides the axis class once and replays
     a single delta; seeding this into a per-rig clearing loop would strand
     meshes instead of rescuing them."""
     if scene is None:
@@ -1161,14 +998,11 @@ def apply_world_delta(obj, delta, already_moved: Optional[set] = None) -> list:
     one rig's delta onto the other keeps them rigid, and still lands ``obj`` at an
     identity rotation whenever the two rotations were equal.
 
-    Makes NO axis-class decision — the caller has already made it via
-    ``clear_axis_convention_rotation`` and is replaying the resulting delta, so
-    the two rigs cannot disagree about what their shared rotation meant.
+    Makes NO axis-class decision: the caller has already made it via
+    ``clear_axis_convention_rotation`` and is replaying the resulting delta.
 
     Returns an ``undo`` list replayable by :func:`restore_transforms`, the same
-    shape ``clear_axis_convention_rotation`` returns. The merge apply path — the
-    sole caller since the export began refusing multi-rig scope — moves
-    permanently and drops it."""
+    shape ``clear_axis_convention_rotation`` returns."""
     if already_moved is None:
         already_moved = set()
     bpy.context.view_layer.update()  # matrix_world is stale after direct writes
@@ -1207,13 +1041,10 @@ def in_view_layer(obj, view_layer=None) -> bool:
     depsgraph is rebuilt, and the stale read says ``True`` right up until
     ``select_set`` raises.
 
-    Both directions are identity-checked, and the second one is why the fallback
-    exists. ``bpy.data`` is keyed ``(name, library)``, so a local ``Body`` and a
-    LINKED ``Body`` coexist happily in one view layer — an *appended* one is renamed
-    ``.001``, so only a genuine link collides. A name-only lookup can then return the
-    other one, which would report a legitimately present object as absent and refuse
-    an export that should run. The keyed lookup stays first because it is O(1) and
-    right in every non-colliding case; the scan only pays on a miss.
+    Both directions are identity-checked because ``bpy.data`` is keyed ``(name,
+    library)``: a local ``Body`` and a linked ``Body`` coexist in one view layer, so
+    a name lookup can return the other one and report a present object as absent. The
+    scan is the fallback for that collision.
     """
     vl = view_layer or bpy.context.view_layer
     if vl.objects.get(obj.name) is obj:
@@ -1225,17 +1056,15 @@ def snapshot_visibility(objs, undo, view_layer=None) -> None:
     """Snapshot the three object-level hide flags, then clear them, so a caller-named
     object can actually be selected.
 
-    **Appends to the caller's ``undo`` list rather than returning one**, which is what
-    makes this transactional: if an RNA write raises partway through, the records for
-    the objects already cleared are in the caller's list and its ``finally`` restores
-    them. A version that built the list locally and returned it at the end would
-    discard exactly the records needed to undo the damage it had just done.
+    **Appends to the caller's ``undo`` list rather than returning one**, so if an RNA
+    write raises partway through, the records for the objects already cleared are in
+    the caller's list and its ``finally`` restores them.
 
-    ``hide_get``/``hide_set`` are per-view-layer and default to ``context.view_layer``
-    — the same one ``select_set``, ``context.selected_objects`` and the FBX exporter
-    read — so snapshot and restore are symmetric as long as no view-layer switch
-    happens between them. ``hide_viewport``/``hide_select`` are object-level (every
-    view layer, every scene): globally visible mid-call, globally restored.
+    ``hide_get``/``hide_set`` are per-view-layer and default to ``context.view_layer``,
+    the one ``select_set``, ``context.selected_objects`` and the FBX exporter read, so
+    snapshot and restore are symmetric as long as no view-layer switch happens between
+    them. ``hide_viewport``/``hide_select`` are object-level (every view layer, every
+    scene).
 
     Every object must already be ``in_view_layer``; ``hide_get()`` on one that is not
     silently returns ``False`` regardless of what was authored, so a snapshot taken
@@ -1243,8 +1072,6 @@ def snapshot_visibility(objs, undo, view_layer=None) -> None:
     """
     vl = view_layer or bpy.context.view_layer
     for o in objs:
-        # Record BEFORE the first write, so a raise on any of the three still leaves
-        # this object's original state recoverable.
         undo.append((o, o.hide_get(view_layer=vl), o.hide_viewport, o.hide_select))
         o.hide_set(False, view_layer=vl)
         o.hide_viewport = False
@@ -1254,12 +1081,10 @@ def snapshot_visibility(objs, undo, view_layer=None) -> None:
 def restore_visibility(undo, view_layer=None) -> None:
     """Replay a :func:`snapshot_visibility` undo list. Never raises: it runs in a
     ``finally`` beside other restores, so anything escaping here would mask the
-    original exception, and one dead object reference must not strand the rest of the
-    caller's file in a state it never authored.
+    original exception.
 
     One ``try`` per flag, not one per object: they are three independent RNA writes,
-    and a failure on the first must not leave the other two cleared — that is the
-    permanently-visible-everywhere state this function exists to undo."""
+    and a failure on the first must not leave the other two cleared."""
     vl = view_layer or bpy.context.view_layer
     for obj, hidden, hide_viewport, hide_select in undo:
         for write in (lambda: obj.hide_set(hidden, view_layer=vl),
@@ -1275,8 +1100,7 @@ def restore_visibility(undo, view_layer=None) -> None:
 def edit_mode(arm: bpy.types.Object):
     """Enter EDIT mode on ``arm`` and yield its ``edit_bones``, guaranteeing a
     return to OBJECT mode even on error. Headless-safe (wraps ``mode_set`` in an
-    ``op_override``). Replaces the hand-rolled active-set / try / finally-OBJECT
-    block repeated across the bone-editing helpers.
+    ``op_override``).
     """
     bpy.context.view_layer.objects.active = arm
     ctx = {'active_object': arm, 'object': arm}
@@ -1307,11 +1131,7 @@ def op_override(operator,
                 execution_context: Optional[str] = None,
                 undo: Optional[bool] = None,
                 **operator_args):
-    """Call a Blender operator with a temporary context override.
-
-    Uses ``context.temp_override`` (Blender >= 2.93); Blender 5.x always
-    satisfies that, so the legacy dict-positional path is not needed here.
-    """
+    """Call a Blender operator with a temporary context override."""
     args = []
     if execution_context is not None:
         args.append(execution_context)
@@ -1333,7 +1153,8 @@ def find_armature(name: Optional[str] = None,
     branches pick the active object (if an armature), then the first armature in
     the scene, **skipping library data** (``is_editable``: a linked rig, or an
     override) — every caller of the default pick goes on to mutate, and library
-    data crashes the Edit/Pose Mode entry.
+    data crashes the Edit/Pose Mode entry (a linked fit reference, first in the
+    scene, was picked and crashed the prune).
     """
     if scene is None:
         scene = bpy.context.scene
@@ -1344,11 +1165,6 @@ def find_armature(name: Optional[str] = None,
             if obj and obj.type == 'ARMATURE' and obj.name == name:
                 return obj
 
-    # The default branches never pick library data: a linked fit reference was
-    # measured being picked here (first in scene) and then crashing the prune,
-    # and an override armature fails the same poll while reading
-    # ``library is None`` — so the gate is ``is_editable``, not ``is_linked``.
-    # The explicit-name branch above is unconditional.
     active = getattr(bpy.context, "active_object", None)
     if (active is not None and active.type == 'ARMATURE' and active in objects
             and is_editable(active)):
@@ -1408,13 +1224,7 @@ def get_bound_meshes(armature: bpy.types.Object,
 
     A mesh is considered bound if it is parented to the armature (directly or via
     one level of indirection, matching CATS' ``get_meshes_objects`` mode 0) OR if
-    it carries an ARMATURE modifier whose target is this armature. The modifier
-    check makes the function robust to rigs that use modifiers without parenting.
-
-    ``scene`` defaults to ``bpy.context.scene`` — the exact object universe read
-    before this param existed, so every existing (positional-only) caller is
-    unaffected. ``report_stamps`` passes its own ``scene`` down so armature
-    enumeration and this per-armature binding walk share one object universe.
+    it carries an ARMATURE modifier whose target is this armature.
     """
     if armature is None:
         return []
@@ -1436,7 +1246,6 @@ def get_bound_meshes(armature: bpy.types.Object,
                 bound = True
             elif ob.parent.parent and ob.parent.parent == armature:
                 bound = True
-        # Modifier-based (robustness)
         if not bound:
             for mod in ob.modifiers:
                 if mod.type == 'ARMATURE' and mod.object == armature:
@@ -1478,7 +1287,6 @@ class SavedSelection:
                 ctx.view_layer.objects.active = self.active
             except Exception:
                 pass
-        # Restore each armature's mode (captured in __init__).
         for name, mode in self.armature_modes.items():
             o = bpy.data.objects.get(name)
             if o is None or o.mode == mode:

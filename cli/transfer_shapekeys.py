@@ -6,27 +6,17 @@ Run:
       [--authored Breasts_big=0.5 ...] [--keys Breasts_flat,Breasts_big] \
       [--no-seat] [--smooth N] [--heal-mm 20] [--scan Breasts_big] [--whatif] [--out <out.blend>] [--report <json>]
 
-The garment was cut against some configuration of the vendor body; the venue body rests
-at another (its ``avatarprep_baked`` map plus live key values). ``--authored`` names the
-configuration the garment was cut against, per key (absent keys read as 0, the vendor's
-neutral body); the seat moves the garment from there to the body's state. ``--keys`` names
-which of the body's keys land on the garment as relative keys — an optional call, since not
-every venue wants a garment carrying body morphs; a seat alone is a complete fix. A key
-that is added carries the body's state as its live value, with the authored offset folded
-into Basis and recorded as ``-authored``; a key that is not folds the whole seat into Basis.
-
-``--scan KEY`` reports the garment's gap against the body at each candidate value of KEY,
-so an unknown authored value can be read off it: the value with a near-zero minimum and no
-penetration. ``--whatif`` measures everything and writes nothing. The source is never
-written. Behaviour and the mechanism choice: ``avatarprep/core/shapekey_transfer.py``.
+``--authored`` names the body configuration the garment was cut against, and the seat moves
+the garment from there to the body's state. ``--keys`` is optional, since a seat alone is a
+complete fix. An unknown authored value can be read off ``--scan KEY``: the value with a
+near-zero minimum and no penetration. Behaviour and the mechanism choice:
+``avatarprep/core/shapekey_transfer.py``.
 """
 import os
 import sys
 import argparse
 import json
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

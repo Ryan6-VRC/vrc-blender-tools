@@ -1,8 +1,8 @@
-"""Flags and printed lines shared by the fit doors (``report_fit``, ``compare_fit``, ``push_garment``).
+"""Flags and printed lines shared by the fit doors.
 
-Only importable after a door's structural ``sys.path`` insert. The flag names are
-``transfer_weights``'s where the concept is the same; syntax errors exit 2 through the
-door's parser, and what the scene must hold (a bone, a group) is the core's to refuse.
+The flag names are ``transfer_weights``'s where the concept is the same; syntax errors
+exit 2 through the door's parser, and what the scene must hold (a bone, a group) is the
+core's to refuse.
 """
 import sys
 

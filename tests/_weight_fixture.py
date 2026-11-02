@@ -1,8 +1,5 @@
 """In-script fixture for the weight-transfer and fit suites and the add-on differential runner.
 
-Not a suite (no ``test_`` prefix): ``tests/test_weight_transfer.py``, ``tests/test_fit.py``
-and ``tests/acceptance/diff_addon.py`` build from it.
-
 Body ``Body_Base`` on ``BodyRig``: a pelvis tube (Hips, fading to UpperLeg.L/R at its
 lower rim) over two leg tubes (UpperLeg, LowerLeg below the knee, Hips at the top), Foot and
 Toes bones facing -Y, and a ``Bulk`` shape key. Garment ``Shorts`` on ``GarmentRig`` (the
@@ -103,7 +100,7 @@ def patch(x0, x1, y, z0, z1, n, inward, tag, verts, faces, tags):
     for i in range(n):
         for j in range(n):
             a = base + i * (n + 1) + j
-            q = (a, a + 1, a + n + 2, a + n + 1)  # normal -Y
+            q = (a, a + 1, a + n + 2, a + n + 1)
             faces.append(q[::-1] if inward else q)
 
 

@@ -7,8 +7,7 @@ tagline = "VRChat avatar prep: apply pose as rest, export Unity FBX"
 maintainer = "Ryan6-VRC <236273965+Ryan6-VRC@users.noreply.github.com>"
 type = "add-on"
 
-# Minimum Blender version. NO upper cap on purpose (CATS' upper-version guard
-# was its downfall on Blender 5.1+).
+# No upper cap on purpose: avatarprep/__init__.py.
 blender_version_min = "5.1.0"
 
 license = [

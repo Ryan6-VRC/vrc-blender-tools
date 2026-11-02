@@ -5,23 +5,17 @@ Run with::
     blender <in.blend> --background --factory-startup \
         --python cli/apply_pose.py -- --in <in.blend> --out <out.blend> [--scale-test]
 
-The script loads ``--in``, enables the AvatarPrep extension from the bundled
-source package (deterministic, no dependence on user prefs), calls the pure core
-function, and saves the result to ``--out``. ``--scale-test`` first scales the
-whole armature pose by 1.2x so the change is clearly non-identity (used by the
-verification harness).
+Loads ``--in``, calls the core function and saves to ``--out``.
 
-Exit codes: 0 = baked (--out saved) · 1 = REFUSED (--out NOT saved; a bound mesh the
-depsgraph will not evaluate would bake undeformed) · 2 = ERROR (unopenable --in,
-no armature, write failure).
+Exit codes: 0 = baked (--out saved) · 1 = --out NOT saved: REFUSED (a bound mesh the
+depsgraph will not evaluate would bake undeformed) or no armature · 2 = ERROR
+(unopenable --in, write failure).
 """
 
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -58,7 +52,6 @@ def main():
         print("AVATARPREP: ERROR no armature found")
         sys.exit(1)
 
-    # Put the armature into pose mode (required by the workflow).
     bpy.context.view_layer.objects.active = armature
     armature.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')

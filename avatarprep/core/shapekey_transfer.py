@@ -1,47 +1,36 @@
 """Seat a keyless garment on a body it was not cut for, and optionally give it the body's keys.
 
-A vendor garment carries no shape keys, or not the ones the venue body bakes or drives,
-and was cut against some configuration of the vendor body (the vendor's shipped defaults:
-Shinano's ``Breasts_big`` radial rests at 0.5, Plum's family sits at neutral). The venue
-body rests somewhere else (``Breasts_flat`` baked at 0.2, ``Breasts_small`` baked at 0.6),
-so the garment floats or sinks by the difference. This module moves the garment from the
-configuration it was authored against to the configuration the body is in now, by
-transferring each body key's delta onto the garment through a Surface Deform binding
-made on the body at the authored configuration, and can leave the transferred keys on the
-garment so a body morph driven later reaches it.
+A vendor garment was cut against some configuration of the vendor body and the venue body
+rests somewhere else, so the garment floats or sinks by the difference. This module moves
+the garment from the configuration it was authored against to the configuration the body
+is in now, through a Surface Deform binding made on the body at the authored
+configuration, and can leave transferred keys on the garment so a body morph driven later
+reaches it.
 
-Mechanism: a Surface Deform binding, which weights several nearby polygons per vertex,
-over a nearest-surface delta, which maps each vertex to one point; on the gap numbers the
-two tie. Neither knows what cloth does: a seat that carries a band across the underbust
-fold — un-baking a vendor's ``Breasts_big`` 0.5 moves the cups 25 mm — buckles the band,
-because vertices on either side of the fold follow skin that moves by different amounts.
-``smooth`` softens that into a gather at a small cost in gap fidelity; the render is the
-judge, as it is for any fit.
+A seat that carries a band across the underbust fold buckles the band, because vertices on
+either side of the fold follow skin that moves by different amounts. ``smooth`` softens
+that into a gather at a small cost in gap fidelity.
 
 Two effects, independently switchable by the caller:
 
-* **seat** — the garment Basis moves by ``(state_k - authored_k) * T_k`` for every key
-  whose authored configuration differs from the body's state, where ``T_k`` is the
-  transferred full delta of key ``k`` and ``state_k`` is the body's effective amount
-  (``avatarprep_baked`` cumulative plus live value). A key the caller also adds carries
-  the body's state as its live value, and only the authored offset folds into Basis; a key
-  not added folds the whole seat into Basis. Either fold is recorded in the garment's
-  ``avatarprep_baked`` map — a negative cumulative for an authored offset un-baked
-  (``Breasts_big`` -0.5), which ``compose-mergeable`` already reads as a fit-time proxy.
-* **add** — the caller names which keys land on the garment as relative keys. Optional:
-  not every venue wants a garment carrying body morphs, and a seat alone is a complete fix.
+* **seat** — the garment Basis moves by one Surface Deform evaluation of the body going
+  from its authored configuration to its state, a key's state being its
+  ``avatarprep_baked`` cumulative plus live value. A key the caller also adds carries the
+  body's state as its live value, and only the authored offset folds into Basis; a key not
+  added folds the whole seat into Basis. Either fold is recorded in the garment's
+  ``avatarprep_baked`` map — a negative cumulative for an authored offset un-baked, which
+  ``compose-mergeable`` reads as a fit-time proxy.
+* **add** — the caller names which keys land on the garment as relative keys.
 
 Movement is masked to each key's footprint — garment vertices whose nearest body point the
 key moves by more than ``footprint`` — so a ribbon or a strap far from the morph stays put.
-The body's disjoint islands no involved key moves — flush pasties, decals — are dropped from
-the binding surface and the mask, since a garment vertex nearest to one would otherwise
-freeze; the report names them. Where the mapping tears — a garment edge whose ends follow
-skin on either side of the underbust crease, or on two different breasts, and so move
-apart by more than the edge is long — the move within ``heal`` of the tear is re-solved as
-the smooth interpolation of its surroundings and held out of the skin, so a shell cup
-gathers instead of shearing into the band.
+The body's static islands are dropped from the binding surface and the mask
+(``_moving_islands``); the report names them. Where the mapping tears, moving an edge's
+two ends relative to each other by more than the edge is long, the move within ``heal`` of
+the tear is re-solved as the smooth interpolation of its surroundings and held out of the
+skin, so a shell cup gathers instead of shearing into the band.
 
-Pure ``bpy``; headless-safe; never writes the source.
+Never writes the source.
 """
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -157,8 +146,7 @@ def scan_authored(source, target, key, values=(0.0, 0.25, 0.5, 0.75, 1.0),
     key's core footprint. The authored value reads as the one with a near-zero minimum gap
     and no penetration; a garment that clears the skin at every value is not coupled to
     this key at all. ``neutral`` names keys held at 0 during the scan (the keys the
-    transfer will involve), matching the transfer's own reading of an absent key.
-    A report, never a choice."""
+    transfer will involve), matching the transfer's own reading of an absent key."""
     authored = dict(authored or {})
     for k in neutral:
         authored.setdefault(k, 0.0)
@@ -227,13 +215,9 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
     """Seat ``targets`` on ``source`` and add ``keys`` to them. See the module docstring.
 
     ``authored`` maps key name to the value the garment was cut against; a key absent from
-    it is taken as 0 (the vendor-neutral body). Every key named in ``authored`` or ``keys``
-    must exist on ``source``. A target already carrying a key in ``keys`` is refused by
-    name — a real vendor key is never overwritten; delete it first if it is a synthetic one.
-    ``smooth`` Laplacian-smooths each transferred displacement field over the garment's
-    own edges that many times, inside the footprint, trading gap fidelity for a band that
-    does not buckle where the mapping crosses a fold. ``whatif`` measures and reports,
-    writing nothing.
+    it is taken as 0 (the vendor-neutral body). ``smooth`` Laplacian-smooths each
+    transferred displacement field over the garment's own edges that many times, inside
+    the footprint. ``whatif`` measures and reports, writing nothing.
 
     Returns a report: per target the gap statistics before and after over the union
     footprint, the fidelity of each vertex's gap to its authored gap, leakage outside the
@@ -254,7 +238,6 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
     for k in keys + list(authored):
         if k not in involved:
             involved.append(k)
-    # Keys whose seat is nonzero: authored differs from the body's state.
     seat_amount = {k: state.get(k, 0.0) - authored.get(k, 0.0) for k in involved}
     for k in involved:
         if k in keys and not (0.0 <= state.get(k, 0.0) <= 1.0):
@@ -298,7 +281,6 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
     tree_now = BVHTree.FromPolygons([tuple(v) for v in VS], tris)
     foot_tri = {k: [max(D[k][j].length for j in t) > footprint for t in tris] for k in involved}
 
-    # One Surface Deform binding on the authored body, one full-key evaluation per key.
     me = bpy.data.meshes.new("avatarprep_transfer_src")
     me.from_pydata([tuple(v) for v in VA], [], tris); me.update()
     TA = bpy.data.objects.new("avatarprep_transfer_src", me)
@@ -363,8 +345,6 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
             healed = [False] * len(G)
 
             def _heal(field):
-                # Torn edges: the mapping moves the two ends relative to each other by more
-                # than the edge is long — apart across a bridge, together into a crush.
                 torn_edges = 0; torn = set()
                 for i, nbs in enumerate(adjacency):
                     for j in nbs:
@@ -428,7 +408,6 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
             def _hold_out(field, start, tree_start, tree_end):
                 # A healed vertex interpolates between skin that moved and skin that did not,
                 # so it can land inside the body; hold it at the gap it had before this move.
-                # Runs after smoothing, on the final field.
                 for i in range(len(G)):
                     if not healed[i]:
                         continue
@@ -482,16 +461,11 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                 if smooth:
                     T[k] = _smooth(T[k], mask)
                 if heal:
-                    # The key's move starts from the seated garment over the body at its
-                    # state and ends over the body wearing the key in full.
                     tree_key = BVHTree.FromPolygons([tuple(v + d) for v, d in zip(VS, D[k])], tris)
                     T[k] = _hold_out(T[k], seated, tree_now, tree_key)
             union = [(any(foot_tri[k][fi] for k in involved) if fi is not None else False) or h
                      for fi, h in zip(near, healed)]
-            # Seat: Basis move for keys not added; live value for keys added.
-            # Seat per key: an added key carries the body's state as its live value, so only
-            # the authored offset folds into Basis (-authored_k); a key not added folds the
-            # whole seat (state_k - authored_k). Either fold is recorded in avatarprep_baked.
+            # Seat per key (module docstring).
             live = {}
             fold = {}
             for k in involved:
@@ -539,7 +513,7 @@ def transfer_shapekeys(source, targets: Sequence, keys: Sequence[str] = (),
                     t.shape_key_add(name="Basis")
                 kbs = t.data.shape_keys.key_blocks
                 basis = kbs["Basis"]
-                # Move Basis; relative keys follow (Blender keeps each key's delta from Basis).
+                # Move Basis and every other key by the same amount, so each keeps its delta.
                 moved = any(bm.length > 0 for bm in basis_move)
                 if moved:
                     old = [Vector(p.co) for p in basis.data]

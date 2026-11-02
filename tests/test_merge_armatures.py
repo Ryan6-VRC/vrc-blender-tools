@@ -1,12 +1,4 @@
-"""Synthetic headless tests for avatarprep.core.merge_armatures.
-
-Run::
-
-    blender --background --factory-startup --python tests/test_merge_armatures.py
-
-Prints ``MERGE_TEST OK`` and exits 0 if all cases pass; prints
-``MERGE_TEST FAIL: <reason>`` and exits 1 otherwise.
-"""
+"""Synthetic headless tests for avatarprep.core.merge_armatures."""
 
 import os
 import sys
@@ -184,7 +176,6 @@ def test_stamp_missing_warns_and_passes():
 def test_force_stamps_split():
     from avatarprep.core.merge_armatures import merge_armatures
 
-    # (1) stamp-only FAIL cleared by force_stamps → PASS carrying forced_stamp.
     _clear_scene()
     base, merge = _twin_pair()
     _stamp(base, avatarprep_base="shinano")
@@ -210,7 +201,6 @@ def test_force_stamps_split():
         _stamp(m, avatarprep_base="plum")                 # → stamp mismatch
         return b, m
 
-    # (2) force_stamps alone: structural still FAILs.
     _clear_scene()
     b, m = _mixed()
     res = merge_armatures(b, m, force_stamps=True)
@@ -220,7 +210,6 @@ def test_force_stamps_split():
         _fail("force_stamps: expected structural offender to remain, got %r"
               % res.get("offenders"))
 
-    # (3) force (structural) alone: stamp mismatch still FAILs — proves the split.
     _clear_scene()
     b, m = _mixed()
     res = merge_armatures(b, m, force=True)
@@ -231,7 +220,6 @@ def test_force_stamps_split():
         _fail("force_split: expected stamp offender to remain under force, got %r"
               % res.get("offenders"))
 
-    # (4) both forces → PASS.
     _clear_scene()
     b, m = _mixed()
     res = merge_armatures(b, m, force=True, force_stamps=True)
@@ -262,8 +250,7 @@ def test_compat_flags_rename():
 
 
 def test_position_noise_tier():
-    """Sub-noise_tol deltas (FBX cross-vendor rounding scale, e.g. the measured
-    0.000222 toe delta) are NAMED but never gate; above noise_tol still FAILs."""
+    """Sub-noise_tol deltas are NAMED but never gate; above noise_tol still FAILs."""
     _clear_scene()
     base = _make_armature("Base", [
         ("Hips", Vector((0, 0, 1.0)), None),
@@ -364,7 +351,7 @@ def test_same_armature_guard():
         ("Spine", Vector((0, 0, 1.2)), "Hips"),
     ])
     from avatarprep.core.merge_armatures import merge_armatures
-    res = merge_armatures(base, base)  # same object for base and merge
+    res = merge_armatures(base, base)
     if res.get("verdict") != "FAIL" or res.get("reason") != "same-armature":
         _fail("same_armature: expected FAIL/reason=same-armature, got %r" % res)
     if res.get("offenders") != [base.name]:
@@ -404,7 +391,6 @@ def test_clean_merge_weights():
     names = {b.name for b in arm.data.bones}
     if names != {"Hips", "Spine", "Tail"}:
         _fail("clean: expected union {Hips,Spine,Tail}, got %r" % names)
-    # Tail mesh weight preserved and bound to the unified armature.
     vg = tail_mesh.vertex_groups.get("Tail")
     if vg is None:
         _fail("clean: Tail vertex group lost")
@@ -467,14 +453,13 @@ def test_force_parent_mismatch():
     if merge_spine is None or merge_spine.parent is None or merge_spine.parent.name != "Root":
         _fail("force: unforced FAIL should leave merge Spine parent as 'Root', got %r"
               % (merge_spine.parent.name if merge_spine and merge_spine.parent else None))
-    # Rebuild (the failed call rolled back; scene still has both) and force.
+    # The failed call rolled back, so both armatures are still here to force.
     res_ok = merge_armatures(base, merge, force=True)
     if res_ok["verdict"] != "PASS":
         _fail("force: expected forced PASS, got %r (postcheck=%r)"
               % (res_ok["verdict"], res_ok.get("postcheck")))
         return
-    # force = "keep base's copy anyway": base Spine's hierarchy must NOT be
-    # rewritten to the merge's topology (parent stays Hips, not Root).
+    # force keeps base's copy: Spine's parent stays Hips, not the merge's Root.
     arm = _scene_armatures()[0]
     spine = arm.data.bones.get("Spine")
     if spine is None or spine.parent is None or spine.parent.name != "Hips":
@@ -530,9 +515,7 @@ def test_rename_map_dup_target():
 
 
 def test_rename_map_swap():
-    # A swap/chain (target is also a source) must FAIL before any mutation —
-    # _edit_rename can't permute, so applying it would corrupt the rename and
-    # break rollback.
+    # A swap/chain (target is also a source) must FAIL before any mutation.
     _clear_scene()
     base = _make_armature("Base", [("Hips", Vector((0, 0, 1.0)), None)])
     merge = _make_armature("Merge", [
@@ -550,9 +533,6 @@ def test_rename_map_swap():
 
 
 def test_scene_scoping():
-    # A correct merge must PASS even when the scene holds unrelated objects: a
-    # static prop with no armature modifier, a duplicate-named pair (Decor /
-    # Decor.001), and a second unrelated armature. None should force a FAIL.
     _clear_scene()
     base = _make_armature("Base", [
         ("Hips", Vector((0, 0, 1.0)), None),
@@ -564,7 +544,6 @@ def test_scene_scoping():
         ("Tail", Vector((0, -0.1, 1.0)), "Hips"),
     ])
     _make_mesh("TailMesh", merge, "Tail", Vector((0, -0.1, 1.0)))
-    # Unrelated scene state:
     for nm in ("Prop", "Decor", "Decor.001"):
         d = bpy.data.meshes.new(nm + "D")
         d.from_pydata([(0, 0, 0), (1, 0, 0), (1, 1, 0)], [], [(0, 1, 2)])
@@ -581,15 +560,9 @@ def test_scene_scoping():
 def _call_op_expect_loud_cancel(op, ctx, needle):
     """Call ``op`` via ``op_override`` and assert it fails loud.
 
-    Per Blender's own contract (bpy.ops.rst, "Calling Operators"): when an
-    operator reports an ``{'ERROR'}``-level message, calling it through
-    ``bpy.ops`` raises ``RuntimeError`` with that message *regardless of the
-    operator's return status* — even though ``execute()`` itself really does
-    return ``{'CANCELLED'}``. So the Python-visible signal for "loud CANCELLED
-    with a named message" is this RuntimeError, not a returned value. A bare
-    ``{'CANCELLED'}`` return (no exception) would mean the guard did NOT
-    report an error — i.e. failed silently — which is exactly the anti-pattern
-    the spec forbids.
+    An ``{'ERROR'}`` report raises ``RuntimeError`` through ``bpy.ops`` whatever
+    the operator returned, so a loud CANCEL shows up as this raise. A normal
+    return means the guard reported no error and failed silently.
     """
     from avatarprep.core import scene_utils
     try:
@@ -603,8 +576,6 @@ def _call_op_expect_loud_cancel(op, ctx, needle):
 
 
 def test_merge_operator_guard():
-    # The merge operator's genuinely-new logic: the exactly-two-armatures check
-    # runs in execute() and returns CANCELLED (loud), NOT a silent greyed poll.
     # Register locally so the core-only tests stay register-free.
     _clear_scene()
     import avatarprep
@@ -614,7 +585,6 @@ def test_merge_operator_guard():
         m1 = _make_armature("M1", [("Hips", Vector((0, 0, 1.0)), None)])
         m2 = _make_armature("M2", [("Hips", Vector((0, 0, 1.0)), None)])
 
-        # 0 others selected -> loud CANCELLED (RuntimeError), no mutation.
         for o in bpy.data.objects:
             o.select_set(False)
         base.select_set(True)
@@ -626,7 +596,6 @@ def test_merge_operator_guard():
             _fail("op_guard: 0-others CANCEL must not mutate, got %d armatures"
                   % len(_scene_armatures()))
 
-        # 2 others selected -> loud CANCELLED (RuntimeError), no mutation.
         for o in (base, m1, m2):
             o.select_set(True)
         bpy.context.view_layer.objects.active = base
@@ -642,11 +611,9 @@ def test_merge_operator_guard():
 
 
 def test_postcheck_fail_named_offenders():
-    # A postcheck FAIL must name offenders (fail-loud), same as a pre-mutation
-    # FAIL. Two rigs each with a mesh named 'Body': Blender auto-suffixes the
-    # second object to 'Body.001' at creation, so after a (compat-clean) merge
-    # both live under the unified armature and the postcheck flags
-    # duplicate_objects -> verdict FAIL with a named offender.
+    # Blender auto-suffixes the second 'Body' to 'Body.001' at creation, so after a
+    # compat-clean merge both live under the unified armature and the postcheck
+    # flags duplicate_objects.
     _clear_scene()
     base = _make_armature("Base", [
         ("Hips", Vector((0, 0, 1.0)), None),
@@ -686,12 +653,9 @@ def test_whatif():
         ("Tail", Vector((0, -0.1, 1.0)), "Hips"),
     ])
     from avatarprep.core.merge_armatures import merge_armatures
-    # Incompatible without a rename_map: whatif predicts the same FAIL.
     res = merge_armatures(base, merge, whatif=True)
     if res["verdict"] != "FAIL":
         _fail("whatif: expected predicted FAIL, got %r" % res["verdict"])
-    # Rename resolved: whatif predicts PASS; scene keeps BOTH armatures and the
-    # merge armature's ORIGINAL bone names (rename rolled back).
     res2 = merge_armatures(base, merge, rename_map={"breast_L": "Breast_L"},
                            whatif=True)
     if res2["verdict"] != "PASS" or res2.get("reason") != "whatif":

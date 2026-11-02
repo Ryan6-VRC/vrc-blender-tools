@@ -15,8 +15,7 @@ and with each garment carrying the body's weights interpolated at its nearest bo
 ``simulated``). How the result is read is the weightpaint skill's. ``--render DIR`` writes
 one sheet per compared step (each input's worst stretch, new-penetration and body-through
 steps), the inputs side by side in ``--in`` order, at most ``MAX_RENDER_STEPS`` (4) sheets
-per garment and region; a line names the steps past the cap, which get no sheet. Inputs are
-read and never saved.
+per garment and region; a line names the steps past the cap, which get no sheet.
 
 ``=> OK`` means measured. Exit 0 on OK; 1 on ``=> FAIL:`` (a refusal in any input, inputs
 that sweep different steps, a failed render); 2 on unresolvable input or a crash. Metric
@@ -82,7 +81,7 @@ def main():
     run_label = " vs ".join(a.label_list + (["simulated"] if a.simulate else []))
     out = {"tool": TOOL, "legend": list(fit.LEGEND), "inputs": []}
 
-    inputs = []  # (label, path, data)
+    inputs = []
     for label, path in zip(a.label_list, a.in_paths):
         repair = open_blend(path, writes=False)
         source, targets = _fit.resolve_meshes(TOOL, a)

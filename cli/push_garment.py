@@ -9,25 +9,12 @@ Run:
 
 Seeds come from the same sweep ``report_fit`` runs (``--sweep`` bones, or the set derived
 from the ``--region`` vertices); ``--region`` also limits the seeds to its vertices, several
-regions adding together. A step's seeds are the garment vertices inside the posed body or
-within ``--near`` metres of it, and the corners of triangles a body vertex within 5 mm comes
-through; physbone and cut vertices never seed. Dynamic seeds are any step's seeds minus the
-rest step's: contact already there at rest is the seat's or a shape's to fix, so a garment
-with none refuses unless ``--allow-static``, which pushes the rest contact instead.
-
-Every vertex within ``--falloff`` metres of a seed (rest, straight line) moves outward along
-its rest normal, turned to face away from the nearest body triangle, by
-``amount * smoothstep(1 - d / falloff)``; ``--rim-hold R`` multiplies that by
-``smoothstep(e / R)``, e the distance to the nearest boundary vertex, so open edges stay on
-the skin. ``--smooth N`` averages each moved vertex's direction with its moved edge neighbours'
-N times and keeps every magnitude: a rolled hem's normals lie near the skin's tangent and turn
-from vertex to vertex, so an unsmoothed push zigzags the hem it moves. The same object-space
-delta goes onto the mesh, Basis and every shape key.
+regions adding together; a garment with no dynamic seeds refuses unless ``--allow-static``.
+Mechanism: ``fit.plan_push`` and ``fit._seeds``.
 
 A saving run stamps each target object with ``avatarprep_pushed``, the canonical command
 line printed as ``recipe:`` (defaults omitted, no paths or mode flags); a stamped mesh
-refuses, since a rerun would push twice: re-derive from the blend before the push.
-``--whatif`` plans everything and saves nothing.
+refuses.
 
 Exit 0 on ``=> OK``; 1 on ``=> FAIL:`` (ran and refused, nothing saved); 2 on unresolvable
 input (bad args, a missing mesh) or a crash.

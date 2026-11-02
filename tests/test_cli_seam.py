@@ -1,12 +1,5 @@
 """CLI face tests for the seam family — run INSIDE blender, subprocessing the
 blender binary on each CLI against synthetic temp .blend scenes.
-
-Run::
-
-    blender --background --factory-startup --python tests/test_cli_seam.py
-
-Prints ``CLI_SEAM_TEST OK`` and exits 0 if all cases pass; prints
-``CLI_SEAM_TEST FAIL: <reason>`` and exits 1 otherwise.
 """
 import os
 import sys
@@ -84,7 +77,7 @@ def _build_prune_blend(path):
         ("Spine", Vector((0, 0, 1.0)), None),
         ("Skirt", Vector((0, 0, -0.3)), None),  # orphan zero-weight -> pruned
     ])
-    _make_mesh("Body", arm, "Spine", Vector((0, 0, 1.0)))  # weights Spine only
+    _make_mesh("Body", arm, "Spine", Vector((0, 0, 1.0)))
     _save_scene(path)
 
 
@@ -131,7 +124,6 @@ def _build_dirty_blend(path):
 
 
 def _run_cli(script, args, env=None):
-    """Run a CLI via a fresh blender subprocess. Returns (returncode, stdout)."""
     cmd = [BLENDER, "--background", "--factory-startup",
            "--python", os.path.join(CLI, script), "--"] + args
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -198,8 +190,6 @@ def test_compat_merge_in(tmp):
     if rc != 2 or "ERROR" not in out:
         _fail("merge-in bogus name: expected exit 2 + ERROR, got %d\n%s" % (rc, out))
 
-    # An unreadable --merge-in must be an in-grammar ERROR exit 2 — an uncaught
-    # raise leaves Blender's exit at 0, which is this CLI's compat-PASS code.
     rc, out = _run_cli("compare_armatures.py",
                        ["--in", base_f, "--base", "Armature",
                         "--merge", "Armature",
@@ -207,8 +197,6 @@ def test_compat_merge_in(tmp):
     if rc != 2 or "ERROR" not in out:
         _fail("merge-in missing file: expected exit 2 + ERROR, got %d\n%s" % (rc, out))
 
-    # .fbx branch: a typo'd --merge must never silently pick the only armature,
-    # and a genuine collision suffix (Armature -> Armature.001) must resolve.
     merge_fbx = os.path.join(tmp, "mi_merge.fbx")
     _clear_scene()
     arm = _make_armature("Armature", [
@@ -236,8 +224,7 @@ def test_compat_merge_in(tmp):
         _fail("merge-in fbx typo: expected exit 2 + ERROR (never silently pick "
               "the only armature), got %d\n%s" % (rc, out))
 
-    # .fbx branch stamp neutrality: a stamped base vs a fresh vendor FBX must
-    # warn-and-pass, not FAIL on provenance the import itself just invented.
+    # .fbx branch stamp neutrality: warn-and-pass.
     stamped_f = os.path.join(tmp, "mi_stamped.blend")
     _clear_scene()
     a = _make_armature("Armature", [
@@ -261,7 +248,6 @@ def test_merge_exit_codes(tmp):
     _build_clean_blend(clean)
     _build_dirty_blend(dirty)
 
-    # Clean merge -> exit 0, --out written.
     out_ok = os.path.join(tmp, "merged_ok.blend")
     rc, out = _run_cli("merge_armatures.py",
                        ["--in", clean, "--out", out_ok,
@@ -271,7 +257,6 @@ def test_merge_exit_codes(tmp):
     if not os.path.exists(out_ok):
         _fail("merge clean: expected --out written at %s" % out_ok)
 
-    # Dirty (rename) merge, no force/rename -> Phase-3 FAIL, exit 1, --out ABSENT.
     out_fail = os.path.join(tmp, "merged_fail.blend")
     rc, out = _run_cli("merge_armatures.py",
                        ["--in", dirty, "--out", out_fail,
@@ -283,7 +268,6 @@ def test_merge_exit_codes(tmp):
     if "merge FAIL" not in out:
         _fail("merge dirty: expected 'merge FAIL' in output\n%s" % out)
 
-    # Bogus --base -> ERROR exit 2.
     rc, out = _run_cli("merge_armatures.py",
                        ["--in", clean, "--out", os.path.join(tmp, "nope.blend"),
                         "--base", "Nope", "--merge", "Merge"])
@@ -344,7 +328,6 @@ def test_prune_whatif(tmp):
             _fail("prune whatif: chains do not partition deleted_bones (%r vs %r)"
                   % (sorted(chained), sorted(data.get("deleted_bones", []))))
 
-    # Omitting --out WITHOUT --whatif must still be rejected, or the guard is vacuous.
     rc2, out2 = _run_cli("prune_bones.py", ["--in", scene])
     if rc2 == 0:
         _fail("prune: expected nonzero exit when --out is omitted without --whatif\n%s" % out2)
@@ -357,7 +340,6 @@ def test_prune_refuses_on_bone_parented(tmp):
     out = os.path.join(tmp, "prune_attach_out.blend")
     report = os.path.join(tmp, "prune_attach_report.json")
 
-    # The real, destructive invocation.
     rc, out_txt = _run_cli("prune_bones.py",
                            ["--in", scene, "--out", out, "--report", report])
     if rc != 1:
@@ -375,12 +357,10 @@ def test_prune_refuses_on_bone_parented(tmp):
     if not data.get("refused") or not data.get("bone_parented_objects"):
         _fail("prune attach: refusal report must carry refused + offenders, got %r" % data)
 
-    # --whatif carries the same verdict without mutating.
     rc_wi, wi_txt = _run_cli("prune_bones.py", ["--in", scene, "--whatif"])
     if rc_wi != 1:
         _fail("prune attach whatif: expected exit 1 (would refuse), got %d\n%s" % (rc_wi, wi_txt))
 
-    # --force prunes, saves, and still reports the orphan.
     out_forced = os.path.join(tmp, "prune_attach_forced.blend")
     rc_f, f_txt = _run_cli("prune_bones.py",
                            ["--in", scene, "--out", out_forced, "--force"])
@@ -393,11 +373,7 @@ def test_prune_refuses_on_bone_parented(tmp):
 
 
 def test_whatif_rejects_out(tmp):
-    """--out under --whatif is a hard parse error: exit 2, nothing written (#8).
-
-    Guards the false receipt: before this, the CLIs accepted --whatif --out,
-    wrote nothing, and exited 0 — a success code for a file that never appeared.
-    """
+    """--out under --whatif is a hard parse error: exit 2, nothing written."""
     prune_scene = os.path.join(tmp, "whatif_out_prune.blend")
     _build_prune_blend(prune_scene)
     merge_scene = os.path.join(tmp, "whatif_out_merge.blend")

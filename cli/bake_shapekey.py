@@ -1,29 +1,21 @@
-"""Headless CLI: bake one shape key into Basis (Approach 2).
+"""Headless CLI: bake one shape key into Basis.
 
 Run:
   blender <in.blend> --background --factory-startup --python cli/bake_shapekey.py -- \
       --in <in.blend> --out <out.blend> --mesh <MeshName> --key <KeyName> \
       [--value 1.0] [--protect-group neck] [--head-mesh-names Body]
 
-A mesh with custom normals keeps them through the fold: a loop in ``--protect-group``
-keeps its authored normal as it is, and every other loop keeps the offset its authored
-normal had from the computed one, carried onto the new Basis (``carried_loops`` counts
-the loops whose offset was over 1 degree). A mesh without custom normals gets none.
-
-``--head-mesh-names`` is the comma-separated head-refusal list (default ``Body`` —
-a NAME CONVENTION standing in for a geometric check; suffix/case-insensitive).
-Baking a mesh on the list is refused because the bake recomputes its normals and
-profiles never morph the head. Passing your own list (or '' to disable) is an
-explicit assertion about where the head lives on THIS rig — e.g. a combined-mesh
-rig whose ``Body`` includes the head keeps the refusal; a torso-only ``Body``
-with the face on ``Face`` wants ``--head-mesh-names Face``.
+``--head-mesh-names`` is the comma-separated head-refusal list (default ``Body``),
+a name convention standing in for a geometric check. Baking a mesh on the list is
+refused because the bake recomputes its normals and profiles never morph the head.
+Passing your own list (or '' to disable) asserts where the head lives on THIS rig:
+a combined-mesh rig whose ``Body`` includes the head keeps the refusal, and a
+torso-only ``Body`` with the face on ``Face`` wants ``--head-mesh-names Face``.
 """
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

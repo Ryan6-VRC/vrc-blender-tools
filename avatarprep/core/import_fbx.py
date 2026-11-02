@@ -6,7 +6,7 @@ importer (``bpy.ops.import_scene.fbx``, menu "FBX (legacy)") is intentionally NO
 used: its ``automatic_bone_orientation`` reorients some bones (hips, upper arms)
 ~90 deg from the source FBX, which silently corrupts bone-local pose operations
 downstream (proportioning, rest-pose work). The new importer keeps the source
-orientation and has no such option, matching the hand-authored reference rigs.
+orientation and has no such option.
 
 Supports both headless (``blender --background``) runs and windowed/MCP-driven
 sessions where a VIEW_3D area is available.
@@ -46,15 +46,11 @@ def import_fbx(path: str, **settings) -> Dict[str, Any]:
 
     Any keyword in ``settings`` is forwarded to ``bpy.ops.wm.fbx_import`` (e.g.
     ``global_scale``, ``use_custom_normals``, ``ignore_leaf_bones``).
-
-    Works both headless (``--background``) and in a running Blender with a
-    VIEW_3D area present (e.g. when driven over MCP).
     """
     kwargs = dict(filepath=path)
     kwargs.update(settings)
 
-    # Find a window whose screen has a VIEW_3D area (scan ALL windows, not just
-    # the first — a VIEW_3D may live in a second window).
+    # Scan every window: a VIEW_3D may live in a second one.
     wm = bpy.context.window_manager
     win, area = None, None
     for w in (wm.windows if wm else []):
@@ -63,26 +59,19 @@ def import_fbx(path: str, **settings) -> Dict[str, Any]:
             win, area = w, a
             break
 
-    # The windowed/MCP branch is the non-clean case (the session may already hold
-    # objects), so capture what exists before importing and diff afterwards.
+    # A windowed session may already hold objects, so diff against what exists now.
     before = set(bpy.data.objects)
 
     def _finish(new_objects):
         """Stamp, then observe. Runs under the SAME context the import ran under.
 
-        ``observe_import`` resolves ``bpy.context.view_layer`` (to force an update and
-        get a depsgraph), and under ``temp_override(window=…)`` the scene and view layer
-        follow that window. Since the branch above deliberately scans EVERY window for a
-        VIEW_3D, a two-window session can import into one window's view layer while the
-        caller's context points at another — where the new objects are absent, and
-        ``evaluated_get`` would hand back unevaluated data with no error. Observing
-        inside the override keeps both halves on one view layer. (The old ``bound_box``
-        read was view-layer-independent, so this exposure arrived with the fix.)"""
-        # Stamp every newly-imported armature with the reserved ``unproportioned`` origin
-        # state (a fresh import is, by definition, unproportioned — the as-shipped shape).
-        # Base lineage is NOT touched here — base is a deliberate agent assertion made
-        # only through the stamp_base door, never guessed at import. A fresh import reads
-        # base=absent (honest/unknown).
+        ``observe_import`` resolves ``bpy.context.view_layer``, and under
+        ``temp_override(window=…)`` the scene and view layer follow that window. A
+        two-window session can import into one window's view layer while the caller's
+        context points at another, where the new objects are absent and ``evaluated_get``
+        hands back unevaluated data with no error."""
+        # Stamp the reserved ``unproportioned`` origin state. Import never writes the base
+        # stamp, so a fresh import reads base=absent.
         for arm in (o for o in new_objects if o.type == 'ARMATURE'):
             scene_utils.write_stamp(arm, scene_utils.STAMP_STATE, "unproportioned")
         return observe_import(new_objects)
@@ -112,23 +101,13 @@ def observe_import(objects=None) -> Dict[str, Any]:
             a clean session (a fresh headless import). Callers that import into a
             session already holding objects must pass the newly-created set.
 
-    Keys:
-      * ``armatures``         — number of ARMATURE objects
-      * ``meshes``            — number of MESH objects
-      * ``bones``             — total bone count across all armatures (0 if none)
-      * ``bones_per_armature``— list of per-armature bone counts
-      * ``shapekeys``         — total shape-key count across all meshes (basis excluded)
+    Keys the return statement does not explain:
       * ``height_m``          — world-space height in metres of the meshes' EVALUATED
-                                geometry (0 when none has any). Rounded to 4 dp, which
-                                is now the dominant error on accessory-scale objects: a
-                                fixed +-0.05 mm reads ~0.04% on a 0.1 m prop against
-                                ~0.004% on a body. Fine for a gut-check, not a tolerance.
-      * ``unparented_meshes`` — names of MESH objects with no parent
-      * ``unevaluated_meshes``— names of meshes the depsgraph will not evaluate, whose
-                                measurement is therefore silently their UNDEFORMED
-                                shape. The one blind spot no measure here escapes, so it
-                                is named rather than left looking like a clean read
-                                (``rest_pose.unevaluated_meshes`` owns the predicate).
+                                geometry (0 when none has any), rounded to 4 dp. Fine
+                                for a gut-check, not a tolerance.
+      * ``unevaluated_meshes``— names of meshes the depsgraph will not evaluate
+                                (measure.py's blind spot; ``rest_pose.unevaluated_meshes``
+                                owns the predicate).
     """
     objs = list(bpy.data.objects) if objects is None else list(objects)
     arms = [o for o in objs if o.type == 'ARMATURE']

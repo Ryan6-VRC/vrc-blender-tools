@@ -11,22 +11,17 @@ Run (auto-suggest the map, then stop):
       [--neighbours Bun,Head] [--report <json>]
 
 ``--targets`` names the mesh(es) the fold rewrites; the target armature is whichever
-single ARMATURE-modifier object they share (there is no ``--armature`` — a fold with
-targets bound to more than one armature is an ERROR, not a guess). ``--bones`` is a
-comma-separated list of case-insensitive globs or exact names over that armature's
-bones — the doomed set; a pattern matching nothing REFUSES (this is also what a rerun
-on an already-folded output hits, since the doomed names are gone).
+single ARMATURE-modifier object they share, and more than one is an ERROR. ``--bones``
+is a comma-separated list of case-insensitive globs or exact names over that armature's
+bones — the doomed set; a pattern matching nothing is an ERROR.
 
 ``--map auto --map-out PATH`` computes a suggested ``{doomed: {survivor: fraction}}``
-table (nearest-two-candidate-bones inverse-distance split from each doomed bone's
-weighted centroid), writes it to ``--map-out``, prints it with its ambiguity flag, and
-ALWAYS exits 1 — auto only ever writes the table, it never runs the fold. Edit the file,
-then pass the same path as ``--map`` to run it for real.
+table, writes it to ``--map-out``, prints it with its ambiguity flag, and
+exits 1 without running the fold. Edit the file, then pass the same path as ``--map``.
 
 A saving run stamps each target object with ``avatarprep_folded``, the canonical command
-line printed as ``recipe:`` (``--targets``, ``--bones``, ``--neighbours`` if given, and
-``--map <path>``; no I/O, report or mode flags). ``--whatif`` and auto print no recipe
-and stamp nothing.
+line printed as ``recipe:`` (``recipe`` lists its flags). ``--whatif`` and auto print no
+recipe and stamp nothing.
 
 Exit 0 on a real run's ``=> OK``; 1 on ``=> FAIL:`` (a gate refused, or the deliberate
 auto stop); 2 on unresolvable input (bad args, missing mesh/armature, a crash).

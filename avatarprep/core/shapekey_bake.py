@@ -6,12 +6,7 @@ refresh normals: authored custom normals in a protected vertex group (default
 "neck") keep their absolute direction, and every other authored normal keeps its
 offset from the computed normal, carried onto the new geometry. A head mesh is
 refused outright. Lossy at the mesh level: the proportion-edge link is the recovery
-path. Pure bpy, headless-safe.
-
-``bake_shapekey_normals`` moves no vertex: it gives the custom normals the change a
-key makes to the shading at weight 1, so the surface shades as the key at weight 1
-at every weight of it — the form for a dome a key raises that must read domed at a
-low weight too, since Unity imports blendshape normals as None.
+path.
 
 "Computed" normals throughout are the corner normals of a copy of the mesh with its
 custom normals cleared, so sharp edges and flat faces still split them.
@@ -94,24 +89,16 @@ def bake_shapekey_to_basis(mesh_obj, key_name, value=1.0, *,
                            head_mesh_names=("Body",)) -> Dict[str, Any]:
     """Bake ``key_name`` scaled by ``value`` into Basis, then refresh normals.
 
-    ``protect_threshold`` defaults to ``0.01``: protect a vertex painted into the
-    group *at all* — small but non-zero so weight-paint smudges / gradient /
-    normalization noise near zero don't accidentally protect, while still catching
-    the real seam-falloff region.
-
     Loops belonging to ``protect_group`` vertices (weight ``>=`` ``protect_threshold``)
     keep their authored custom normals as they are: the seam to the head must match a
     mesh the bake does not move. Every OTHER loop's custom normal becomes the computed
     normal at the new Basis plus the offset its authored normal had from the computed
     one before, renormalised: the offset is what the author added to the surface (a
     smoothed seam, a softened crease), so it turns with the surface rather than going
-    stale, and a loop with no offset takes the plain recomputed normal. A mesh with no
-    custom normals is left without them. A mesh whose name is in ``head_mesh_names`` is
-    refused (heads are not reproportioned).
+    stale. A mesh with no custom normals is left without them.
     Returns a dict with ``mesh``, ``key``, ``value``, ``had_custom_normals`` (bool),
     ``protected_loops`` (int) and ``carried_loops`` (int: unprotected loops whose
-    authored offset exceeded ``CARRY_DEG``). The morph block is retained (see module
-    docstring)."""
+    authored offset exceeded ``CARRY_DEG``)."""
     if mesh_obj is None or mesh_obj.type != 'MESH':
         raise BakeError("bake_shapekey_to_basis requires a mesh object")
     if _is_head_mesh(mesh_obj, head_mesh_names):
@@ -133,9 +120,7 @@ def bake_shapekey_to_basis(mesh_obj, key_name, value=1.0, *,
         authored = _corner_normals(me)
         offset = authored - _computed_normals(mesh_obj)
 
-    # Validate the existing baked map BEFORE mutating geometry — a pre-existing
-    # corrupt (non-map) avatarprep_baked must fail loud with the scene untouched,
-    # never fold Basis and then throw mid-op. The write-back happens after the fold.
+    # Validate before the fold, so a non-map avatarprep_baked fails with the scene untouched.
     raw = mesh_obj.get(scene_utils.STAMP_BAKED)
     if raw is not None and not isinstance(raw, (dict, idprop.types.IDPropertyGroup)):
         raise BakeError("avatarprep_baked on %r is not a map (%r)" % (mesh_obj.name, raw))
@@ -147,11 +132,8 @@ def bake_shapekey_to_basis(mesh_obj, key_name, value=1.0, *,
                                 shape=key_name, blend=float(value), add=True)
     me.update()
 
-    # Record the fold into the mesh's baked map IMMEDIATELY — the fold into Basis
-    # is the event the map records. Normals below are cosmetic, so a partial failure
-    # downstream can't leave the map disagreeing with geometry. The map is reversible
-    # ({key: cumulative}); a reconciler treats a ~0 cumulative as absent (the key
-    # block is never deleted/renamed to represent that).
+    # Record the stamp right after the fold, so a failure in the cosmetic normals pass
+    # below cannot leave the map disagreeing with geometry.
     m = dict(raw or {})
     cumulative = m.get(key_name, 0.0) + float(value)
     if abs(cumulative) < 1e-6:  # kill ±-reversal float ghosts
@@ -176,7 +158,7 @@ def bake_shapekey_to_basis(mesh_obj, key_name, value=1.0, *,
 
     # The delta now lives in Basis; zero the retained block's live slider so a nonzero
     # value (e.g. one left by proportions.apply_shapekeys) doesn't double-apply on
-    # evaluation. The block is kept for reversibility/re-export, not live display.
+    # evaluation.
     me.shape_keys.key_blocks[key_name].value = 0.0
 
     return report
@@ -194,12 +176,9 @@ def bake_shapekey_normals(mesh_obj, key_name, *, fade=(0.1, 1.0),
     that must read domed at every weight: Unity imports blendshape normals as None, so
     the keyed shape otherwise shades with the flat Basis normals.
 
-    The key is read at its stored positions, so it must be relative to Basis. Records
-    ``{key_name: recipe}`` in the object's ``avatarprep_normals`` and refuses a key that
-    stamp already lists (a second pass would add the change twice), a mesh in
-    ``head_mesh_names`` (like the bake) and a non-map stamp. Returns ``mesh``, ``key``,
-    ``recipe``, ``had_custom_normals``, ``whole`` and ``faded`` (corner counts) and
-    ``max_turn_deg``."""
+    Records ``{key_name: recipe}`` in the object's ``avatarprep_normals`` and refuses a key
+    already listed there. Returns ``mesh``, ``key``, ``recipe``, ``had_custom_normals``,
+    ``whole`` and ``faded`` (corner counts) and ``max_turn_deg``."""
     if mesh_obj is None or mesh_obj.type != 'MESH':
         raise BakeError("bake_shapekey_normals requires a mesh object")
     if _is_head_mesh(mesh_obj, head_mesh_names):
