@@ -8,21 +8,15 @@ Run:
 Exit codes: 0 = merged (verdict PASS, --out saved) · 1 = verdict FAIL (--out NOT
 saved) · 2 = ERROR (bad armature name, mid-merge exception, write failure).
 
---whatif previews: the gates run for real, nothing mutates, nothing is saved (--out
-must be omitted; passing it errors); exit 0 = the preflight and compat gates PASS,
-1 = they FAIL. It is not a merge prediction — the core returns before mutating, so
-the postcheck never runs and a real merge can still FAIL it.
-
-On FAIL the safety net is not saving --out; --report (if given) is still written
-with the FULL result dict (carrying postcheck when a real merge reached it) so a
-postcheck FAIL can be triaged.
+--whatif previews: the gates run for real, nothing mutates, nothing is saved; exit 0 =
+the preflight and compat gates PASS, 1 = they FAIL. It is not a merge prediction — the
+core returns before mutating, so the postcheck never runs and a real merge can still
+FAIL it.
 """
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -100,13 +94,10 @@ def main():
 
     verdict = result.get("verdict")
     if verdict == "PASS":
-        # "gates pass", not "would merge": the whatif path returns before mutating, so the
-        # postcheck that a real run still has to clear was never exercised.
         label = "whatif PASS (gates pass)" if args.whatif else "PASS"
         print("AVATARPREP: merge %s %s <- %s (unified %d, added %d)"
               % (label, args.base, args.merge, result.get("bones_unified", 0),
                  result.get("bones_added", 0)))
-        # Fail loud on advisory warnings and on each overridden category.
         for line in (result.get("report") or {}).get("warnings", []):
             print("AVATARPREP: WARNING", line)
         for line in result.get("forced_structural") or []:
@@ -117,8 +108,6 @@ def main():
             if args.report:
                 write_report(args.report, result)
             sys.exit(0)
-        # Save the deliverable (--out) BEFORE the diagnostic report, so a
-        # report-write failure can't discard a successful merge's output.
         try:
             out_path = os.path.abspath(args.out_path)
             d = os.path.dirname(out_path)
@@ -133,25 +122,19 @@ def main():
             write_report(args.report, result)
         sys.exit(0)
 
-    # FAIL: do NOT save --out (rollback covers only pre-mutation FAILs).
     print("AVATARPREP: merge %sFAIL %s <- %s (reason %s)"
           % ("whatif " if args.whatif else "", args.base, args.merge,
              result.get("reason", "postcheck")))
-    # Core populates offenders on every FAIL (pre-mutation and postcheck alike).
     for line in (result.get("offenders") or []):
         print("AVATARPREP: OFFENDER", line)
-    # The remedy belongs at THIS door most of all: --rename is the flag the
-    # operator is reaching for when the compat gate refuses them here. Report is
-    # None for the early same-armature/preflight/rename_map FAILs — guarded.
     if result.get("report"):
         from avatarprep.core.merge_armatures import remedy_lines
         for line in remedy_lines(result["report"]):
             print("AVATARPREP: REMEDY", line)
-    # A co-occurring missing-stamp warning must show on FAIL too (same guard).
     for line in (result.get("report") or {}).get("warnings", []):
         print("AVATARPREP: WARNING", line)
     if args.report:
-        write_report(args.report, result)  # FULL dict — carries postcheck
+        write_report(args.report, result)
     sys.exit(1)
 
 

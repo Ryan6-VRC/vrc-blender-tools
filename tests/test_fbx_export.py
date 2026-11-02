@@ -1,14 +1,7 @@
-"""Regression oracle for export_unity_fbx's OBJECT-mode guard (G67).
+"""Regression oracle for export_unity_fbx's OBJECT-mode guard.
 
-Run:
-  blender --background --factory-startup --python tests/test_fbx_export.py
-
-Prints FBXEXPORT_TEST OK and exits 0 on success; FBXEXPORT_TEST FAIL: <reason>
-and exits 1 otherwise. apply_proportion_edge exits in POSE mode on its object-only
-edge path, so an apply-then-export in one script left the scene in POSE and crashed
-``select_all.poll() failed, context is incorrect``. export_unity_fbx now forces
-OBJECT mode itself; this asserts export succeeds from POSE (both the scoped
---armature and whole-scene branches) and does not regress from OBJECT.
+Asserts export succeeds from POSE on both the scoped and whole-scene branches and
+does not regress from OBJECT.
 """
 import math
 import os
@@ -108,10 +101,8 @@ def main():
     check(exc is None, "scoped export from OBJECT raised: %s" % exc)
     check(written, "scoped export from OBJECT wrote no file")
 
-    # 4. Scale layout: FBX_SCALE_ALL (the canonical default) writes a meter-unit
-    # file (UnitScaleFactor=100, no compensating node scales) — what meter-unit
-    # vendors ship; FBX_SCALE_NONE instead writes a cm-unit file with 100x root
-    # scales. Pins the layout the export_unity_fbx docstring documents.
+    # 4. Scale layout: pins the layout the export_unity_fbx docstring documents
+    # (FBX_SCALE_ALL against FBX_SCALE_NONE).
     from avatarprep.core import fbx_export
     from io_scene_fbx import parse_fbx
 
@@ -149,8 +140,7 @@ def main():
         check(all(abs(s - want_scale) < 1e-3 for s in arm_scale),
               "%s: armature node scale %s (want %s)" % (opt, arm_scale, want_scale))
 
-    # 5. A non-unit scene scale silently rewrites the layout (measured:
-    # scale_length=0.01 writes USF~1) — the exporter must refuse, not comply.
+    # 5. A non-unit scene scale refuses.
     arm = _make_rig()
     us = bpy.context.scene.unit_settings
     us.system, us.scale_length = 'METRIC', 0.01
@@ -166,8 +156,7 @@ def main():
     finally:
         us.scale_length = 1.0
 
-    # --- Parked object scale (D2A) ---------------------------------------------
-    # Shared readers for cases 6-8.
+    # --- Parked object scale ---------------------------------------------------
     def _all_node_scales(path):
         root, _ = parse_fbx.parse(path)
         objects = next(e for e in root.elems if e.id == b"Objects")
@@ -198,12 +187,7 @@ def main():
                 hi[i] = max(hi[i], w[i])
         return [hi[i] - lo[i] for i in range(3)]
 
-    # 6. A parked object scale is baked into the data, so the written file carries
-    # identity node scales whatever the source's unit class was. A cm-unit source
-    # reaches the exporter as 0.01 over cm-magnitude geometry; before this, the
-    # file shipped that 0.01 on every root-level node (measured on Chocolat: 21 of
-    # 289) and Unity had nothing left to normalize it with, because our own file
-    # honestly declares meters. World layout is what must survive the bake.
+    # 6. A parked object scale is baked into the data; world layout survives the bake.
     arm = _make_rig()
     body = bpy.data.objects["Body"]
     for v in body.data.vertices:
@@ -221,10 +205,7 @@ def main():
     check(all(abs(a - b) <= 1e-5 for a, b in zip(want_span, got_span)),
           "normalizing must be world-preserving: span %r -> %r" % (want_span, got_span))
 
-    # 7. Parents are applied before children. Reciprocal parent/child scales are
-    # the case that cannot converge child-first — applying the child first strands
-    # the parent's scale on it (measured on Sio_AFK: armature 0.498056 against
-    # mesh 2.007806, which is why the ordering is a guarantee and not an accident).
+    # 7. Parents are applied before children (hierarchy_ordered).
     arm = _make_rig()
     arm.scale = (0.5, 0.5, 0.5)
     bpy.data.objects["Body"].scale = (2.0, 2.0, 2.0)
@@ -235,11 +216,7 @@ def main():
           "reciprocal parent/child scales must both normalize (parent first); "
           "offenders: %r" % _offenders(out))
 
-    # 8. The scope reaches non-mesh descendants. An EMPTY between the armature and
-    # its meshes is not in get_bound_meshes, and applying a parent only relocates
-    # its scale onto the child's local matrix — so a bound-set-only walk moves the
-    # number onto the EMPTY rather than removing it (measured on Monoteiru's
-    # ``geo_grp`` tree: non-unit node count 1/7 before and 1/7 after).
+    # 8. The scope reaches non-mesh descendants (hierarchy_ordered).
     arm = _make_rig()
     empty = bpy.data.objects.new("geo_grp", None)
     bpy.context.collection.objects.link(empty)
@@ -253,17 +230,11 @@ def main():
           "an EMPTY between armature and mesh must not strand the scale; "
           "offenders: %r" % _offenders(out))
 
-    # 9. Every refusal precedes the irreversible bake. A refused export must leave
-    # the scene EXACTLY as it found it — a mutated-then-refused scene is strictly
-    # worse than either outcome, because the bake has no undo and no file is
-    # written to show for it. Parented armature is the refusal that sat after the
-    # bake; assert on the scene, not just on the raise.
+    # 9. Every refusal precedes the irreversible bake: assert on the scene, not just
+    # on the raise.
     #
-    # The armature carries its OWN rotation as well as a parent, because that is
-    # what the refusal is now keyed on: a parent alone leaves nothing ambiguous to
-    # judge (the clear delta is identity, the gate is a 'noop'), and 9b below pins
-    # that such an export proceeds. Without the rotation this fixture stopped
-    # refusing and this case silently stopped testing the invariant it names.
+    # The armature carries its own rotation as well as a parent, or this fixture
+    # stops refusing (9b pins the rotation-less case).
     from avatarprep.core import scene_utils
     arm = _make_rig()
     parent = bpy.data.objects.new("RootEmpty", None)
@@ -286,12 +257,8 @@ def main():
     check((bpy.data.objects["Body"].data.vertices[2].co - vert_before).length < 1e-9,
           "a refused export must not have rewritten mesh data")
 
-    # 9b. The narrowing, and the reason the whole cm-unit root-Null class was
-    # blocked. An armature with a parent but NO rotation of its own gives the gate
-    # an identity clear delta — there is no rotation split to judge, the gate
-    # returns 'noop' and writes nothing — so refusing was blocking an export over
-    # a decision that was never being made. 17 of the 42 cm-unit vendor files in
-    # the survey import to exactly this shape (0 of 89 meter-unit).
+    # 9b. A parent with no rotation of its own is a noop and must export (fbx_export's
+    # parented-armature comment).
     _clear_scene()
     arm = _make_rig()
     parent = bpy.data.objects.new("RootEmpty", None)
@@ -307,9 +274,7 @@ def main():
     check(raised is None,
           "a parented armature with identity rotation must export, not refuse: %r"
           % raised)
-    # Guarded on the file existing: a regression here REFUSES, so an unguarded
-    # _offenders(out) dies on a missing path instead of reporting. Blender exits 0
-    # on an unhandled script exception, so that crash would read as a PASS.
+    # Guarded so a regression reports instead of crashing on the missing file.
     if os.path.exists(out):
         check(not _offenders(out),
               "the parented-but-unrotated export must still ship identity node "
@@ -317,9 +282,7 @@ def main():
     else:
         check(False, "the parented-but-unrotated export wrote no file")
 
-    # 10. Scope does not escape the caller's set. Seeding the walk from each
-    # object's topmost ancestor reached siblings that were never selected and are
-    # never exported, and baked their authored scale permanently.
+    # 10. Scope does not escape the caller's set (hierarchy_ordered).
     _clear_scene()
     arm = _make_rig()
     root = bpy.data.objects.new("SceneRoot", None)
@@ -335,10 +298,7 @@ def main():
           "normalize must not reach an unrelated sibling; prop scale is now %r"
           % (tuple(prop.scale),))
 
-    # 11. Refusals for the cases where the bake is NOT world-preserving, each
-    # measured. A posed armature: the bake rescales rest bones but not pose
-    # translation channels (9.9 m on a 0.01 rig). Shear: non-uniform scale over a
-    # rotated descendant re-decomposes without the shear term (0.041 m).
+    # 11. Refusals where the bake is not world-preserving (check_scale_normalizable).
     def _refuses(build, want, label):
         _clear_scene()
         a = _make_rig()
@@ -364,15 +324,9 @@ def main():
     _refuses(_sheared, "composed shear",
              "non-uniform scale over a rotated descendant")
 
-    # 11a. Representation independence. All three shapes below compose the SAME
-    # 0.4350 of world shear as _sheared above while reading
-    # ``rotation_euler == (0,0,0)``, and a euler-keyed condition passed every one
-    # of them silently — a suppressed refusal, the direction that actually ships
-    # bad files. The condition now measures the composed matrix, which carries a
-    # rotation however it is represented, so these are regression coverage for a
-    # trap the predicate can no longer step in rather than a live distinction it
-    # has to draw. Each fixture asserts the identity euler read first, or the case
-    # tests nothing.
+    # 11a. Representation independence. All three shapes below compose the same
+    # shear as _sheared above while reading ``rotation_euler == (0,0,0)``. Each
+    # fixture asserts the identity euler read first, or the case tests nothing.
     def _sheared_mode(mode):
         def build(a):
             a.scale = (2.0, 1.0, 1.0)
@@ -402,16 +356,9 @@ def main():
     _refuses(_sheared_delta, "composed shear",
              "non-uniform scale over a delta_rotation-only descendant")
 
-    # 11b. ...and must not shadow the refusals that name a mirrored or degenerate
-    # descendant correctly. Both shapes have their own refusal, with an accurate
-    # message and a remedy that works; the shear pass must not answer first with a
-    # message about shear. ORDERING is what keeps that true — the shear pass runs
-    # after a per-object loop covering the whole closure, so these raise before it
-    # is entered. The rotated variants below are why it matters: unrotated they
-    # compose 0.000000 and the shear pass would ignore them anyway, but at 45 deg
-    # they compose 2.75e-1 and 3.17e-1 of REAL shear, so a reorder would answer
-    # with shear and a remedy that only half-works.
-    # Asserts the OFFENDER and the REMEDY, not just that something refused.
+    # 11b. ...and must not shadow the refusals naming a mirrored or degenerate descendant;
+    # ordering keeps that true. Asserts which refusal answered, not just that something
+    # refused.
     def _mirrored_under_nonuniform(a):
         a.scale = (2.0, 1.0, 1.0)
         bpy.data.objects["Body"].scale = (-1.0, 1.0, 1.0)
@@ -424,8 +371,7 @@ def main():
     _refuses(_degenerate_under_nonuniform, "zero scale component",
              "a degenerate descendant under a non-uniform parent")
 
-    # The rotated variants 11b's guards actually defend against, and the (0,0,0)
-    # shape that divides by zero in _composed_shear if the own-scale guard goes.
+    # The rotated variants 11b's guards defend against, and the (0,0,0) shape.
     def _mirrored_rotated(a):
         a.scale = (2.0, 1.0, 1.0)
         b = bpy.data.objects["Body"]
@@ -445,7 +391,7 @@ def main():
     def _fully_degenerate(a):
         bpy.data.objects["Body"].scale = (0.0, 0.0, 0.0)
     _refuses(_fully_degenerate, "zero scale component",
-             "a fully degenerate descendant (must diagnose, not ZeroDivisionError)")
+             "a fully degenerate descendant")
 
     def _zero(a):
         bpy.data.objects["Body"].scale = (0.0, 1.0, 1.0)
@@ -455,9 +401,7 @@ def main():
         a.delta_scale = (0.01, 0.01, 0.01)
     _refuses(_delta, "delta_scale", "a delta_scale the bake cannot consume")
 
-    # 11d. The shapes the OLD proxy ("non-uniform ancestor AND any descendant
-    # rotation") refused although they compose no shear at all. Each must now
-    # export: refusing them cost the user a real rotation for nothing.
+    # 11d. Shapes composing no shear must export.
     def _accepts(build, label):
         _clear_scene()
         a = _make_rig()
@@ -486,18 +430,15 @@ def main():
         bpy.data.objects["Body"].rotation_euler = (0, 0, math.radians(90))
     _accepts(_axis_aligned_quarter, "90 deg about Z under (2,1,1)")
 
-    # The real vendor shape: exporter float noise (Sio/Kirsch ship 2.9e-06 of
-    # spread) under a genuine 45 deg rotation composes ~1e-06 — a micron.
+    # The real vendor shape: exporter float noise (2.9e-06 of spread) under a
+    # genuine 45 deg rotation composes ~1e-06.
     def _noise_band(a):
         a.scale = (1.000002921, 1.0, 1.0)
         bpy.data.objects["Body"].rotation_euler = (0, 0, 0.785398)
     _accepts(_noise_band, "noise-band non-uniform scale over a rotated descendant")
 
-    # 11e. The catch the proxy structurally could not make: shear entering through
-    # matrix_parent_inverse. The parent is UNIFORM and the child carries NO
-    # rotation, so both halves of the old conjunction read clean while the bake
-    # moves geometry (measured 0.077 m). This is a regression test for a live
-    # defect, not for the exactness cleanup.
+    # 11e. Shear through matrix_parent_inverse refuses: the parent is uniform and the
+    # child unrotated, while the bake moves geometry (measured 0.077 m).
     def _sheared_parent_inverse(a):
         a.scale = (2.0, 2.0, 2.0)
         body = bpy.data.objects["Body"]
@@ -508,12 +449,11 @@ def main():
         check(scene_utils._is_unit_scale(tuple(body.scale))
               and not scene_utils.has_own_rotation(body),
               "fixture(parent-inverse): the child must read unrotated and unscaled, "
-              "or this case does not test what the old proxy was blind to")
+              "or this case does not test shear entering through the parent inverse alone")
     _refuses(_sheared_parent_inverse, "composed shear",
              "shear via a sheared parent inverse under a UNIFORM parent")
 
-    # 11f. Depth 3. Every other fixture here is two-level, so nothing else
-    # exercises a descendant that is not a direct child.
+    # 11f. Depth 3: the shear read reaches a descendant that is not a direct child.
     def _sheared_depth3(a):
         a.scale = (2.0, 1.0, 1.0)
         mid = bpy.data.objects.new("Mid", None)
@@ -525,20 +465,14 @@ def main():
     _refuses(_sheared_depth3, "composed shear",
              "a rotated grandchild under a non-uniform root")
 
-    # 11h. The shear reading must not be deflated by an unrelated large axis. Shear
-    # is per-column, so normalising the residual against max|scale| lets a big third
-    # axis hide it: measured, this shape read 4.35e-06 under max-normalisation and
-    # was ADMITTED while the bake moved geometry 0.082 m.
+    # 11h. The shear reading must not be deflated by an unrelated large axis (_composed_shear).
     def _sheared_anisotropic(a):
         a.scale = (2.0, 1.0, 100000.0)
         bpy.data.objects["Body"].rotation_euler = (0, 0, 0.785398)
     _refuses(_sheared_anisotropic, "composed shear",
              "a rotated descendant under a wildly anisotropic parent")
 
-    # 11i. Nothing in scope will be baked, so no basis is rewritten and no shear is
-    # dropped — refusing here costs the user a rotation for nothing. The shear lives
-    # in a parent inverse, so the composed matrix reads 0.220534 either way; only
-    # "will anything actually be applied" separates this from 11e.
+    # 11i. Nothing in scope is baked, so this exports; only that separates it from 11e.
     def _unbaked_parent_inverse(a):
         a.scale = (1.0, 1.0, 1.0)
         bpy.data.objects["Body"].matrix_parent_inverse = Matrix(
@@ -547,10 +481,7 @@ def main():
     _accepts(_unbaked_parent_inverse,
              "a sheared parent inverse where the bake applies nothing")
 
-    # 11j. A degenerate COMPOSED frame must not divide by zero. The per-object
-    # zero-scale refusal cannot cover this: it reads authored local scale, which is
-    # unit here while the world decomposition is (0,0,0). The contract is a float
-    # (and a ValueError-only gate), not a ZeroDivisionError.
+    # 11j. A degenerate composed frame returns a float, not a ZeroDivisionError.
     _clear_scene()
     _arm2 = _make_rig()
     _arm2.scale = (2.0, 1.0, 1.0)
@@ -576,10 +507,99 @@ def main():
           "a degenerate composed frame must not raise ZeroDivisionError out of a "
           "ValueError-only gate; got %s" % _crash)
 
-    # 11g. The gate evaluates the depsgraph itself. matrix_world is stale after a
-    # direct write, so a caller that scales and exports in one go would otherwise
-    # get a flat 0.0 read on a scene composing 0.275 — the one failure direction
-    # that ships a bad file. Deliberately omits view_layer.update().
+    # 11k. Animation reaches the gate through the slot bound to it, on the active action,
+    # an NLA strip or a meta strip's inner strip.
+    def _admits(build, label):
+        _clear_scene()
+        a = _make_rig()
+        build(a)
+        try:
+            scene_utils.check_scale_normalizable([a] + scene_utils.get_bound_meshes(a))
+        except Exception as e:  # noqa: BLE001
+            check(False, "%s must pass the gate; got %s: %s" % (label, type(e).__name__, e))
+
+    def _to_nla(owner):
+        ad = owner.animation_data
+        act = ad.action
+        ad.action = None
+        return ad.nla_tracks.new().strips.new("Strip", 1, act)
+
+    def _to_meta(owner):
+        act = owner.animation_data.action
+        first = _to_nla(owner)
+        track = owner.animation_data.nla_tracks[0]
+        second = track.strips.new("Strip2", 10, act)
+        first.select = second.select = track.select = True
+        owner.select_set(True)
+        bpy.context.view_layer.objects.active = owner
+        win = bpy.context.window_manager.windows[0]
+        area = win.screen.areas[0]
+        was = area.type
+        area.type = 'NLA_EDITOR'
+        region = next(r for r in area.regions if r.type == 'WINDOW')
+        with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=region):
+            bpy.ops.nla.meta_add()
+        area.type = was
+        check([s.type for s in track.strips] == ['META'], "fixture(meta): strips must sit in one meta strip")
+
+    def _key_body(path):
+        bpy.data.objects["Body"].keyframe_insert(path, frame=1)
+        return bpy.data.objects["Body"]
+
+    def _share_action(body_path, other_path):
+        other = bpy.data.objects.new("Other", None)
+        bpy.context.scene.collection.objects.link(other)
+        other.keyframe_insert(other_path, frame=1)
+        act = other.animation_data.action
+        body = bpy.data.objects["Body"]
+        body.animation_data_create()
+        body.animation_data.action = act
+        body.animation_data.action_slot = act.slots.new('OBJECT', "Body")
+        body.keyframe_insert(body_path, frame=1)
+        check(len(act.slots) == 2, "fixture(shared action): the action must hold two slots")
+
+    def _key_bone_location(a):
+        a.scale = (0.01, 0.01, 0.01)
+        pb = a.pose.bones["Root"]
+        # The current frame evaluates to the first key, so only the second can refuse.
+        pb.keyframe_insert("location", frame=100)
+        pb.location = (0, 0, 10.0)
+        pb.keyframe_insert("location", frame=200)
+        pb.location = (0, 0, 0)
+
+    _admits(lambda a: _key_body("location"), "an action keying location")
+    _refuses(lambda a: _key_body("scale"), "animated or driven scale", "an action keying scale")
+    _refuses(lambda a: _to_nla(_key_body("scale")), "animated or driven scale", "an NLA strip keying scale")
+    _refuses(lambda a: _to_meta(_key_body("scale")), "animated or driven scale", "a meta strip keying scale")
+    _admits(lambda a: _share_action("location", "scale"), "scale keyed on another object's slot")
+    _refuses(lambda a: _share_action("scale", "location"), "animated or driven scale",
+             "scale keyed on the object's own second slot")
+
+    def _slotless_action(a):
+        _key_body("scale").animation_data.action_slot = None
+
+    def _slotless_strip(a):
+        _to_nla(_key_body("scale")).action_slot = None
+    _admits(_slotless_action, "a slot-less action keying scale")
+    _admits(_slotless_strip, "a slot-less NLA strip keying scale")
+
+    _refuses(_key_bone_location, "pose translation", "a scaled rig's action keying bone location")
+
+    def _nla_bone_location(a):
+        _key_bone_location(a)
+        _to_nla(a)
+    _refuses(_nla_bone_location, "pose translation", "a scaled rig's NLA strip keying bone location")
+
+    # An export reaches that gate on either branch.
+    for scoped in (True, False):
+        arm = _make_rig()
+        _key_body("location")
+        arm.pose.bones["Root"].rotation_mode = 'QUATERNION'
+        arm.pose.bones["Root"].keyframe_insert("rotation_quaternion", frame=1)
+        exc, written = _export(arm, scoped=scoped, tag="animated_%s" % scoped)
+        check(exc is None and written, "export (scoped=%s) with actions must write: %s" % (scoped, exc))
+
+    # 11g. The gate evaluates the depsgraph itself. Deliberately omits view_layer.update().
     _clear_scene()
     _arm = _make_rig()
     _arm.scale = (2.0, 1.0, 1.0)
@@ -594,17 +614,13 @@ def main():
           "the shear gate must evaluate the depsgraph itself, not trust the "
           "caller; on an un-flushed scene got %r" % _stale)
 
-    # 11b. The gate's VERDICT is scale-invariant — it classifies a rig the same
-    # whether or not the parked scale has been baked yet.
-    #
-    # This does NOT police the normalize-then-clear ordering; 11c does, and the
-    # two are independent. It earns its place on the ``bake_object_scale=False``
-    # path, where nothing bakes and the gate always receives a scale-carrying
-    # scene. Caught mutation: switching the gate to read ``matrix_world``'s
-    # un-normalized 3x3 (``old_world.to_3x3()``), whose up vector is the Z scale —
-    # 0.03 unbaked against 1.0 baked, either side of ``_UP_AXIS_EPS``.
-    # ``delta.to_3x3()`` is NOT caught and cannot be: the delta carries no scale,
-    # since S cancels in ``(T*S)(T*R*S)^-1 = T*R^-1*T^-1``.
+    # 11b. The gate's verdict is scale-invariant: it classifies a rig the same
+    # whether or not the parked scale has been baked. This is independent of the
+    # normalize-then-clear ordering (11c) and matters on the
+    # ``bake_object_scale=False`` path, where the gate always receives a
+    # scale-carrying scene. Caught mutation: switching the gate to read
+    # ``matrix_world``'s un-normalized 3x3 (``old_world.to_3x3()``), whose up vector
+    # is the Z scale, 0.03 unbaked against 1.0 baked, either side of ``_UP_AXIS_EPS``.
     verdicts = []
     for normalize_first in (True, False):
         _clear_scene()
@@ -621,20 +637,11 @@ def main():
           "same whether or not the scale was baked first; got normalize-first=%r "
           "clear-first=%r" % tuple(verdicts))
 
-    # 11c. normalize_object_scale MUST run before the rotation gate, and this is
-    # what pins it. The gate is not a pure predicate: for a modifier-bound mesh
-    # that is NOT the armature's descendant it also writes ``m.matrix_world`` and
-    # snapshots that mesh's ``matrix_basis`` for the undo replayed in the export's
-    # ``finally``. Both side effects are order-sensitive, and neither is reachable
-    # from a fixture whose meshes are parented to the rig (``_make_rig`` parents
-    # ``Body``, so the gate takes its descendant early-out and never gets here) —
-    # which is exactly why an earlier version of this test saw no difference.
+    # 11c. normalize_object_scale must run before the rotation gate (fbx_export's
+    # irreversible-bake comment owns why). A fixture whose meshes are parented to the rig
+    # never reaches the gate's write, which is why this one is bound and not parented.
     #
-    # (a) Scene restoration. Clear-first snapshots the mesh's PRE-bake basis,
-    # normalize then bakes the scale into its data, and the restore replays the
-    # old basis over baked data — measured, a (2,3,4) bound mesh comes back
-    # 2x3x4 too large, silently, with a byte-equivalent file. Baking first takes
-    # the snapshot at scale 1.
+    # (a) Scene restoration.
     _clear_scene()
     arm = _make_rig()
     arm.rotation_euler = (0.0, 0.0, math.pi)      # front-axis park: gate will clear it
@@ -665,13 +672,7 @@ def main():
           % (tuple(round(v, 4) for v in want_world),
              tuple(round(v, 4) for v in got_world)))
 
-    # (b) Refusals must stay ahead of the first mutation. The gate's write gives
-    # the bound mesh a local rotation; under a non-uniformly scaled PARENT that is
-    # check_scale_normalizable's shear case, which normalize re-validates. Baking
-    # first evaluates that guard before the rotation exists and after the parent
-    # is already uniform, so the scene is correctly accepted — measured, the
-    # reordered run raises the shear refusal instead, with the clear having already
-    # mutated the scene and no file written.
+    # (b) Refusals stay ahead of the first mutation.
     _clear_scene()
     arm = _make_rig()
     arm.rotation_euler = (0.0, 0.0, math.pi)
@@ -710,11 +711,8 @@ def main():
           "bake_object_scale=False must leave the scale alone; got %r"
           % (tuple(arm.scale),))
 
-    # --- 13. Out-of-scope ancestors (D2C) --------------------------------------
-    # hierarchy_ordered closes the caller's set DOWNWARD only (deliberately —
-    # case 10 pins why), so a scoped export never reaches an ancestor sitting
-    # above its scope. That ancestor's scale is then neither baked nor written,
-    # and collapses into the in-scope descendant's own node.
+    # --- 13. Out-of-scope ancestors --------------------------------------------
+    # check_scale_normalizable's out-of-scope comment owns why these refuse.
     def _loose_under_holder(holder_scale, child_rot=(0.0, 0.0, 0.0),
                             grandparent_scale=None, delta_scale=None):
         """Armature at root; its modifier-bound mesh parented to a Holder EMPTY
@@ -746,9 +744,7 @@ def main():
             err = e
         return err
 
-    # 13a. The leak itself: measured writing `Lcl Scaling (2,2,2)` on the mesh
-    # node. Refused, not absorbed — widening the scope upward would bake a shared
-    # ancestor's scale onto siblings the caller never named (case 10).
+    # 13a. The leak refuses rather than widening scope.
     arm, holder = _loose_under_holder((2.0, 2.0, 2.0))
     vert_before = bpy.data.objects["Body"].data.vertices[0].co.copy()
     err = _scoped_raises(arm, "oos_uniform")
@@ -778,11 +774,7 @@ def main():
           "whole-scene export must still ship identity node scales; offenders: %r"
           % _offenders(out))
 
-    # 13c. The sharper half. A NON-uniform out-of-scope ancestor over a rotated
-    # child is check_scale_normalizable's shear case, but invisible to it because
-    # the ancestor is out of scope — measured exporting silently at
-    # (1.58114, 1.58114, 1.0), the shear dropped in the re-decomposition. That is
-    # geometry movement, not a layout blemish.
+    # 13c. A non-uniform out-of-scope ancestor over a rotated child refuses.
     arm, _h = _loose_under_holder((2.0, 1.0, 1.0), child_rot=(0.0, 0.0, 0.785398))
     err = _scoped_raises(arm, "oos_shear")
     check(err is not None and "outside this export's scope" in str(err),
@@ -797,12 +789,7 @@ def main():
     check(err is None,
           "an out-of-scope ancestor at identity scale must NOT refuse; got %r" % err)
 
-    # 13d-bis. Over-refusal guard, the one that bit in review. Blender's "Parent,
-    # Keep Transform" stores a cancelling matrix_parent_inverse, so a child under a
-    # 2.0 ancestor can sit at world scale 1.0. Nothing leaks — the scoped export
-    # root-ifies that child at its WORLD transform, which is unit — so refusing it
-    # would block a native shape (this repo's own fixtures build scenes this way).
-    # The check must read the transform the child INHERITS, not the parent's own.
+    # 13d-bis. Over-refusal guard: a Keep Transform child under a 2.0 ancestor exports.
     _clear_scene()
     arm = _make_rig()
     body = bpy.data.objects["Body"]
@@ -840,20 +827,9 @@ def main():
           "an out-of-scope ancestor carrying only a delta_scale must refuse; "
           "got %r" % err)
 
-    # 13h. The ancestor check reads matrix_world, which is DEPSGRAPH-EVALUATED and
-    # therefore stale until something forces an update — unlike every other
-    # condition here, which reads direct RNA. This fixture deliberately does NOT
-    # call view_layer.update() after setting the scale, which is the shape any
-    # caller has that builds a scene and exports in one go (the CLI door, an
-    # execute_blender_code block). Measured without the update inside
-    # check_scale_normalizable: matrix_world.to_scale() returns (1,1,1) and the
-    # refusal silently passes.
-    # Asserted against check_scale_normalizable DIRECTLY, not through
-    # export_unity_fbx: the scoped export path calls bpy.ops.object.select_all
-    # first, and any operator call flushes the depsgraph, so routing through it
-    # would hide the staleness the case exists to pin. normalize_object_scale is
-    # a public door (case 10 uses it that way), so a caller genuinely can arrive
-    # here with nothing having flushed.
+    # 13h. Staleness: deliberately no view_layer.update(), asserted against
+    # check_scale_normalizable directly because the export path's select_all flushes the
+    # depsgraph and would hide it.
     _clear_scene()
     arm = _make_rig()
     body = bpy.data.objects["Body"]
@@ -873,12 +849,9 @@ def main():
           "update matrix_world.to_scale() reads (1,1,1) on a freshly-set scale "
           "and the refusal silently passes; got %r" % err)
 
-    # 13g. The escape hatch that made this reachable on real files. With
-    # keep_object_rotation=True the armature preflight is skipped entirely
-    # (candidates=[]), so the cm-unit root-Null shape drove straight through and
-    # wrote its parked conversion as node scale — measured on two vendor imports
-    # at 30 of 590 and 24 of 397 Model nodes at 0.01. This is that shape: the
-    # armature AND its meshes hang off one scaled EMPTY.
+    # 13g. keep_object_rotation=True skips the armature preflight entirely
+    # (candidates=[]), and this cm-unit root-Null shape must still refuse: the
+    # armature and its meshes hang off one scaled EMPTY.
     _clear_scene()
     arm = _make_rig()
     root_empty = bpy.data.objects.new("Root", None)
@@ -897,16 +870,12 @@ def main():
           "keep_object_rotation=True must not smuggle an out-of-scope scaled "
           "ancestor past the bake; got %r" % err)
 
-    # 14. The eps bands. _SCALE_EPS = 1e-4 sits between measured exporter float
-    # noise (2.9e-6 spread on 22 meshes of one vendor file; 6 corpus files over
-    # the old 1e-6) and the smallest authored values (1.5e-2 spread non-uniform,
-    # 0.9 uniform). The bake must SKIP the noise band — under 1e-6 every export
-    # of those files permanently rewrote real vendor meshes over pure float
-    # noise — and still catch authored scale.
+    # 14. The eps bands: the bake skips the noise band and still catches authored scale
+    # (_SCALE_EPS's comment).
     _clear_scene()
     arm = _make_rig()
     body = scene_utils.get_bound_meshes(arm)[0]
-    body.scale = (1.0000029, 1.0, 0.9999987)   # the measured Sio/Kirsch band
+    body.scale = (1.0000029, 1.0, 0.9999987)   # the measured exporter noise band
     bpy.context.view_layer.update()
     applied = scene_utils.normalize_object_scale(
         [arm] + scene_utils.get_bound_meshes(arm))
@@ -921,10 +890,8 @@ def main():
           "an authored 0.9 scale must still be baked; got %r" % (applied,))
 
     # --- Visibility: the scope is caller-named, so visibility never filters it. ----
-    # The defect: select_set on a view-layer-hidden object is a silent no-op, so the
-    # exporter ran with an EMPTY selection and wrote a ~4 KB geometry-free FBX at
-    # exit 0. Every case below asserts the written file actually carries the mesh,
-    # and that the caller's visibility flags come back exactly as authored.
+    # Exports assert the written file carries the mesh, and the caller's visibility flags
+    # come back as authored (fbx_export's **Visibility**).
     def _vis(obj):
         return (obj.hide_get(), obj.hide_viewport, obj.hide_select)
 
@@ -954,11 +921,9 @@ def main():
             check(False, "%s: export raised %r; a caller-named scope must export "
                          "regardless of visibility" % (tag, e))
             return
-        # Assert the GEOMETRY shipped, not merely that a file exists — the defect
-        # wrote a well-formed 4 KB file with zero Model and Geometry nodes. Read the
-        # Model node names rather than grepping the bytes: the mesh object is "Body"
-        # and its datablock "BodyData", so a substring test cannot tell a shipped
-        # Model node from an incidental mention of the mesh data.
+        # Read the Model node names rather than grepping the bytes: the mesh object
+        # is "Body" and its datablock "BodyData", so a substring test cannot tell a
+        # shipped Model node from an incidental mention of the mesh data.
         nodes = [n for n, _ in _all_node_scales(out)]
         check(mesh.name in nodes,
               "%s: wrote %d bytes with no %r Model node (nodes=%r) — the "
@@ -1011,20 +976,12 @@ def main():
                 setattr(o, flag, True)
         _exports_with_geometry(arm, mesh, flag)
 
-    # 2. The PARTIAL case: only the mesh is hidden. The armature still selects, so
-    #    the export writes a plausible, non-empty, rig-only file — which the
-    #    file-size comparison callers used instead of this check cannot catch.
+    # 2. The PARTIAL case: only the mesh hidden, a plausible rig-only file.
     arm = _make_rig(); mesh = bpy.data.objects["Body"]
     mesh.hide_set(True)
     _exports_with_geometry(arm, mesh, "partial_mesh_hidden")
 
-    # 3. Collection-level hiding is NOT repairable from the object flags (measured:
-    #    clearing all three still leaves context.selected_objects empty), and this
-    #    door will not clear a collection's — that reaches objects the caller never
-    #    named. It must refuse, naming them.
-    #    This also pins the select_get() trap: under a collection hide, select_set
-    #    DOES set the base flag and select_get() reads True while selected_objects
-    #    stays empty, so an implementation reading select_get() would pass here.
+    # 3. Collection-level hiding refuses, naming the objects, and pins the select_get() trap.
     for tag, apply in (
             ("layercol_hide_viewport", lambda lc: setattr(lc, "hide_viewport", True)),
             ("col_hide_viewport", lambda lc: setattr(lc.collection, "hide_viewport", True)),
@@ -1038,11 +995,10 @@ def main():
         apply(_collect(arm, mesh, "Hidden_" + tag))
         _refuses(arm, mesh, tag, "could not be selected")
 
-    # 3b. The unhide must stay INSIDE the named scope. Every other case hides only
-    #     objects that are in scope, so a regression that unhid the whole file — or a
-    #     get_bound_meshes that widened — would pass all of them. This is the change's
-    #     central promise, so assert it directly: a second hidden rig stays hidden and
-    #     stays out of the file.
+    # 3b. The unhide must stay inside the named scope. Every other case hides only
+    #     objects that are in scope, so a regression that unhid the whole file, or a
+    #     get_bound_meshes that widened, would pass all of them. A second hidden rig
+    #     stays hidden and stays out of the file.
     arm = _make_rig(); mesh = bpy.data.objects["Body"]
     other_arm = bpy.data.objects.new("Armature_Other", bpy.data.armatures.new("OtherData"))
     other_mesh_data = bpy.data.meshes.new("OtherData_M")
@@ -1071,18 +1027,13 @@ def main():
           "scope containment: an out-of-scope mesh shipped (nodes=%r)" % nodes)
     os.remove(out)
 
-    # 4. An EXCLUDED collection makes select_set raise instead of no-op, and
-    #    hide_get() on an object outside the view layer lies — so the membership
-    #    test must run BEFORE the snapshot, and after a view_layer.update() (the
-    #    flag does not reach view_layer.objects until the depsgraph rebuilds).
+    # 4. An excluded collection raises at select_set and hide_get() lies: membership runs
+    #    before the snapshot.
     arm = _make_rig(); mesh = bpy.data.objects["Body"]
     _collect(arm, mesh, "Excluded").exclude = True
     _refuses(arm, mesh, "excluded", "not in view layer")
 
-    # 5. Whole-scene: hide flags never filtered this path (it exports
-    #    view_layer.objects, which includes hidden objects), but an excluded
-    #    collection drops out of that set and ships a plausible PARTIAL file at
-    #    exit 0 — strictly worse than the empty one, since no size check sees it.
+    # 5. Whole-scene: an excluded collection refuses rather than shipping a partial file.
     arm = _make_rig(); mesh = bpy.data.objects["Body"]
     bpy.ops.mesh.primitive_uv_sphere_add(location=(3, 0, 0))
     _collect(arm, mesh, "ExcludedWhole").exclude = True
@@ -1112,9 +1063,7 @@ def main():
         check("no objects" in str(e),
               "empty-scene refusal must say so plainly; got %s" % e)
 
-    # Which checkout actually ran. An editable install records one absolute path,
-    # so a second worktree can import the FIRST one's modules and report green on
-    # changes it never loaded. Print the path, do not infer it from the cwd.
+    # Which checkout actually ran (test_import_fbx.py says why).
     print("FBXEXPORT_TEST module:", fbx_export.__file__)
 
     if FAILURES:

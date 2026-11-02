@@ -4,28 +4,23 @@ Run:
   blender <in.blend> --background --factory-startup --python cli/prune_bones.py -- \
       --in <in.blend> --out <out.blend> [--armature <name>] [--force] [--report <report.json>]
 
-  # Read-only preview: the removal plan, grouped into chains. No mutation; --out
-  # must be omitted (passing it errors — a preview never writes a deliverable).
+  # Read-only preview: the removal plan, grouped into chains.
   blender <in.blend> --background --factory-startup --python cli/prune_bones.py -- \
       --in <in.blend> --whatif [--armature <name>] [--report <report.json>]
 
-Over-pruning surfaces downstream, not here (docs/blender.md) — which is what --whatif
-is for: the removal list drives a keep/cut call, and reading it must not cost you the
-armature.
+Over-pruning surfaces downstream, not here (docs/blender.md): read --whatif first.
 
 Exit codes: 0 = pruned (--out saved) · 1 = REFUSED (--out NOT saved) · 2 = ERROR
 (bad name, write failure, --out combined with --whatif).
 
-The single gate is an object parented to a bone the prune would delete; --force
-prunes anyway. Rationale lives on prune_bones.prune_zero_weight_bones. --whatif
-evaluates the gate without mutating: exit 0 = would prune, 1 = would refuse.
+Two refusals: library data, which nothing bypasses, and an object parented to a bone
+the prune would delete, which --force overrides. --whatif evaluates both without
+mutating: exit 0 = would prune, 1 = would refuse.
 """
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -38,7 +33,7 @@ def _parse_args():
     p = argparse.ArgumentParser(prog="prune_bones")
     p.add_argument("--in", dest="in_path", required=True,
                    help=".blend holding the armature to prune")
-    p.add_argument("--out", dest="out_path", default=None,   # not required under --whatif
+    p.add_argument("--out", dest="out_path", default=None,
                    help="Where to save the pruned .blend; omit under --whatif")
     p.add_argument("--armature", dest="armature", default=None,
                    help="Armature object to prune. Omitted, the active armature is used, "
@@ -95,8 +90,6 @@ def main():
     try:
         result = prune_zero_weight_bones(armature, whatif=args.whatif, force=args.force)
     except PruneTargetNotEditable as refused:
-        # Same REFUSED shape as the gate below, but no --force remedy: nothing can
-        # edit library data, so offering one would route back to the crash.
         print("AVATARPREP: prune REFUSED —", refused)
         print("AVATARPREP: OFFENDER armature %r is library data from %s"
               % (refused.armature, refused.library))
@@ -109,8 +102,6 @@ def main():
                                        "library": refused.library})
         sys.exit(1)
     except PruneRefused as refused:
-        # merge_armatures' FAIL shape: --out unwritten, --report still landed so the
-        # refusal is triageable without a re-run.
         print("AVATARPREP: prune REFUSED —", refused)
         for o in refused.offenders:
             print("AVATARPREP: OFFENDER bone-parented %s %r rides doomed bone %r"
@@ -123,9 +114,8 @@ def main():
         sys.exit(1)
 
     if args.whatif:
-        # Library data outranks the plan: the per-bone listing below is what a
-        # LOCAL copy would lose, and on a bare linked rig (no bound meshes in
-        # scope) it names every bone — so the verdict leads, the plan follows.
+        # On a bare linked rig (no bound meshes) the plan below names every bone, so
+        # the refusal prints first.
         if result.get("refusal"):
             print("AVATARPREP: whatif — a real run would REFUSE: %s (--force cannot "
                   "override this)" % result["refusal"])
@@ -146,7 +136,6 @@ def main():
                      " — THAT BONE WOULD BE PRUNED" if obj["bone_pruned"] else ""))
         if args.report:
             write_report(args.report, result)
-        # Gate verdict in the exit code, so a caller need not parse stdout.
         if result.get("refusal"):
             sys.exit(1)
         if result["would_refuse"]:
@@ -165,8 +154,6 @@ def main():
                  " — THAT BONE WAS PRUNED under --force; the object is now orphaned"
                  if obj["bone_pruned"] else ""))
 
-    # Save the deliverable (--out) BEFORE the diagnostic report, so a
-    # report-write failure can't discard a successful prune's output.
     out_path = _prepare_path(args.out_path, "out")
     try:
         bpy.ops.wm.save_as_mainfile(filepath=out_path)

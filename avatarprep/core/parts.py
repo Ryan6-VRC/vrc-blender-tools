@@ -1,10 +1,9 @@
 """Mark a part of a garment as a Delete or Hide carrier: a shape key that moves the part past the ShapeChanger threshold, rigidly or collapsed to a point.
 
 A **selection** is the fit family's ``--region`` grammar (``fit.parse_region``), read on the
-mesh's Basis in world space: ``group:``, ``bone:``, ``slot:`` and ``zone:`` terms, ``+``
-intersecting and repeated regions adding together. ``bone:`` reads each vertex's largest
-influence over the deform bones of the mesh's own armature, and ``zone:`` the body frame of
-that armature (``weight_transfer.body_frame``).
+mesh's Basis in world space. ``bone:`` reads each vertex's largest influence over the deform
+bones of the mesh's own armature, and ``zone:`` the body frame of that armature
+(``weight_transfer.body_frame``).
 
 The selection is then quantified over **islands**, the mesh's edge-linked parts: an island
 is taken whole when ``any``, at least ``half``, or ``all`` of its vertices are in the
@@ -15,8 +14,9 @@ dominant bone, the deform bone carrying its largest summed weight (a tie going t
 the mesh's vertex-group order), unless ``to`` names a bone or a world point for every island.
 
 The consumer is a Modular Avatar ShapeChanger Delete, which keeps a vertex its shape moves by
-the threshold or less, so a key moving any vertex at or under ``threshold`` (world metres,
-what the export's scale bake leaves the mesh in) refuses rather than leaving it standing. A
+the threshold or less (0.01, the ShapeChanger's default; pass the component's when it differs),
+so a key moving any vertex at or under ``threshold`` (world metres, what the export's scale
+bake leaves the mesh in) refuses rather than leaving it standing. A
 Hide toggle animating the same key shows the part wherever the key puts it: a rigid move keeps
 the part's shape around its target, so a part larger than the body there stays visible, and
 ``collapse`` is the form that hides it. A part on a PhysBone chain is carried away by the
@@ -26,7 +26,7 @@ The key is written by ``coverage.add_key``, the carrier writer ``mark_coverage``
 each target object records ``{key: recipe}`` in ``avatarprep_authored``. ``replace`` rewrites
 only a key that stamp lists: a vendor key, or another door's, is never overwritten.
 
-Pure ``bpy`` data access, no operators beyond leaving Edit Mode. Door: ``cli/mark_parts.py``.
+Door: ``cli/mark_parts.py``.
 """
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 

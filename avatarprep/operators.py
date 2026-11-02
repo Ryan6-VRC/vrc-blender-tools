@@ -1,9 +1,4 @@
-"""AvatarPrep operators: thin wrappers around :mod:`avatarprep.core`.
-
-The operators contain no avatar-processing logic of their own; they validate
-context and delegate to the pure core functions so the exact same code path runs
-from the UI buttons and from headless / agent runs.
-"""
+"""AvatarPrep operators: thin wrappers around :mod:`avatarprep.core`."""
 
 import bpy
 from bpy.props import StringProperty, BoolProperty, FloatProperty
@@ -63,9 +58,7 @@ class AVATARPREP_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
 
     def execute(self, context):
         # Nested bpy.ops push no undo step, so the bake cannot be rolled back from
-        # the UI whatever this operator's bl_options say. Report on the scene it
-        # changed rather than a plain success: a script reads the console
-        # AVATARPREP: line, an artist never does.
+        # the UI whatever this operator's bl_options say.
         scaled = [o.name for o in context.scene.objects
                   if not scene_utils._is_unit_scale(tuple(o.scale))]
         try:
@@ -199,8 +192,6 @@ class AVATARPREP_OT_merge_armatures(bpy.types.Operator):
                       "armature by bone name (checkpoint/save first — no undo)")
     bl_options = {'REGISTER'}  # NOT UNDO: consumes an object; trust git/save checkpoints
 
-    # Structural ``force`` stays unexposed in the operator (matching today); only the
-    # advisory stamp override is offered as a button-level toggle.
     force_stamps: BoolProperty(name="Force Stamps", default=False,
                                description="Override the advisory base/state stamp gate "
                                            "(a mismatch is logged loudly, not the "
@@ -283,7 +274,6 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
                                    "local rig." % (refused.armature, refused.library))
             return {'CANCELLED'}
         except PruneRefused as refused:
-            # CANCELLED, not FINISHED: a red line above a finished op reads as advisory.
             for o in refused.offenders:
                 self.report({'ERROR'}, "Bone-parented %s '%s' rides doomed bone '%s'"
                             % (o["type"], o["object"], o["bone"]))
@@ -292,8 +282,6 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             return {'CANCELLED'}
         if self.whatif:
             chains = result["chains"]
-            # The gate verdict, not just the plan: "will this go through?" — the
-            # question would_refuse exists to answer (core docstring).
             if result.get("refusal"):
                 verdict = " — WOULD REFUSE: %s" % result["refusal"]
             elif result["would_refuse"]:
@@ -304,15 +292,13 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
                 verdict = ""
             self.report({'INFO'}, "Would prune %d bone(s) in %d chain(s); %d kept%s"
                         % (result["deleted"], len(chains), result["kept"], verdict))
-            # Windowed by CHAIN (the keep/cut unit); the full plan is in --report.
             for ch in chains[:10]:
                 self.report({'WARNING'}, "Would prune chain %s (%d bone(s)) under %s%s"
                             % (ch["root"], len(ch["bones"]), ch["parent"] or "<root>",
                                " [parent weighted]" if ch["parent_weighted"] else ""))
             if len(chains) > 10:
                 self.report({'WARNING'}, "…and %d more chain(s)" % (len(chains) - 10))
-            # Tripwire — measured empty across the vendor library; anything here means
-            # this asset breaks the assumption the keep rules are built on.
+            # Tripwire (prune_zero_weight_bones' docstring).
             for obj in result["bone_parented_objects"]:
                 self.report({'ERROR'}, "Bone-parented %s '%s' rides bone '%s'%s"
                             % (obj["type"], obj["object"], obj["bone"],
@@ -320,14 +306,11 @@ class AVATARPREP_OT_prune_bones(bpy.types.Operator):
             return {'FINISHED'}
         self.report({'INFO'}, "Pruned (kept %d, deleted %d)"
                     % (result["kept"], result["deleted"]))
-        # Window the status-bar manifest (the full list lives in the CLI stdout
-        # and the --report JSON — this is just the N-panel surface).
         deleted = result["deleted_bones"]
         for name in deleted[:10]:
             self.report({'WARNING'}, "Pruned bone: %s" % name)
         if len(deleted) > 10:
             self.report({'WARNING'}, "…and %d more pruned bone(s)" % (len(deleted) - 10))
-        # Only riders of SURVIVING bones reach here, unless Force let a doomed one through.
         for obj in result["bone_parented_objects"]:
             self.report({'WARNING'}, "Bone-parented %s '%s' rode bone '%s'%s"
                         % (obj["type"], obj["object"], obj["bone"],
@@ -341,7 +324,7 @@ class AVATARPREP_OT_compare_armatures(bpy.types.Operator):
     bl_label = "Compare Armatures"
     bl_description = ("Read-only seam check: how the one other selected armature's "
                       "skeleton differs from the active armature's (no mutation)")
-    bl_options = {'REGISTER'}  # read-only
+    bl_options = {'REGISTER'}
 
     @classmethod
     def poll(cls, context):
@@ -370,8 +353,6 @@ class AVATARPREP_OT_compare_armatures(bpy.types.Operator):
                     % (verdict, base.name, other.name, len(offenders)))
         for line in offenders[:10]:
             self.report({'WARNING'}, line)
-        # The offender list above is capped at 10; the remedy talks about every
-        # pair, so point at a door that shows them all rather than at "above".
         for line in remedy_lines(report):
             self.report({'INFO'}, line)
         if len(offenders) > 10:

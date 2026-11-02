@@ -1,10 +1,4 @@
-"""Headless test for avatarprep.core.rename_objects and its CLI door.
-
-Run:
-  blender --background --factory-startup --python tests/test_rename_objects.py
-
-Prints RENAME_TEST OK / RENAME_TEST FAIL: <reason>.
-"""
+"""Headless test for avatarprep.core.rename_objects and its CLI door."""
 import os
 import subprocess
 import sys
@@ -37,8 +31,7 @@ def _fresh():
 
 
 def test_set_swap():
-    """own-base's canonical rename: Body is both a source and a destination. Pair-by-pair
-    this silently yields Body.001, which is the whole reason this door exists."""
+    """own-base's canonical rename: Body is both a source and a destination."""
     from avatarprep.core.rename_objects import rename_objects
     _fresh()
     _mesh("Face")
@@ -99,8 +92,6 @@ def test_refusals():
     refuses({"Face": "Keep"}, "already held", "target held by an uninvolved object")
     refuses({"Face": "X", "Keep": "X"}, "target 'X'", "two pairs, one target")
 
-    # Object names are unique across bpy.data.objects -- every TYPE and every SCENE --
-    # so a per-scene collision scan would miss both of these.
     def add_armature():
         arm = bpy.data.objects.new("Ghost", bpy.data.armatures.new("GhostArm"))
         bpy.context.scene.collection.objects.link(arm)
@@ -113,13 +104,23 @@ def test_refusals():
         other.collection.objects.link(ob)
     refuses({"Face": "Elsewhere"}, "already held",
             "target held by an object in ANOTHER scene", add_other_scene_object)
+    refuses({"Keep": "Kept", "Face": "x" * 300}, "bytes", "target over the name limit, beside a valid pair")
+
+
+def test_cycle_of_long_names():
+    """The temp name that breaks a cycle must fit the name limit whatever it replaces."""
+    from avatarprep.core.rename_objects import rename_objects
+    _fresh()
+    a, b = "a" * 250, "b" * 250
+    _mesh(a)
+    _mesh(b)
+    res = rename_objects({a: b, b: a})
+    check(res["renamed"] == {a: b, b: a}, "a cycle of long names should land, got %s" % res["renamed"])
 
 
 def test_datablock_name_untouched():
-    """Pins the object-name-only decision. Object and mesh-datablock names diverge
-    routinely on real assets -- Svak (Owned), a shipped owned base, carries object Body
-    over datablock Plane.002 -- and nothing downstream reads the datablock name. A future
-    change that 'tidies' this should fail here."""
+    """Pins the object-name-only decision (core rename_objects docstring); a change that
+    tidies this should fail here."""
     from avatarprep.core.rename_objects import rename_objects
     _fresh()
     ob = _mesh("Face", datablock_name="Plane.002")
@@ -162,9 +163,7 @@ def _run_cli(args):
 
 
 def test_cli_grammar_refusals():
-    """--rename grammar errors must fail in grammar, exit 2. _common.kv would absorb
-    both: a dropped '=' becomes {'Body': ''} and renames the object to 'Object', and a
-    repeated OLD collapses last-wins with one pair silently vanishing."""
+    """--rename grammar errors must fail in grammar, exit 2."""
     root = _repo_root()
     door = os.path.join(root, "cli", "rename_objects.py")
     tmp = tempfile.mkdtemp(prefix="avatarprep_rename_")
@@ -231,6 +230,7 @@ def main():
     test_set_swap()
     test_cycle()
     test_refusals()
+    test_cycle_of_long_names()
     test_datablock_name_untouched()
     test_whatif_matches_and_touches_nothing()
     test_cli_grammar_refusals()

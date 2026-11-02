@@ -7,22 +7,16 @@ Run with::
         [--armature <name>] [--no-embed] [--keep-object-rotation] \
         [--no-bake-scale]
 
-Loads ``--in``, enables AvatarPrep from the bundled source package, and writes
-``--out`` using the CATS export recipe. By default an armature object rotation is
-cleared as axis-convention residue ONLY when it leaves the up axis fixed; one
-that moves the up axis is the source's own up-axis conversion and is preserved
-(clearing it exports the rig tipped onto its face). Each case prints which it
-did. ``--keep-object-rotation`` opts out of both and exports the rotation as-is —
-for a rotation that is deliberate rather than a convention.
-``export_unity_fbx``'s docstring owns the why.
+Loads ``--in`` and writes ``--out`` using the CATS export recipe. By default the
+orientation gate clears or preserves an armature object rotation, and prints
+which it did. ``--keep-object-rotation`` opts out and exports the rotation
+as-is, for a deliberate one. ``export_unity_fbx``'s docstring owns the why.
 """
 
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -77,10 +71,8 @@ def main():
             sys.exit(1)
         armature = arm
     elif args.keep_object_rotation:
-        # --keep-object-rotation is the one door that still whole-scene-exports a
-        # multi-armature scene (the gated path refuses it — core docstring). An
-        # owned .blend that appended a disposable base-body reference would
-        # silently ship that second rig, so name what is about to ship.
+        # Name what is about to ship: this path still whole-scene-exports a
+        # multi-armature scene.
         arms = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
         if len(arms) > 1:
             print("AVATARPREP: WARNING %d armatures in scene (%s); exporting WHOLE "
@@ -91,8 +83,6 @@ def main():
     out_path = os.path.abspath(args.out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    # A scoped export forces its own strip/no-embed recipe; --no-embed only
-    # applies to the whole-scene path.
     try:
         fbx_export.export_unity_fbx(out_path, armature_obj=armature,
                                     embed_textures=not args.no_embed,

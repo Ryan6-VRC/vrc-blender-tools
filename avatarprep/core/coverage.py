@@ -20,8 +20,7 @@ of the armature count as the same bone (chest to breast bone through its root; h
 the skirt's first ring), and ``fold`` globs name bones that read as their nearest unfolded
 ancestor, for a physbone the operator knows is stiff. The hit face's weight share on the
 allowed set must reach ``share``; blend ratio is otherwise ignored, since a mismatch on
-shared bones clips in game and is not a reason to keep a triangle. Only vertex groups
-named for a bone of the armature count as skinning when there is one.
+shared bones clips in game and is not a reason to keep a triangle.
 
 The consumer is a Modular Avatar ShapeChanger Delete: a triangle is removed when ANY of
 its vertices moves more than the component's threshold under the shape. The carrier is
@@ -31,9 +30,9 @@ split, and a quad with one uncovered corner must never go. The carrier removes e
 the polygons touching it; ``residue`` is covered but has no interior vertex to carry it.
 ``rest_visible`` counts removed triangles a rest-pose ray can still reach from the
 centroid (to 5 degrees short of edge-on), with every listed garment blocking regardless
-of bones: the cost of a cone narrower than the hemisphere, reported so it is never silent.
+of bones: the cost of a cone narrower than the hemisphere.
 
-Pure ``bpy`` data access, no operators, no UI. Door: ``cli/mark_coverage.py``.
+Door: ``cli/mark_coverage.py``.
 """
 import contextlib
 import fnmatch
@@ -45,6 +44,8 @@ from typing import Dict, Iterable, Optional, Sequence
 import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
+
+from . import scene_utils
 
 REASONS = ("unweighted", "swings", "escaped")
 
@@ -106,9 +107,8 @@ def normalized_weights(obj, me, max_bones: int, floor: float = 0.01, bones: Opti
 
 
 def _face_weights(g_w, corners):
-    """Mean of the corners' normalised weight vectors — the garment's weights over the
-    face a ray hit — over the corners that carry any weight, so an unweighted corner
-    does not thin the face's share."""
+    """Mean of the corners' normalised weight vectors over the corners that carry any
+    weight, so an unweighted corner does not thin the face's share."""
     out = defaultdict(float)
     weighted = [vi for vi in corners if g_w[vi][1]]
     for vi in weighted:
@@ -118,10 +118,9 @@ def _face_weights(g_w, corners):
 
 
 def cone_directions(normal, cone_deg: float, ring_deg: float = 15.0):
-    """The rays: the normal itself plus rings of directions at even fractions of
-    ``cone_deg`` off it, one ring per ``ring_deg``, with azimuth count growing with the
-    ring's circumference (8 to 24) so a wide cone is not sparser. World-space unit
-    vectors."""
+    """The rays: the normal itself plus one ring per ``ring_deg`` out to ``cone_deg``, with
+    azimuth count growing with the ring's circumference (8 to 24) so a wide cone is not
+    sparser."""
     n = Vector(normal).normalized()
     up = Vector((0.0, 0.0, 1.0)) if abs(n.z) < 0.9 else Vector((1.0, 0.0, 0.0))
     u = n.cross(up).normalized()
@@ -140,9 +139,8 @@ def cone_directions(normal, cone_deg: float, ring_deg: float = 15.0):
 
 
 def basis_hash(me) -> str:
-    """Order-sensitive hash of the mesh's Basis coordinates (shape key 0 when present,
-    else the vertex coordinates), so a reordered or edited body is caught before an
-    index-list carrier lands on it."""
+    """Order-sensitive hash of the mesh's Basis coordinates, so a reordered or edited body
+    is caught before an index-list carrier lands on it."""
     h = hashlib.sha256()
     src = me.shape_keys.key_blocks[0].data if me.shape_keys else me.vertices
     for d in src:
@@ -152,7 +150,7 @@ def basis_hash(me) -> str:
 
 def moved_vertices(me, shape_names: Sequence[str], threshold: float):
     """Vertices any named shape key moves more than ``threshold`` — the consumer's
-    already-cut set — plus the names that are not on the mesh (never silently ignored)."""
+    already-cut set — plus the names that are not on the mesh."""
     moved = [False] * len(me.vertices)
     if not me.shape_keys:
         return moved, list(shape_names)
@@ -266,10 +264,8 @@ def measure(body, garments, *, cone_deg: float = 75.0, share: float = 0.5, reach
             kin: int = 2, fold: Sequence[str] = (), shapes: Optional[Dict[str, float]] = None,
             cut_threshold: float = 0.01, cut_shapes: Sequence[str] = (), ring_deg: float = 15.0,
             max_bones: int = 4, min_raw_weight: float = 0.5) -> Dict:
-    """Measure coverage of ``body`` by ``garments`` (mesh objects). Returns per-vertex
-    ``covered`` / ``claimed_by`` / ``cut`` / ``near`` lists, the carrier, the removed
-    polygons, triangle counts, decline counts and the body's basis hash. Raises
-    ``CoverageError`` on an unresolvable input; leaves the scene as it found it."""
+    """Measure coverage of ``body`` by ``garments`` (mesh objects). Raises ``CoverageError``
+    on an unresolvable input; leaves the scene as it found it."""
     if body is None or body.type != 'MESH':
         raise CoverageError("body is not a mesh object")
     if not garments:
@@ -372,7 +368,6 @@ def _measure(body, garments, dg, kinship, cone_deg, share, reach, ring_deg,
         if not ok:
             claimed_by[i] = None
 
-    # the carrier, at polygon granularity against the consumer's any-vertex rule
     vpolys = defaultdict(list)
     for pi, p in enumerate(polys):
         for v in p:
@@ -392,9 +387,8 @@ def _measure(body, garments, dg, kinship, cone_deg, share, reach, ring_deg,
     n_covered = tri_count(pi for pi in range(len(polys)) if poly_covered[pi] and not poly_cut[pi])
     n_realised = tri_count(removed)
 
-    # rest-pose visibility of what goes: every listed garment blocks, bones ignored; the
-    # sweep stops 5 degrees short of the tangent, where a face is edge-on and a ray runs
-    # along an open tube without ever meeting it
+    # The sweep stops 5 degrees short of the tangent, where a face is edge-on and a ray
+    # runs along an open tube without ever meeting it.
     rest_visible = []
     for pi in removed:
         p = polys[pi]
@@ -408,7 +402,7 @@ def _measure(body, garments, dg, kinship, cone_deg, share, reach, ring_deg,
     return {
         "body": body.name,
         "body_mesh": body.data.name,
-        "body_library": body.data.library.filepath if body.data.library else None,
+        "body_library": scene_utils.library_path(body.data),
         "vertex_count": n,
         "basis_hash": b_hash,
         "triangles": tri_count(range(len(polys))),
@@ -446,11 +440,10 @@ COLOR_GARMENT = [(230, 40, 40, 255), (40, 100, 230, 255), (40, 180, 80, 255),
 def marked_copy(body, result: Dict, *, name: str, garment_order: Sequence[str],
                 remove_carrier: bool = False, shapes: Optional[Dict[str, float]] = None):
     """A LOCAL copy of the body mesh (geometry, vertex groups, no library data) linked
-    into the scene collection as ``name``, carrying a ``coverage`` colour attribute:
-    kept grey, near-but-declined amber, covered coloured by claiming garment. Already-cut
-    polygons are removed in every copy; with ``remove_carrier`` the polygons the carrier
-    deletes are gone too, the built result. ``shapes`` are set on the copy so it shows the
-    configuration that was measured. The caller removes it; nothing is saved."""
+    into the scene collection as ``name``, carrying a ``coverage`` colour attribute.
+    Already-cut polygons are removed in every copy; with ``remove_carrier`` the polygons
+    the carrier deletes are gone too, the built result. The caller removes it; nothing is
+    saved."""
     me = body.data.copy()
     me.name = name
     ob = bpy.data.objects.new(name, me)
@@ -501,8 +494,7 @@ def save_marked(path: str, body, result: Dict, garments: Sequence, *, label: str
     """Save a COPY of the open file to ``path`` holding the marked body and the
     carrier-removed body beside the garments, everything else hidden, the removed body
     visible and the viewport in plain solid shading so hems read at the cut. The open
-    file's own path and contents are untouched. ``shapes`` are set on the garments too,
-    so the saved copy shows the configuration that was measured."""
+    file's own path and contents are untouched."""
     names = [g.name for g in garments]
     with shaped([body] + list(garments), shapes or {}):
         marked = marked_copy(body, result, name=label + "_marked", garment_order=names, shapes=shapes)
@@ -532,12 +524,13 @@ def save_marked(path: str, body, result: Dict, garments: Sequence, *, label: str
 
 
 def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: bool = False):
-    """Add the carrier shape key to mesh ``me`` (the body's own, editable datablock):
-    relative to Basis, value 0, each carrier vertex displaced ``delta`` along its inverted
-    normal so the consumer's threshold catches it. Refuses a vertex-count or basis-hash
+    """Add the carrier shape key to mesh ``me`` (the body's own, editable datablock), each
+    carrier vertex displaced ``delta`` along its inverted normal so the consumer's
+    threshold catches it. Refuses a vertex-count or basis-hash
     mismatch against the measurement; ``add_key`` owns the rest of the writer's rules."""
-    if not me.is_editable or me.library is not None:
-        raise CoverageError("%s is library data and cannot take a shape key" % me.name)
+    if not scene_utils.is_editable(me):
+        raise CoverageError("%s is library or override data and cannot take a shape key; a key "
+                            "written on an override mesh is lost on reload" % me.name)
     if len(me.vertices) != result["vertex_count"]:
         raise CoverageError("%s has %d vertices, the measured body %d: re-run the mark"
                             % (me.name, len(me.vertices), result["vertex_count"]))
@@ -552,12 +545,12 @@ def write_carrier(me, result: Dict, *, shape_name: str, delta: float, replace: b
 
 
 def check_key(ob, shape_name: str, *, replace: bool = False):
-    """The writer's refusals, read-only, so a preview refuses what the write would: library
-    data, the Basis's own name, an existing key without ``replace``, and ``replace`` on a key
-    another key's ``relative_key`` names. Returns the existing key block or ``None``."""
+    """The writer's refusals, read-only, so a preview refuses what the write would. Returns
+    the existing key block or ``None``."""
     me = ob.data
-    if not me.is_editable or me.library is not None:
-        raise CoverageError("%s is library data and cannot take a shape key" % me.name)
+    if not scene_utils.is_editable(me):
+        raise CoverageError("%s is library or override data and cannot take a shape key; a key "
+                            "written on an override mesh is lost on reload" % me.name)
     if me.shape_keys is None:
         if shape_name == "Basis":
             raise CoverageError("%r is the Basis of %s; the carrier needs its own key" % (shape_name, ob.name))
@@ -586,8 +579,8 @@ def add_key(ob, shape_name: str, offsets: Dict[int, Vector], *, replace: bool = 
     ``offsets`` moved by its object-space vector from Basis and every other vertex at Basis.
 
     A new key is appended last in the key order, so an exported FBX extends every renderer's
-    blendshape list at its end and index-addressed weight overrides keep their meaning; a mesh
-    with no keys gets its Basis first. ``replace`` rewrites a same-named key where it stands,
+    blendshape list at its end and index-addressed weight overrides keep their meaning.
+    ``replace`` rewrites a same-named key where it stands,
     keeping its index, and refuses when another key's ``relative_key`` names it, since every such
     key would move with the rewrite. Keys are created with ``from_mix=False``, so whatever other
     keys are set to never leaks into the new one."""

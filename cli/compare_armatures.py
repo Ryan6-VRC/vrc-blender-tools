@@ -7,14 +7,11 @@ Run:
       [--report <report.json>]
 
 ``--merge-in`` compares across two files: ``--merge`` names the armature in THAT
-file (appended from a ``.blend`` / imported from a ``.fbx`` into the open scene —
-in memory only, nothing is saved), so two separately-imported rigs both named
-``Armature`` compare without hand-rolled append scripts. A collision auto-suffix
+file, brought into the open scene in memory only. A collision auto-suffix
 (``Armature.001``) is resolved and reported; it does not affect the verdict.
 
-Positional thresholds: ``--tol`` (default 1e-4) to ``--noise-tol`` (default 1e-3)
-is the named-warning noise tier; above ``--noise-tol`` is an offender. See
-``compare_armatures``'s docstring for the calibration.
+``--help`` names the thresholds; ``compare_armatures``'s docstring has their
+calibration.
 
 Exit codes: 0 = clean (compat PASS) · 1 = incompatible (compat FAIL) ·
 2 = ERROR (bad armature name, bad --merge-in, report write failure, argparse usage).
@@ -23,8 +20,6 @@ import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -63,11 +58,9 @@ def _is_numeric_suffix_of(name, base):
 
 
 def _load_merge_side(path, merge_name):
-    """Bring ``merge_name`` from a second file into the open scene (in memory
-    only; this CLI never saves). Returns the armature OBJECT — its scene name
-    may be auto-suffixed on collision, which is why the object, not the name,
-    is the handle. In-grammar ERROR + exit 2 on any resolution failure,
-    including an unreadable file (an uncaught raise would exit 0 = compat PASS)."""
+    """Bring ``merge_name`` from a second file into the open scene, in memory only.
+    Returns the armature object, since its scene name may be auto-suffixed on
+    collision. In-grammar ERROR + exit 2 on any resolution failure."""
     import bpy
     path = os.path.abspath(path)
     ext = os.path.splitext(path)[1].lower()
@@ -79,7 +72,7 @@ def _load_merge_side(path, merge_name):
                           % (merge_name, path))
                     sys.exit(2)
                 data_to.objects = [merge_name]
-        except Exception as e:  # SystemExit above passes through untouched
+        except Exception as e:
             print("AVATARPREP: ERROR --merge-in unreadable: %s" % e)
             sys.exit(2)
         obj = data_to.objects[0]
@@ -98,8 +91,7 @@ def _load_merge_side(path, merge_name):
             sys.exit(2)
         new_arms = [o for o in bpy.data.objects
                     if o not in before and o.type == 'ARMATURE']
-        # Match --merge among the NEW armatures only, accepting Blender's
-        # numeric collision suffix (the base scene may own the plain name).
+        # Among the NEW armatures only, since the base scene may own the plain name.
         # No exactly-one shortcut: a typo must never silently pick "the one".
         named = [o for o in new_arms
                  if o.name == merge_name or _is_numeric_suffix_of(o.name, merge_name)]
@@ -109,10 +101,9 @@ def _load_merge_side(path, merge_name):
                   % (merge_name, len(named), path, [o.name for o in new_arms]))
             sys.exit(2)
         obj = named[0]
-        # A compare door must not invent provenance it then gates on:
-        # import_fbx stamps state=unproportioned, which is a GATING dimension —
-        # left in place, the verdict would depend on the merge side's container
-        # format (.fbx FAILs where the same rig via .blend warns-and-passes).
+        # import_fbx stamps state=unproportioned, a gating dimension: left in place,
+        # the verdict would depend on the merge side's container format (.fbx FAILs
+        # where the same rig via .blend warns and passes).
         for key in (scene_utils.STAMP_BASE, scene_utils.STAMP_STATE):
             if key in obj:
                 del obj[key]

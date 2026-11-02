@@ -1,19 +1,13 @@
-"""Headless multi-angle Workbench render of the scene's render-visible meshes — the
-Blender-side sibling of Unity RenderAvatar (``vrc-unity-tools/.../Editor/RenderAvatar.cs``):
-same result grammar, same refusal shape, same angle vocabulary, same
-``rendermesh_<label>_<stamp>.png`` filename and terminal ``png=`` trailer.
+"""Headless multi-angle Workbench render of the scene's render-visible meshes, the
+Blender-side sibling of Unity RenderAvatar: same result grammar, refusal shape and angle
+vocabulary, same ``rendermesh_<label>_<stamp>.png`` filename and terminal ``png=`` trailer.
 
-Runs entirely under ``--background`` (no VIEW_3D, no GL). Both shading modes render
-through ``BLENDER_WORKBENCH``; ``film_transparent`` carries geometry coverage as the
-rendered alpha, and we composite that over a Unity-grey ``71`` plate ourselves in
-numpy — so the plate byte is ``71`` by construction and the drew-guard keys off alpha
-(a shading-independent "did anything draw" signal), never a colour-difference read.
+Both shading modes render through ``BLENDER_WORKBENCH``; ``film_transparent`` carries
+geometry coverage as the rendered alpha, and numpy composites that over a Unity-grey ``71``
+plate, so the plate byte is ``71`` by construction and the drew-guard keys off alpha, never
+a colour-difference read.
 
-No ``bpy.types.Operator`` subclasses and no UI live here (mirrors scene_utils). The
-one door is the headless ``cli/render_mesh.py``.
-
-Two spellings, on purpose: ``render_mesh`` is the file/module form; ``rendermesh`` is
-the display token in the result line (mirrors RenderAvatar's concatenated ``renderavatar_``).
+The headless door is ``cli/render_mesh.py``.
 """
 
 import glob
@@ -31,25 +25,18 @@ _MARGIN = 0.15   # ortho-scale border fraction so the silhouette doesn't touch t
 _EPSILON = 1e-6  # zero-extent bounds guard
 _PLATE = 71      # Unity-grey plate byte (parity with RenderAvatar's (71,71,71) compose fill)
 _SHEET_CAP = 2048  # composed-sheet edge ceiling — parity with RenderAvatar's SheetEdgeCap
-_MAX_RES = 8192    # per-tile render ceiling: rendered full-size BEFORE the sheet downscale, so an
-                   # absurd value would allocate GBs; refuse early rather than OOM late
-_DREW_FLOOR = 0.005  # per-tile alpha-coverage floor: a sub-1% "nothing drew" threshold, NOT a
-                     # "little drew" one — the uniform ortho_scale frames a tall avatar's top/bottom
-                     # as a small footprint, so a few-percent coverage is legitimate (Felis top tile
-                     # is the checked-in calibration witness).
+_MAX_RES = 8192    # per-tile render ceiling: tiles render full-size BEFORE the sheet downscale
+_DREW_FLOOR = 0.005  # per-tile alpha-coverage floor for "nothing drew": the uniform ortho_scale
+                     # frames a tall avatar's top/bottom small, so a few percent is legitimate
 
 _ANGLE_VOCAB = ["front", "back", "left", "right", "top", "bottom"]
 _SHADING_VOCAB = ["solid", "vertexcolor"]
 
-# angle -> orthographic-view rotation quaternion (w, x, y, z), calibrated to which WORLD axis
-# each view puts toward the camera. Confirmed byte-exact headless (Blender 5.1) against a 6-colour
-# cube AND against Felis: this maps front->+Y, back->-Y, left->-X, right->+X, top->+Z, bottom->-Z.
-# A VRChat avatar imported by avatarprep's wm.fbx_import lands facing +Y (up +Z), so front shows the
-# face and left/right show the avatar's own left/right — with no up/down swap. NOTE: front/back are
-# SWAPPED from Blender's native front/back (native front looks +Y at the -Y face); Felis calibration
-# proved the native table renders the avatar's BACK on "front", so front and back are exchanged here.
-# The angle is a world axis — a target NOT on the upright-facing-front convention renders the scene's
-# front, not its own (the documented RenderAvatar limitation).
+# angle -> orthographic-view rotation quaternion (w, x, y, z), named by the WORLD axis each view puts
+# toward the camera: front->+Y, back->-Y, left->-X, right->+X, top->+Z, bottom->-Z. An avatar imported
+# by wm.fbx_import faces +Y (up +Z), so front shows the face and left/right show its own left/right;
+# front and back are swapped from Blender's native views, whose front shows the -Y face. A target that
+# is not upright and facing +Y renders the scene's front, not its own.
 _VIEW_Q = {
     "front":  (0.0, 0.0, math.sqrt(2) / 2, math.sqrt(2) / 2),
     "back":   (math.sqrt(2) / 2, math.sqrt(2) / 2, 0.0, 0.0),
@@ -61,23 +48,19 @@ _VIEW_Q = {
 
 
 def _sanitize(name: str) -> str:
-    """alnum + '_' only; every other char -> '_'. Used for the <label> slot of both the
-    filename and the result line."""
+    """Make ``name`` safe for the filename and the result line."""
     return "".join(c if c.isalnum() or c == "_" else "_" for c in (name or ""))
 
 
 def _fail(label, reason: str) -> str:
-    """Mirror RenderAvatar's Fail(): family arrow, NO png= trailer — the schema never points
-    at a PNG that isn't on disk. ``label`` may be None/empty -> "?"."""
+    """Mirror RenderAvatar's Fail(): NO png= trailer, because the schema never points at a PNG
+    that isn't on disk."""
     lbl = label if label else "?"
     return "AVATARPREP: rendermesh " + lbl + " => FAIL: " + reason
 
 
 def _downscale(arr, edge):
-    """Area-average (box filter) resample to edge x edge via an integral image — plain
-    numpy, no PIL. Never called to upscale (callers only ever pass edge <= arr's side, so
-    edge >= side is a no-op). Box-filtering (not nearest) keeps a thin high-frequency
-    feature from aliasing away."""
+    """Area-average (box filter) resample to edge x edge via an integral image."""
     side = arr.shape[0]
     if edge >= side:
         return arr
@@ -92,14 +75,13 @@ def _downscale(arr, edge):
     x0, x1 = bounds[:-1], bounds[1:]
     block_sum = ii[y1][:, x1] - ii[y0][:, x1] - ii[y1][:, x0] + ii[y0][:, x0]
     area = (y1 - y0)[:, None, None] * (x1 - x0)[None, :, None]
-    return np.clip(block_sum / area + 0.5, 0, 255).astype(np.uint8)  # round, matching the other sites
+    return np.clip(block_sum / area + 0.5, 0, 255).astype(np.uint8)
 
 
 def _compose_sheet(tiles, edge, cols, rows):
     """Row-major in requested order, 71-plate-filled empty cells. The array is bottom-origin
-    (matches the bpy image API — never flipped end to end), so requested-order row 0 lands at
-    the LAST array band (mirrors RenderAvatar.Compose's ``(rows - 1 - r)``) and reads back as the
-    top row of the saved sheet."""
+    (the bpy image API's order), so requested-order row 0 lands at the LAST array band and reads
+    back as the top row of the saved sheet."""
     sheet = np.full((rows * edge, cols * edge, 4), _PLATE, dtype=np.uint8)
     sheet[:, :, 3] = 255
     for i, tile in enumerate(tiles):
@@ -110,17 +92,16 @@ def _compose_sheet(tiles, edge, cols, rows):
 
 
 def _drawable_set(view_layer):
-    """(all_meshes, visible) for the active view layer — visible = render-visible
-    (``hide_render == False``). View-layer membership (not scene.objects) so a
-    collection-excluded object is neither framed nor isolated."""
+    """(all_meshes, visible) for the active view layer. View-layer membership (not
+    scene.objects) so a collection-excluded object is neither framed nor isolated."""
     all_meshes = [o for o in view_layer.objects if o.type == 'MESH']
     visible = [o for o in all_meshes if not o.hide_render]
     return all_meshes, visible
 
 
 def _world_aabb(drawable, depsgraph):
-    """Union of each drawable mesh's depsgraph-EVALUATED world bounding box (so modifiers —
-    e.g. a mirror that doubles true extent — are included). Returns (center, max_dim)."""
+    """Union of each drawable mesh's depsgraph-EVALUATED world bounding box, so a modifier's
+    extent is included. Returns (center, max_dim)."""
     mins = [math.inf, math.inf, math.inf]
     maxs = [-math.inf, -math.inf, -math.inf]
     for o in drawable:
@@ -139,10 +120,7 @@ def _world_aabb(drawable, depsgraph):
 
 
 def _prune_old_sheets(out_dir, days=30):
-    """Delete our own ``rendermesh_*.png`` older than ``days`` in ``out_dir`` — best-effort per file
-    (a locked or already-gone file is skipped). Mirrors RenderAvatar's 30-day self-prune: the persistent
-    temp is never swept by the OS, so each write bounds it; the just-written sheet is newer than the
-    cutoff, so it never self-deletes."""
+    """Delete our own ``rendermesh_*.png`` older than ``days`` in ``out_dir``, best-effort per file."""
     cutoff = time.time() - days * 86400
     for old in glob.glob(os.path.join(out_dir, "rendermesh_*.png")):
         try:
@@ -157,7 +135,7 @@ def _notes_field(notes):
     comma-joined list with no spaces, in encounter order. Empty -> ""."""
     order = ["no-color-attribute", "ambiguous-color-attribute", "only-hidden", "only-not-found"]
     toks = [("%s:%s" % (k, ",".join(notes[k]))) for k in order if notes.get(k)]
-    return (" | note=%s" % " ".join(toks)) if toks else ""  # its own | field, before terminal png=
+    return (" | note=%s" % " ".join(toks)) if toks else ""
 
 
 def render(
@@ -166,25 +144,21 @@ def render(
     angles=None,      # subset of {front,back,left,right,top,bottom}; None/empty -> [front, back]
     shading: str = "solid",  # "solid" | "vertexcolor"
     resolution: int = 1024,  # per-tile square edge cap in px; must be >= 1; never upscales
-    out_dir=None,            # sheet destination; None -> the persistent temp home (30d prune).
-                             # An explicit dir is the caller's to manage — never pruned.
+    out_dir=None,            # sheet destination; None -> the persistent temp home
 ) -> str:
     """Render the scene's render-visible meshes (optionally narrowed by ``only`` names) from
-    ``angles`` to one stamped contact-sheet PNG in ``out_dir`` (default: the persistent
-    ``avatarprep_rendermesh`` temp subdir); return the one-line summary (OK or FAIL). Never raises for an EXPECTED refusal — it
-    returns the FAIL line;
-    a genuinely unexpected error propagates (the cli maps that to exit 2).
+    ``angles`` to one stamped contact-sheet PNG in ``out_dir``; return the one-line summary (OK
+    or FAIL). Never raises for an EXPECTED refusal, which returns the FAIL line; an unexpected
+    error propagates (the cli maps that to exit 2).
 
-    Operates on the CURRENT ``bpy.context.scene``. The ``.blend`` on disk is never touched,
-    but shared in-memory state (object ``hide_render``, ``scene.camera``, temp datablocks) IS
-    mutated, so it is snapshot at entry and restored in a ``finally`` — several ``grab()`` calls
-    can run in one ``--python`` process without call N corrupting call N+1.
+    Operates on the CURRENT ``bpy.context.scene``. Object ``hide_render``, ``scene.camera`` and
+    temp datablocks are restored in a ``finally``, so several ``render()`` calls can run in one
+    ``--python`` process.
     """
     scene = bpy.context.scene
     label_raw = label if label else (scene.name if scene else None)
     lbl = _sanitize(label_raw) if label_raw else None
 
-    # --- validate resolution ---------------------------------------------------------------
     try:
         resolution = int(resolution)
     except (TypeError, ValueError):
@@ -194,7 +168,6 @@ def render(
     if resolution > _MAX_RES:
         return _fail(lbl, "resolution must be <= %d, got %d" % (_MAX_RES, resolution))
 
-    # --- validate angles -------------------------------------------------------------------
     if not angles:
         resolved_angles = ["front", "back"]
     else:
@@ -205,8 +178,7 @@ def render(
                 return _fail(lbl, "unknown angle '%s' — valid: %s" % (a, ",".join(_ANGLE_VOCAB)))
             resolved_angles.append(aa)
 
-    # --- validate shading ------------------------------------------------------------------
-    shading = (shading or "").strip().lower()  # "Solid"/" solid " normalize and pass
+    shading = (shading or "").strip().lower()
     if shading not in _SHADING_VOCAB:
         return _fail(lbl, "unknown shading '%s' — valid: %s" % (shading, ",".join(_SHADING_VOCAB)))
 
@@ -221,7 +193,6 @@ def render(
     touched_hide = {}  # object -> original hide_render, restored in finally
     saved_active_color = {}  # mesh.data -> original active_color_index, restored in finally
 
-    # --- resolve the drawable set (visibility-based; --only narrows) -----------------------
     if only:
         requested = [n for n in (str(s).strip() for s in only) if n]
         visible_names = {o.name for o in visible}
@@ -231,16 +202,15 @@ def render(
             if n in visible_names:
                 keep.add(n)
             elif n in hidden_names:
-                hidden_hit.append(n)   # present in the .blend but hide_render -> found, stays hidden
+                hidden_hit.append(n)
             else:
-                not_found.append(n)    # no render-visible mesh by that name at all
+                not_found.append(n)
         if hidden_hit:
             notes["only-hidden"] = [_sanitize(n) for n in hidden_hit]
         if not_found:
             notes["only-not-found"] = [_sanitize(n) for n in not_found]
         drawable = [o for o in visible if o.name in keep]
         if not drawable:
-            # fold the breakdown into the reason so the agent can tell "un-hide it" from "typo"
             parts = []
             if hidden_hit:
                 parts.append("hidden:" + ",".join(_sanitize(n) for n in hidden_hit))
@@ -253,7 +223,6 @@ def render(
         if not drawable:
             return _fail(lbl, "no render-visible meshes to render")
 
-    # --- deterministic framing bounds ------------------------------------------------------
     depsgraph = bpy.context.evaluated_depsgraph_get()
     center, max_dim = _world_aabb(drawable, depsgraph)
     if max_dim <= _EPSILON:
@@ -263,13 +232,12 @@ def render(
     cam_data = None
     cam_obj = None
     loaded_images = []
-    written_tiles = []  # per-angle temp PNGs, deleted in finally (survives an exception mid-loop)
+    written_tiles = []  # per-angle temp PNGs, deleted in finally
     delivered_edge = 1
     fail_reason = None
     path = None
 
     try:
-        # --- isolation: hide every render-visible mesh not in the --only keep set ----------
         if only:
             keep = {o.name for o in drawable}
             for o in visible:
@@ -277,7 +245,7 @@ def render(
                     touched_hide[o] = o.hide_render
                     o.hide_render = True
 
-        # --- pin render + display settings (fresh every call; no restore needed) -----------
+        # Pinned fresh every call, so these settings need no restore.
         r = scene.render
         r.engine = 'BLENDER_WORKBENCH'
         r.film_transparent = True
@@ -309,8 +277,8 @@ def render(
                 if n == 0:
                     no_attr.append(o.name)  # zero attributes -> grey fallback
                     continue
-                # Point Workbench at the mesh's active RENDER color attribute. Blender keeps
-                # render_color_index valid (0..n-1) whenever any attribute exists; clamp defensively.
+                # Point Workbench at the render color attribute. Blender keeps render_color_index
+                # valid whenever any attribute exists; clamp defensively.
                 rci = attrs.render_color_index
                 if rci < 0 or rci >= n:
                     rci = 0
@@ -319,9 +287,8 @@ def render(
                     attrs.active_color_index = rci
                 except Exception:
                     saved_active_color.pop(o.data, None)
-                # The real hazard is IDENTITY, not range: with >1 attribute the render index may point
-                # at a non-RBT layer (e.g. imported vertex colors) and the schema would silently render
-                # it as if it were the marker. Name what was actually rendered so the read can't lie.
+                # With >1 attribute the render index may point at a non-marker layer (e.g. imported
+                # vertex colors), so the result names what was actually rendered.
                 if n > 1:
                     ambiguous.append("%s=%s" % (_sanitize(o.name), _sanitize(attrs[rci].name)))
             if no_attr:
@@ -329,7 +296,6 @@ def render(
             if ambiguous:
                 notes["ambiguous-color-attribute"] = ambiguous
 
-        # --- temp orthographic camera; one ortho_scale for every angle ---------------------
         cam_data = bpy.data.cameras.new("rendermesh_cam")
         cam_data.type = 'ORTHO'
         cam_data.ortho_scale = max_dim * (1.0 + _MARGIN)
@@ -341,14 +307,12 @@ def render(
         cam_obj.rotation_mode = 'QUATERNION'
         scene.camera = cam_obj
 
-        # --- delivery sizing (sheet cap; never upscale) ------------------------------------
         n = len(resolved_angles)
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
         cap_edge = _SHEET_CAP // max(cols, rows)
         delivered_edge = max(1, min(resolution, cap_edge))
 
-        # --- per-angle render + read + composite -------------------------------------------
         tiles = []
         for angle in resolved_angles:
             q = Quaternion(_VIEW_Q[angle])
@@ -364,8 +328,8 @@ def render(
             img = bpy.data.images.load(tmp_path)
             loaded_images.append(img)
             # load() defaults an 8-bit PNG to 'sRGB', which makes img.pixels return scene-linear
-            # floats (sRGB->linear applied on read) — undoing the write-side 'Standard' pin. 'Non-Color'
-            # makes the read the byte-exact inverse of the write, so determinism reaches numpy.
+            # floats, undoing the write-side 'Standard' pin. 'Non-Color' makes the read the byte-exact
+            # inverse of the write.
             img.colorspace_settings.name = 'Non-Color'
             img.alpha_mode = 'STRAIGHT'
             w, h = img.size
@@ -380,7 +344,6 @@ def render(
                 fail_reason = "blank render on '%s' — nothing drew" % angle
                 break
 
-            # composite geometry over the 71 plate (straight alpha); interior alpha=1 -> rgb exact
             a = (alpha.astype(np.float32) / 255.0)[:, :, None]
             rgb = px[:, :, :3].astype(np.float32)
             comp = rgb * a + float(_PLATE) * (1.0 - a)
@@ -392,12 +355,9 @@ def render(
         if fail_reason is None:
             sheet = _compose_sheet(tiles, delivered_edge, cols, rows)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # millisecond, matching RenderAvatar
-            # Persistent OS temp (Python's tempfile.gettempdir — the analog of Unity RenderAvatar's
-            # Application.temporaryCachePath), NOT bpy.app.tempdir: Blender NUKES its session dir on
-            # process exit, so a headless cli would return a png= path that no longer exists. A
-            # DEDICATED subdir (not the bare temp root) mirrors RenderAvatar's per-project cache, so a
-            # grab-dir scanner sees only rendermesh sheets, not the whole busy temp root. The per-angle
-            # intermediate tiles above stay in bpy.app.tempdir — they're intra-process scratch.
+            # The default home is the persistent OS temp, NOT bpy.app.tempdir: Blender deletes its
+            # session dir on process exit, so a headless cli would return a png= path that no longer
+            # exists. Only this home is 30-day pruned; an explicit dir is the caller's and never pruned.
             default_home = out_dir is None
             if default_home:
                 out_dir = os.path.join(tempfile.gettempdir(), "avatarprep_rendermesh")
@@ -406,14 +366,14 @@ def render(
             sh, sw = sheet.shape[0], sheet.shape[1]
             out = bpy.data.images.new("rendermesh_out", sw, sh, alpha=True)
             loaded_images.append(out)
-            out.colorspace_settings.name = 'Non-Color'  # byte-exact inverse of the Non-Color read
+            out.colorspace_settings.name = 'Non-Color'
             out.pixels.foreach_set((sheet.astype(np.float32) / 255.0).reshape(-1))
             out.filepath_raw = path
             out.file_format = 'PNG'
             out.save()
             bpy.data.images.remove(out)
             loaded_images.remove(out)
-            if default_home:  # only our own home is bounded; an explicit dir is the caller's
+            if default_home:
                 _prune_old_sheets(out_dir)
 
     finally:
@@ -461,9 +421,8 @@ def render(
 
 
 def stitch(paths, out_path) -> str:
-    """Lay equal-size square sheets side by side, in the given order, into one PNG at ``out_path``
-    (a Compare door's one-sheet-per-input view); returns ``out_path``. Reads and writes
-    ``Non-Color`` so the bytes pass through unchanged."""
+    """Lay equal-size square sheets side by side, in the given order, into one PNG at ``out_path``;
+    returns ``out_path``. Reads and writes ``Non-Color`` so the bytes pass through unchanged."""
     tiles = []
     for p in paths:
         img = bpy.data.images.load(p)

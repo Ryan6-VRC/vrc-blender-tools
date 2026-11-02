@@ -1,12 +1,6 @@
 """Fold a doomed bone chain's weight into surviving neighbours, then remove it.
 
-Generalises a personal-venue one-off (a fixed per-bone blend table folding a
-vendor hair asset's ribbon bones into its scalp neighbours): its hardcoded blend
-table becomes the ``bone_map`` argument here, and its bone list becomes
-``doomed``. The cap-then-renormalise step (:func:`_fold_mesh`) is that script's
-algorithm verbatim.
-
-Pure ``bpy`` data access, no operators, no UI. Door: ``cli/fold_bones.py``.
+Door: ``cli/fold_bones.py``.
 """
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -19,8 +13,7 @@ import mathutils
 from . import scene_utils
 from .prune_bones import _bone_parented_objects
 
-# Unity's per-vertex bone-influence cap. A constant, never a flag (tool-design.md
-# "Flags converge on the family's names").
+# Unity's per-vertex bone-influence cap.
 MAX_BONE_GROUPS = 4
 
 # Below this a weight (or a distance) reads as zero for gate/split purposes.
@@ -28,14 +21,14 @@ WEIGHT_EPS = 1e-9
 DISTANCE_EPS = 1e-9
 
 # A ratio this close to 1 means the auto split is a coin flip between the two
-# nearest candidates — flagged, never blocked (the operator's eye decides).
+# nearest candidates; it is flagged, never blocked.
 AMBIGUOUS_RATIO = 1.2
 
 
 class NoBonesMatched(ValueError):
-    """``--bones`` pattern matched no bone in the target armature. Raised by
-    :func:`resolve_doomed`; also what a rerun on an already-folded output hits,
-    since the doomed bones no longer exist to match."""
+    """``--bones`` pattern matched no bone in the target armature; also what a rerun
+    on an already-folded output hits, since the doomed bones no longer exist to
+    match."""
 
     def __init__(self, pattern):
         self.pattern = pattern
@@ -43,10 +36,9 @@ class NoBonesMatched(ValueError):
 
 
 class FoldRefused(ValueError):
-    """One of fold_bones' eight pre-write gates. ``kind`` tags which one (for a
-    caller that wants to branch); ``offenders`` is a list of dicts/strings naming
-    what tripped it, for the CLI's ``OFFENDER`` lines. Nothing is mutated before
-    this raises — every gate in this module runs before any bpy write."""
+    """One of fold_bones' eight pre-write gates. ``kind`` tags which one;
+    ``offenders`` names what tripped it, for the CLI's ``OFFENDER`` lines. Nothing
+    is mutated before this raises."""
 
     def __init__(self, kind, message, offenders):
         self.kind = kind
@@ -55,19 +47,17 @@ class FoldRefused(ValueError):
 
 
 def match_bones(pattern: str, names: Iterable[str]) -> List[str]:
-    """Case-insensitive glob (or exact name) match of ``pattern`` over ``names``,
-    preserving ``names``' order. A plain name is a valid glob with no wildcard, so
-    this is the one matcher for both forms the door's ``--bones``/``--neighbours``
-    accept."""
+    """Case-insensitive glob match of ``pattern`` over ``names``, preserving their
+    order; a plain name is a glob with no wildcard."""
     pat = pattern.casefold()
     return [n for n in names if fnmatch.fnmatchcase(n.casefold(), pat)]
 
 
 def resolve_doomed(armature: bpy.types.Object, patterns: Sequence[str]) -> List[str]:
     """Resolve ``--bones GLOB|LIST`` against ``armature``'s bones. Each pattern must
-    match at least one bone or this raises :class:`NoBonesMatched` naming it — the
-    same gate a rerun on a folded output hits, since the doomed names are gone.
-    Preserves armature order; a bone matched by two patterns is listed once."""
+    match at least one bone or this raises :class:`NoBonesMatched` naming it. Each
+    pattern's hits keep armature order; a bone matched by two patterns is listed
+    once."""
     names = [b.name for b in armature.data.bones]
     doomed: List[str] = []
     seen: Set[str] = set()
@@ -91,9 +81,8 @@ def _under_doomed(bone: bpy.types.Bone, doomed: Set[str]) -> bool:
 
 
 def check_no_surviving_children(armature: bpy.types.Object, doomed: Set[str]) -> None:
-    """Gate: a doomed bone with a surviving (non-doomed) child. ``edit_bones.remove``
-    splices such a child onto the removed bone's parent, silently re-routing a
-    survivor to a new hierarchy path — the same hazard ``prune_bones`` documents."""
+    """Gate: a doomed bone with a surviving (non-doomed) child, the re-routing hazard
+    ``prune_zero_weight_bones`` documents."""
     offenders = []
     for name in sorted(doomed):
         b = armature.data.bones.get(name)
@@ -113,7 +102,7 @@ def check_no_surviving_children(armature: bpy.types.Object, doomed: Set[str]) ->
 def check_no_bone_parented(armature: bpy.types.Object, doomed: Set[str]) -> None:
     """Gate: an object riding a doomed bone via ``parent_type='BONE'`` (an Empty,
     a prop). Removing the bone leaves its ``parent_bone`` dangling and the object
-    jumps to the armature origin — ``prune_bones``' same gate, same scan."""
+    jumps to the armature origin."""
     offenders = [{"object": o["object"], "type": o["type"], "bone": o["bone"]}
                  for o in _bone_parented_objects(armature, doomed) if o["bone_pruned"]]
     if offenders:
@@ -135,8 +124,7 @@ def _mesh_bone_weight_total(mesh_obj: bpy.types.Object, vg_index: int) -> float:
 
 def check_no_foreign_weight(doomed: Set[str], targets: Sequence[bpy.types.Object]) -> None:
     """Gate: any mesh OTHER than ``targets``, anywhere in the file, weighting a
-    doomed bone — it would be orphaned onto a bone the fold is about to delete,
-    silently, since nothing outside ``targets`` is touched here."""
+    doomed bone, which would leave it orphaned on a bone the fold deletes."""
     target_names = {m.name for m in targets}
     offenders = []
     for ob in bpy.data.objects:
@@ -179,8 +167,7 @@ def check_map_destinations(bone_map: Dict[str, Dict[str, float]],
 
 def check_full_coverage(bone_map: Dict[str, Dict[str, float]], weighted_doomed: Set[str]) -> None:
     """Gate: a doomed bone that carries weight somewhere in ``targets`` but has no
-    map row. A weightless doomed bone is legitimate and needs none — it is simply
-    removed, contributing nothing."""
+    map row. A weightless doomed bone needs none; it is simply removed."""
     missing = sorted(n for n in weighted_doomed if n not in bone_map)
     if missing:
         raise FoldRefused(
@@ -191,12 +178,9 @@ def check_full_coverage(bone_map: Dict[str, Dict[str, float]], weighted_doomed: 
 
 def check_fraction_sums(bone_map: Dict[str, Dict[str, float]], weighted_doomed: Set[str]) -> None:
     """Gate: a weighted doomed bone's map row whose fractions do not sum to 1
-    within 1e-6. A partial row silently loses that bone's unaccounted share
-    instead of moving it anywhere, and the top-:data:`MAX_BONE_GROUPS`
-    renormalisation step then inflates every OTHER destination on the vertex to
-    cover the gap — a quiet mis-weight, not a caught one. Only weighted bones are
-    checked: a row for a weightless doomed bone is not required at all
-    (:func:`check_full_coverage`), so its fractions (if present) are moot.
+    within 1e-6. A partial row loses that bone's unaccounted share, and the
+    top-:data:`MAX_BONE_GROUPS` renormalisation then inflates every OTHER destination
+    on the vertex to cover the gap.
 
     Each fraction is checked first (``bad_fraction``): it must be a finite number
     in [0, 1]. The sum alone passes a NaN (JSON accepts it, and ``abs(nan - 1) >
@@ -234,7 +218,7 @@ def _vertex_bone_weights(mesh_obj: bpy.types.Object,
     """``{vertex index: {bone-named group: weight}}``, restricted to vertex groups
     named after an armature bone (doomed or surviving) and weight over
     :data:`WEIGHT_EPS`. A non-bone group (a mask, a shape-key carrier) never
-    appears here — it is read nowhere in this module and so is never touched."""
+    appears here, so the fold never touches it."""
     idx_to_name = {vg.index: vg.name for vg in mesh_obj.vertex_groups if vg.name in bone_names}
     out: Dict[int, Dict[str, float]] = {}
     for v in mesh_obj.data.vertices:
@@ -264,17 +248,13 @@ def _fold_mesh(weights: Dict[int, Dict[str, float]], doomed: Set[str],
     ``new[t] = sum(w_old[b] * frac[b][t])`` over doomed bones ``b``, added to any
     existing (survivor) weight already on ``t``; keep the top
     :data:`MAX_BONE_GROUPS` groups by weight; renormalise the kept set to sum to
-    1.0. This is ``reweight_ribbon_rosyloop.py``'s remap loop verbatim,
-    generalised past its single-island assumption (every ORIGINAL bone-named group
-    on a touched vertex, survivor or doomed, is cleared and rewritten from the
-    ranked set — not only the doomed ones — so a survivor group capped out here
-    cannot leave stale weight behind).
+    1.0. Every ORIGINAL bone-named group on a touched vertex, survivor or doomed, is
+    cleared and rewritten from the ranked set, so a survivor group capped out here
+    cannot leave stale weight behind.
 
-    **Every touched vertex exits summing to exactly 1.0** — what Unity and the
-    Armature modifier assume. A vertex that enters off-1 (a partially-weighted or
-    over-1 source) is thereby normalised, silently: nothing here checks the
-    vertex's pre-fold sum, only each donor bone's map row
-    (:func:`check_fraction_sums`). Untouched vertices keep whatever sum they had."""
+    **Every touched vertex exits summing to exactly 1.0**, so one that enters off-1
+    (a partially-weighted or over-1 source) is silently normalised. Untouched
+    vertices keep whatever sum they had."""
     touched = 0
     capped = 0
     zero_sum: List[int] = []
@@ -308,9 +288,8 @@ def _fold_mesh(weights: Dict[int, Dict[str, float]], doomed: Set[str],
         for name, w in final.items():
             dest_after[name] += w
 
-    # Untouched vertices' weight is unchanged, so fold it into the "after" total too
-    # — the report's before/after pair is a whole-mesh mass check, not just a
-    # touched-vertex one.
+    # Untouched vertices count in the "after" total too: the report's before/after
+    # pair is a whole-mesh mass check.
     for vidx, row in weights.items():
         if vidx in new_weights or (set(row) & doomed):
             continue
@@ -336,8 +315,7 @@ def _combine_dest_totals(fold_results: Dict[str, dict]) -> Dict[str, Dict[str, f
 
 def _snapshot_extra(mesh_obj: bpy.types.Object, bone_names: Set[str]) -> dict:
     """Non-bone vertex-group weights and shape-key names, read before mutation so
-    :func:`_assert_invariants` can prove neither moved — this module never writes
-    to either, but the contract asks for a real post-condition check, not a claim."""
+    :func:`_assert_invariants` can prove neither moved."""
     sk = mesh_obj.data.shape_keys
     shape_names = [k.name for k in sk.key_blocks] if sk else None
     non_bone: Dict[int, Dict[str, float]] = {}
@@ -359,12 +337,10 @@ def _weights_differ(a: Dict[str, float], b: Dict[str, float], eps: float = 1e-6)
 def _assert_invariants(mesh_obj: bpy.types.Object, weights_before: Dict[int, Dict[str, float]],
                        new_weights: Dict[int, Dict[str, float]], bone_names: Set[str],
                        extra_before: dict) -> None:
-    """Post-write checks the contract asks for explicitly: untouched vertices
-    identical, non-bone groups bit-identical, shape-key metadata unchanged, no
-    touched vertex over the cap (an untouched one may already exceed it — the fold
-    never wrote it, so it is the untouched-identical check's, not this one's).
-    Raises ``AssertionError`` naming the offender — these are real regression
-    guards, not documentation of an invariant assumed to hold."""
+    """Post-write checks: untouched vertices and non-bone groups unchanged within
+    :func:`_weights_differ`'s tolerance, shape-key names unchanged, no touched vertex
+    over the cap (an untouched one may already exceed it). Raises
+    ``AssertionError``."""
     idx_to_name = {vg.index: vg.name for vg in mesh_obj.vertex_groups}
     for v in mesh_obj.data.vertices:
         current: Dict[str, float] = {}
@@ -414,27 +390,19 @@ def fold_bones(armature: bpy.types.Object, meshes: Sequence[bpy.types.Object],
     """Fold ``doomed`` bones' weight into ``bone_map``'s survivors across
     ``meshes``, then remove the doomed vertex groups and edit bones.
 
-    ``bone_map`` must be an explicit ``{doomed_bone: {survivor: fraction}}`` dict —
-    there is no in-executor "auto" mode. :func:`auto_map` only ever computes a
-    suggestion table; nothing here can run off it directly, which is what makes
-    the door's auto-refuses-to-run behaviour true rather than asserted.
+    ``bone_map`` must be an explicit ``{doomed_bone: {survivor: fraction}}`` dict;
+    there is no in-executor "auto" mode. :func:`auto_map` only computes a suggestion
+    table, so nothing can reach the executor from it.
 
-    Runs every gate (:func:`check_no_surviving_children`,
-    :func:`check_no_bone_parented`, :func:`check_no_foreign_weight`,
-    :func:`check_map_destinations`, :func:`check_full_coverage`,
-    :func:`check_fraction_sums` — fraction values, then row sums — and the
-    zero-sum-vertex check below) before any mutation, ``whatif`` or not — a
-    preview that could disagree with the real run is worthless (``prune_bones``'
-    standard).
+    Every gate runs before any mutation, ``whatif`` or not.
 
-    Returns a report dict: ``bones_removed`` (``[]`` under ``whatif``, since
-    nothing is removed yet — see ``doomed`` for the plan), ``touched``, ``capped``,
+    Returns a report dict: ``bones_removed``, ``touched``, ``capped``,
     ``destination_totals`` (``{bone: {"before", "after"}}``, whole-mesh mass check),
     and ``meshes`` (per-target ``{"touched", "capped"}``). ``whatif`` adds
-    ``whatif=True``.
+    ``whatif=True`` and ``planned_bones``, and leaves ``bones_removed`` empty.
 
     Raises:
-        FoldRefused: a gate fired. Nothing is mutated.
+        FoldRefused: a gate fired.
     """
     if not isinstance(bone_map, dict):
         raise ValueError("fold_bones requires an explicit bone_map dict — 'auto' only "
@@ -519,30 +487,21 @@ def auto_map(armature: bpy.types.Object, meshes: Sequence[bpy.types.Object],
     ``meshes``, split by inverse distance over the nearest two candidate bones'
     rest segments (head-tail). A weightless doomed bone gets no row — it needs
     none (:func:`check_full_coverage`) — and is reported ``weightless``. Read-only:
-    never mutates the armature or meshes, and never calls :func:`fold_bones` — the
-    door's "auto refuses to run" is this function simply never reaching the
-    executor, not a flag it checks.
+    never mutates the armature or meshes.
 
     ``neighbours``, when given, is the candidate list verbatim (validated: each
     must name a surviving bone). Otherwise the candidates are the armature's
     surviving deform bones (``Bone.use_deform``) that are not themselves under a
     doomed bone.
 
-    Deterministic: same input, same output, since the centroid and distances are
-    plain arithmetic over stored rest data with no operator/RNG in the path.
-
     Returns ``(table, info)``:
       ``table`` — exactly the ``{doomed_bone: {survivor: fraction}}`` shape
-      ``--map`` accepts, so ``--map-out``'s file is directly reusable as
-      ``--map`` with no reshaping.
+      ``--map`` accepts.
       ``info`` — per doomed bone, ``{"weightless", "candidates", "distances",
-      "ratio", "ambiguous"}`` for the door's printed diagnostics and
-      ``--report``; deliberately NOT folded into ``table``, which stays the
-      strict fraction shape.
+      "ratio", "ambiguous"}`` for the door's printed diagnostics and ``--report``.
 
     Raises:
-        FoldRefused: :func:`check_no_surviving_children` fired (auto assumes a
-            clean doomed subtree, same as the executor).
+        FoldRefused: :func:`check_no_surviving_children` fired.
         ValueError: ``neighbours`` names a missing or doomed bone, or the
             candidate set is empty.
     """

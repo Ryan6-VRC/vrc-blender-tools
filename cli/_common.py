@@ -1,8 +1,7 @@
 """Shared plumbing for the headless CLIs.
 
-Only importable AFTER a CLI's structural ``sys.path`` insert (its first lines) —
-a fresh ``--background --python`` process has no repo path, so the 2-line insert
-stays per-file and everything that follows it lives here.
+Only importable AFTER a CLI's structural ``sys.path`` insert (its first lines): a fresh
+``--background --python`` process has no repo path.
 """
 import os
 import sys
@@ -14,8 +13,8 @@ def enable_avatarprep():
     import avatarprep
     try:
         avatarprep.register()
-    except Exception:
-        # Already registered in this session; fine.
+    except ValueError:
+        # register_class raises ValueError on a repeat; any other failure propagates.
         pass
     return avatarprep
 
@@ -24,16 +23,14 @@ def open_blend(path, *, writes, force_load_repair=False):
     """Open ``path`` as this CLI's subject and apply the load-repair policy.
 
     The one opener for every CLI here. A bare ``bpy.ops.wm.open_mainfile`` dies with a
-    traceback on a file Blender loaded fine, and Blender exits 0 on an unhandled
-    ``--python`` exception — so that traceback reads to a caller as a clean run.
+    traceback on a file Blender loaded fine, and ``run_cli``'s exit-0 trap applies.
 
-    ``writes`` says whether THIS INVOCATION will save a deliverable: a door that can
-    save passes ``writes=not args.whatif``. A repaired load blocks only the write,
-    never a preview or a read. Returns the repair detail (str) or ``None``, so the
+    ``writes`` is ``open_policy``'s: a door that can save passes
+    ``writes=not args.whatif``. Returns the repair detail (str) or ``None``, so the
     caller can stamp it into its ``--report``.
 
-    The verdict logic — and why a repair is refused rather than warned — lives in
-    ``scene_utils.classify_open`` / ``open_policy``; this is the grammar + exit shim."""
+    The verdict logic lives in ``scene_utils.classify_open`` / ``open_policy``; this is
+    the grammar + exit shim."""
     import bpy
     from avatarprep.core import scene_utils
 
@@ -44,16 +41,14 @@ def open_blend(path, *, writes, force_load_repair=False):
     except RuntimeError as e:
         raised = str(e)
 
-    # Did the load land on the file we asked for? ``os.path.samefile`` stats BOTH
-    # paths and raises on a missing one — the likeliest bad ``--in`` — so unguarded it
-    # would crash instead of classifying, and exit 0 doing it.
+    # ``os.path.samefile`` stats BOTH paths and raises on a missing one, the likeliest
+    # bad ``--in``, so unguarded it would crash instead of classifying.
     try:
         landed = bool(bpy.data.filepath) and os.path.samefile(bpy.data.filepath, requested)
     except OSError:
         landed = False
 
-    # Blender substitutes placeholders for an unresolvable linked library and only
-    # WARNS, so this class never reaches ``raised`` and must be read from state.
+    # Read from state: this class never raises (scene_utils' File-open classification).
     missing_libs = [lib.filepath for lib in bpy.data.libraries
                     if lib.filepath and not os.path.exists(bpy.path.abspath(lib.filepath))]
 
@@ -83,8 +78,7 @@ def open_blend(path, *, writes, force_load_repair=False):
 
 
 def add_force_load_repair(p):
-    """Add ``--force-load-repair`` to a door that saves. One definition, so the flag's
-    help text cannot drift between doors."""
+    """Add ``--force-load-repair`` to a door that saves."""
     p.add_argument("--force-load-repair", dest="force_load_repair", action="store_true",
                    help="Proceed even though Blender repaired the source as it read it, "
                         "persisting that repair into the output. The refusal names what "
@@ -94,11 +88,9 @@ def add_force_load_repair(p):
 def run_cli(main, tool):
     """Crash-safe entry for a CLI's ``main()``.
 
-    Blender exits 0 on an unhandled ``--python`` exception, so an uncaught raise reads
-    as ``0 = did the thing`` with no ``--out`` written — the same false-clean shape the
-    load-repair refusal exists to close. ``SystemExit`` passes through: a CLI that
-    already printed its verdict and exited is not a crash. ``tests/_harness.py`` is
-    the suite-side half of the same contract."""
+    Blender 5.2.0 exits 0 on an unhandled ``--python`` exception (the traceback prints and
+    ``Blender quit`` follows), so an uncaught raise or traceback reads as a clean run.
+    ``tests/_harness.py`` is the suite-side half of the same contract."""
     import traceback
     try:
         main()
@@ -121,7 +113,10 @@ def resolve_arm(name, arg):
 
 
 def write_report(path, data):
-    """Write a ``--report`` JSON (makedirs first); in-grammar ERROR + exit 2 on failure."""
+    """Write a ``--report`` JSON (makedirs first); in-grammar ERROR + exit 2 on failure.
+
+    Call it after saving the deliverable, so a report-write failure cannot discard a good
+    output."""
     try:
         report_path = os.path.abspath(path)
         d = os.path.dirname(report_path)
@@ -165,10 +160,8 @@ def ensure_deps(tool, label="?"):
     robust_laplacian; one in-grammar FAIL and exit 2 when they do not import.
 
     The folder is ``<repo>/deps`` (``tools/provision_deps.py`` fills it), or
-    ``AVATARPREP_DEPS`` when set, which the test suite points at an empty folder to
-    prove the refusal. ``site.addsitedir`` appends, so Blender's bundled numpy still
-    wins. Only doors that need the wheels call this; every other door and
-    ``register()`` run without them."""
+    ``AVATARPREP_DEPS`` when set. ``site.addsitedir`` appends, so Blender's bundled numpy
+    still wins."""
     import site
     deps = os.environ.get("AVATARPREP_DEPS") or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "deps")

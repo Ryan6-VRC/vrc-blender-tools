@@ -10,11 +10,9 @@ armature is copied, posed or switched between rest and pose:
   mesh's deform bones, normalised. A garment bone the body armature lacks moves with its
   nearest ancestor the body has, which is what Modular Avatar's merge does; one with no
   such ancestor stays still.
-- **A step** turns one body bone by an angle about a world axis through its head: the
-  transform ``T(h) R T(-h)`` for the bone and its descendants, identity elsewhere, so a
-  vertex lands at ``p + s (R (p - h) + h - p)`` with ``s`` its weight share on the moved
-  bones. Dynamics (PhysBones) are out of scope; that is why ``physbone`` vertices are
-  excluded from every metric.
+- **A step** is the transform ``T(h) R T(-h)`` for the turned bone and its descendants,
+  identity elsewhere, so a vertex lands at ``p + s (R (p - h) + h - p)`` with ``s`` its
+  weight share on the moved bones.
 - **The sweep set**, when no bone is named: body deform bones weighting the garment, plus
   bones weighting body vertices within ``NEAR_BODY`` of it at rest, minus the armature's
   root bones and any bone whose largest share on either set is under ``FLOOR_SHARE``.
@@ -22,8 +20,7 @@ armature is copied, posed or switched between rest and pose:
   (else ``other``); positive angles are flexion, fixed by where a 30 degree test turn
   moves the child's head, so bone roll and mirroring cannot flip it.
 
-Metric meanings are ``LEGEND``, which the doors print; that text is the canon. The body is
-cropped to the garment's posed bounds plus ``CROP`` before every BVH build.
+Metric meanings are ``LEGEND``, which the doors print.
 
 ``plan_offset`` reads the body itself and never goes through ``load``: an offset is a rest-shape
 change, so it needs no skinning, sweep or frame.
@@ -436,9 +433,8 @@ def extents(data, g) -> Dict[str, List[float]]:
 
 def parse_region(text) -> List[Tuple[str, str]]:
     """``[(kind, value), ...]`` from ``KIND:VALUE[+KIND:VALUE]...``; raises ``ValueError`` naming
-    the form. The terms intersect. ``group:``, ``bone:`` and ``slot:`` names are ``fnmatch``
-    globs, matched case-sensitively, except that a name present exactly is taken literally
-    (``_matching``)."""
+    the form. The terms intersect, and ``_matching`` reads ``group:``, ``bone:`` and ``slot:``
+    names."""
     terms = []
     for part in text.split("+"):
         kind, sep, value = part.partition(":")
@@ -902,12 +898,8 @@ def estimate(data, the_plan, regions) -> float:
 
 def simulated(data) -> Dict:
     """A copy of ``data`` whose garments carry the body's weights interpolated at each vertex's
-    nearest body point (every vertex matched, no inpaint), written by ``transfer_weights``' rule:
-    ``p`` is a vertex's stored garment-bone total and is kept; the body part is zeroed at or
-    under ``EPS``, cut to its ``4 - garment groups`` largest (``weight_transfer.limit``) and
-    normalised to ``1 - p``; a vertex at ``p >= 1 - EPS``, with no allowance, or with no body
-    weight there keeps its own weights. Unity's top four then skins it. How the comparison is
-    read is the weightpaint skill's."""
+    nearest body point (every vertex matched, no inpaint), written by ``transfer_weights``' rule
+    and skinned by Unity's top four."""
     body = data["body"]
     out = dict(data)
     out["garments"] = []
@@ -961,11 +953,13 @@ def _seeds(data, g, step, near, focus):
 def plan_push(data, gi, the_plan, *, amount, near=0.0005, falloff=0.025, rim_hold=0.0, smooth=0,
               allow_static=False, focus=None) -> Dict:
     """Seeds and the per-vertex push for one garment; nothing is written. Dynamic seeds are the
-    seeds of any step minus the rest seeds; none refuses unless ``allow_static``, which pushes
-    the rest seeds instead. Every vertex within ``falloff`` (rest, straight line) of a seed moves
+    seeds of any step minus the rest seeds, since contact already there at rest is the seat's or
+    a shape's to fix; none refuses unless ``allow_static``, which pushes the rest seeds instead.
+    Every vertex within ``falloff`` (rest, straight line) of a seed moves
     along its rest normal, turned to face away from its nearest body triangle, by
     ``amount * smoothstep(1 - d / falloff)``, times ``smoothstep(e / rim_hold)`` when set (``e``
-    its distance to the nearest boundary vertex). ``smooth`` N > 0 then averages each moved
+    its distance to the nearest boundary vertex), so open edges stay on the skin. ``smooth``
+    N > 0 then averages each moved
     vertex's direction with its moved edge neighbours' N times, renormalising each pass, and
     keeps every magnitude: a rolled hem's normals lie near the skin's tangent and turn from one
     vertex to the next, so unsmoothed directions zigzag the hem. Returns the object-space delta,

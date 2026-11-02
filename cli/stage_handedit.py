@@ -11,51 +11,24 @@ meshes, bound so the operator can pose the body and edit the garment on the pose
 shape, and saves it compressed to ``--out``. ``harvest_handedit`` copies the edit back
 into the garment blend afterwards. Reads its inputs and never writes them.
 
-- **The body**: ``--body-mesh`` names the body mesh and its Armature modifier names
-  the rig; without it the body blend must hold one local armature and one mesh
-  deforming with it, or the door refuses naming the candidates.
-- **The garment**: each ``--meshes`` entry is a local mesh in the garment blend with
-  one Armature modifier, all on one rig. It is re-parented to the body rig keeping its
-  world transform, and its Armature modifier is re-pointed at the body rig with
-  ``show_in_editmode`` and ``show_on_cage`` on, so an edit-mode move lands on the posed
-  shape. A garment rig of its own keeps its bones, not its object: every bone a garment
-  vertex group weights that the body rig lacks is copied onto the body rig at its rest,
-  with its garment-only ancestors. A weighted group naming a bone on neither rig refuses
-  by name. The garment rig's bone constraints are not carried, and a modifier whose
-  target the scene does not carry (a Mirror modifier's mirror object, say) keeps a
-  dangling target; each is named on a WARNING line.
-- **The row**: ``--set MESH:KEY=VALUE`` (repeatable) sets a shape-key value on the body
-  mesh or a garment mesh, in Blender's 0..1 (a Unity weight of 20 is 0.2); pass every
-  key the row's prefab sets, since a garment edited off its row is fixed against the
-  wrong body. Shape-key actions on those meshes are cleared first, because a vendor
-  FBX's action resets key values on every frame change. Each garment mesh's active key
-  is parked on Basis, since an edit-mode move lands on the active key.
-- **Poses**: ``--poses`` reads the corpus's one animated armature, only its own action
-  slot, and only ``rotation_quaternion`` channels with all four components (anything
-  else refuses by bone). Each timeline marker is one pose, frame 0 is the rest pose,
-  and each rotation is rebuilt on the body's bone carrying its world-space rotation
-  across both rests. ``--bone-override OLD=NEW`` maps a corpus bone onto the body's
-  spelling; a corpus bone the body lacks refuses unless ``--absent-bones drop`` leaves
-  it out, named on a ``DROPPED`` line, and one the body carries under another spelling
-  (case, ``_``, ``.``) refuses even then. The body reproduces the corpus's world pose
-  where the mapped bones' parent chains match; a mapped bone below a dropped one misses
-  the dropped bone's rotation. Without ``--poses`` the scene opens at rest.
+Each ``--meshes`` entry is a local mesh in the garment blend with one Armature modifier,
+all on one rig. A weighted group naming a bone on neither rig refuses by name, and
+dropped bone constraints and dangling modifier targets print WARNING lines.
 
-Bone locations are locked on every bone with a parent, and the pivot is individual
-origins, so a multi-bone rotation does not pull bones out of their sockets. The door
-refuses an existing ``--out``: that path is where the operator's unharvested edit lives.
-A body or garment Blender repaired as it read it only warns here, since the scene is
-scratch; the harvest refuses to write a repaired garment blend.
+``--set`` values are Blender's 0..1 (a Unity weight of 20 is 0.2). Pass every key the
+row's prefab sets, since a garment edited off its row is fixed against the wrong body.
+
+A body or garment Blender repaired as it read it only warns here; the harvest refuses to
+write a repaired garment blend.
 
 Exit 0 = staged (``--out`` saved) · 1 = REFUSED (named offenders; nothing written) ·
-2 = ERROR (bad args, unopenable input, a crash). Core: ``avatarprep/core/handedit.py``.
+2 = ERROR (bad args, unopenable input, a crash). The stage, the pose corpus grammar and
+the editing aids are in ``avatarprep/core/handedit.py``.
 """
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

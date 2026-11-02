@@ -9,27 +9,11 @@ only after the operator has saved and said the edit is done), then writes each n
 mesh's edit into the same-named mesh of ``--in`` and saves ``--in`` over itself. The
 garment blend keeps its own rig, parenting, links and stamps.
 
-**What travels**, copied by vertex index: the mesh's vertex positions and Basis, every
-shape key's positions as they are (Blender already carried a Basis edit onto each key
-relative to it, so adding the Basis delta again would double-apply it), every vertex's
-weights normalised to sum 1 over its groups, and the raw ``custom_normal`` values.
-**What does not travel**: UVs, colour and every other attribute, shape-key values (the
-stage set the row's), sharp edges and faces, seams, materials, vertex-group names and
-order. A group the edit weights must already exist on the garment mesh.
-
-**Gates, before anything is written**: identical vertex count, edge and loop topology
-and polygon sizes; identical shape-key names in order, each with the same
-``relative_key``; ``matrix_world`` within 1e-5 per element; ``custom_normal`` present on
-both sides or neither, with the same domain and type; identical ``sharp_edge`` and
-``sharp_face``, which shape the custom-normal spaces the raw values are relative to;
-local, single-user mesh data on the garment side. A failed gate names the mesh and the
-assertion and writes nothing. ``--whatif`` runs every gate, reports what the copy would
-rewrite (vertices moved on Basis, per key, weights rewritten, normals changed), and
+Gates: ``check_harvest`` in the core. A failed gate names the mesh and the assertion and
+writes nothing. ``--whatif`` runs every gate, reports what the copy would rewrite, and
 writes nothing.
 
-A garment blend saved in Edit Mode reopens in it; the door leaves Edit Mode before the
-gates, so the gates read and the copy writes the saved mesh, and the save carries the
-copy. The save is compressed, and writes no ``.blend1``: Blender's backup rotation is off for
+The save is compressed, and writes no ``.blend1``: Blender's backup rotation is off for
 it, so an existing ``.blend1`` beside ``--in`` is left as it was. A garment blend
 Blender repaired as it read it refuses the write unless ``--force-load-repair``.
 
@@ -41,8 +25,6 @@ import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

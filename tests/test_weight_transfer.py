@@ -1,12 +1,7 @@
 """Synthetic headless test for avatarprep.core.weight_transfer and cli/transfer_weights.py.
 
-Run: blender --background --factory-startup --python tests/test_weight_transfer.py
-Prints WEIGHTS_TEST OK / WEIGHTS_TEST FAIL: <reason>.
-
 Needs scipy and robust_laplacian from ``tools/provision_deps.py``. Without them the suite
-FAILS rather than skipping, so an unprovisioned checkout cannot pass the gate.
-
-Fixture: ``tests/_weight_fixture.py``. Each refusal is one tweak of it.
+FAILS rather than skipping.
 """
 import hashlib
 import json

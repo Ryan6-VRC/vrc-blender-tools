@@ -6,9 +6,7 @@ Run:
       [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \
       [--absent-bones refuse|drop|stub] [--report <report.json>]
 
-  # Preview: validate the edge, then report the geometry it would produce. Writes
-  # nothing; --out must be omitted (passing it errors — a preview never writes a
-  # deliverable).
+  # Preview: validate the edge, then report the geometry it would produce; no --out.
   blender <in.blend> --background --factory-startup --python cli/apply_proportion_edge.py -- \
       --in <in.blend> --edge <edge.json> --whatif [--skip-shapekeys] \
       [--bone-override OLD=NEW ...] [--shapekey-override NAME=VALUE ...] \
@@ -17,25 +15,19 @@ Run:
 --whatif mutates nothing ON DISK. Once the validate gate is clean it trial-applies the
 real engine in memory and measures the result at each stage boundary, then discards it
 — so the reported min-z / crown / height and the achieved per-bone lengths are measured,
-not predicted. That is what a height-touching edge previously needed a full
-author-apply-measure-reauthor pass to learn. Costs 1.6-4.5 s on a full avatar.
+not predicted. Costs 1.6-4.5 s on a full avatar.
 
-Aggregate extremes answer the HEIGHT question and nothing wider: a morph that reshapes
-mid-body without reaching the feet or the crown legitimately moves min-z and max-z by
-zero, so a 0.000 delta is not evidence that a shapekeys block did nothing. Per-mesh
-bounds in --report are the next place to look.
+Aggregate extremes answer only the height question: a morph that reshapes mid-body
+without reaching the feet or the crown moves min-z and max-z by zero, so a 0.000 delta is
+not evidence that a shapekeys block did nothing. Per-mesh bounds in --report are the next
+place to look.
 
 An edge's ``moves`` block edits the rig's rest after the scales (core
-``proportions._load_move`` owns the grammar): under --whatif each moved bone prints its world
-head before and after, its tail, length and roll, its parent's tail and any connection the
-move cleared, and every bone no move names that moved anyway is listed, stated positively
-when there is none. A move changes no mesh, so its stage reads zero delta by design.
+``proportions._load_move`` owns the grammar). A move changes no mesh, so its stage reads
+zero delta by design.
 
-``--absent-bones stub`` gives each bone the edge scales and the rig lacks a non-deforming stub
-copied from the linked fit reference's rest bone (``import_fbx --fit-reference`` links one),
-parented to its nearest ancestor the rig carries, applies the edge, and removes the stubs;
-core ``proportions.plan_stubs`` owns the rules. A moved bone the rig lacks is dropped under
-stub as under drop.
+``proportions.effective_edge`` owns which partly-absent ops ``--absent-bones drop`` still
+refuses, and ``proportions.plan_stubs`` what ``stub`` adds.
 
 Exit codes: 0 = would apply (with numbers) · 1 = offenders, would not apply ·
 2 = ERROR (bad edge path, unopenable --in, --out combined with --whatif).
@@ -44,8 +36,6 @@ import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -58,7 +48,7 @@ def _parse_args():
     p = argparse.ArgumentParser(prog="apply_proportion_edge")
     p.add_argument("--in", dest="in_path", required=True,
                    help=".blend to apply the edge to")
-    p.add_argument("--out", dest="out_path", default=None,   # not required under --whatif
+    p.add_argument("--out", dest="out_path", default=None,
                    help="Where to save the edited .blend; omit under --whatif")
     p.add_argument("--edge", dest="edge", required=True, metavar="EDGE.JSON",
                    help="Path to the proportion-edge JSON describing the bone and "
@@ -99,14 +89,13 @@ def _parse_args():
 
 
 def _resolve_armature(name):
-    """Resolve the target armature at the CLI boundary — fail loud, never guess.
+    """Resolve the target armature at the CLI boundary; never guess.
 
     A named ``--armature`` must exist and be an armature, a local one first where a
-    linked one shares its name; with no name the scene must hold exactly one local
-    armature (>1 aborts naming them, so an owned .blend that appended a base-body
-    reference can't silently target the wrong rig). A library-linked armature (a fit
-    reference) is never the unnamed pick, since no edge can be applied to it. The core
-    ``find_armature`` stays permissive for its operator callers by design."""
+    linked one shares its name. With no name the scene must hold exactly one local
+    armature, so an owned .blend that appended a base-body reference cannot silently
+    target the wrong rig, and a library-linked fit reference is never the pick. The
+    core ``find_armature`` stays permissive for its operator callers."""
     import bpy
     from avatarprep.core import scene_utils
     arms = [o for o in bpy.context.scene.objects
@@ -161,19 +150,15 @@ def _print_dropped(dropped):
 def _geometry_report(stages, edge, bone_overrides, repair, moves=()):
     """Assemble the staged geometry block from the trial's measurements.
 
-    ``repair`` rides along deliberately: these numbers were measured on whatever the
-    load produced, and a number measured on a repaired load must not be copyable into
-    a tracked edge JSON without that fact attached."""
+    ``repair`` rides along so a number measured on a repaired load cannot be copied
+    into a tracked edge JSON without that fact attached."""
     from avatarprep.core import measure
     pre = stages[0][1]
     out = {"loaded_with_repairs": repair, "stages": [], "bones": {},
            "scale_ops": [], "move_ops": []}
     prev = pre
-    # ``m["unevaluated"]`` is deliberately not carried into the entry: the gate above
-    # exits 1 before any stage is measured, so on every reachable path it is empty. Carry
-    # it the moment that gate softens — a report is the one artifact that outlives the
-    # stdout warning, and a measured number in it with no caveat beside it is the defect
-    # measure.measure_geometry's contract names.
+    # ``m["unevaluated"]`` is not carried: main's validate gate exits first on an
+    # unevaluated mesh. Carry it if that gate softens.
     for name, m in stages:
         entry = {"stage": name, "aggregate": m["aggregate"], "per_mesh": m["per_mesh"]}
         if name != "pre":
@@ -182,9 +167,7 @@ def _geometry_report(stages, edge, bone_overrides, repair, moves=()):
         prev = m
     final = stages[-1][1]
     out["delta_total"] = measure.aggregate_delta(pre, final)
-    # Every bone's head/tail on both ends, so any span an author cares about is
-    # derivable from the report without applying (shoulder-to-wrist is
-    # |UpperArm.head - Hand.head|); measure.py owns why it isn't pre-chosen here.
+    # Every bone's head/tail on both ends; measure.py owns why no span is pre-chosen.
     out["bones"] = {"pre": pre["bones"], "post": final["bones"]}
     named = set()
     for op in edge["scales"]:
@@ -240,8 +223,8 @@ def _fmt(v):
 
 def _print_geometry(geometry, repair):
     """Printed tier: aggregate per stage plus achieved per-bone lengths. Per-mesh
-    bounds and every bone's head/tail stay in --report; a 22-mesh avatar would bury
-    the two numbers that decide a height edge."""
+    bounds and every bone's head/tail stay in --report, so they cannot bury the
+    numbers that decide a height edge."""
     for entry in geometry["stages"]:
         agg = entry["aggregate"]
         if agg is None:
@@ -303,15 +286,13 @@ def _print_geometry(geometry, repair):
             print("AVATARPREP: whatif   ... %d more; --report has all of them"
                   % (len(collateral) - 12))
     else:
-        # Stated positively: silence here would be indistinguishable from not looking.
         print("AVATARPREP: whatif no bone outside the edge's ops changed length")
     total = geometry["delta_total"]
     if total:
         print("AVATARPREP: whatif total d_min_z %+.6f d_max_z %+.6f d_height %+.6f"
               % (total["d_min_z"], total["d_max_z"], total["d_height"]))
     if repair:
-        # Re-stated AFTER the numbers: a reader who scrolled to the measurements must
-        # not miss that they describe a state Blender altered as it read the file.
+        # Re-stated after the numbers, for a reader who scrolled to the measurements.
         print("AVATARPREP: WARNING the numbers above were measured on a repaired load: %s"
               % repair)
 
@@ -319,6 +300,9 @@ def _print_geometry(geometry, repair):
 def main():
     args = _parse_args()
     import bpy
+    if not os.path.isfile(args.edge):
+        print("AVATARPREP: ERROR --edge %r is not a file" % args.edge)
+        sys.exit(2)
     repair = open_blend(args.in_path, writes=not args.whatif,
                         force_load_repair=args.force_load_repair)
     enable_avatarprep()
@@ -333,8 +317,6 @@ def main():
                           for k, v in sk_raw.items()}
 
     if args.whatif:
-        # Read-only gate (folded from the former standalone validate CLI): load the edge,
-        # check it against the rig, report offenders/warnings, exit 1 on offenders. No save.
         try:
             edge = proportions.load_edge(os.path.abspath(args.edge))
         except proportions.EdgeError as e:
@@ -364,11 +346,7 @@ def main():
                 write_report(args.report, report)
             sys.exit(1)
 
-        # Gate clean, so measure what the edge would actually do. The trial applies the
-        # real engine in memory and is never saved (--out is refused at parse time), so
-        # every number below is measured rather than predicted -- validated bit-exact
-        # against a real apply on both shipped longlimb edges and on a shapekey-bearing
-        # fixture. Cost is 1.6-4.5 s on a full avatar.
+        # Gate clean: trial-apply (module docstring).
         stages = []
         trial = proportions.apply_proportion_edge(
             armature, meshes, edge, bone_overrides=bone_overrides,
@@ -381,13 +359,9 @@ def main():
         report["geometry"] = geometry
         _print_geometry(geometry, repair)
 
-        # A backstop, not the protection: validate_proportion_edge makes an unevaluated
-        # mesh an OFFENDER, so the exit above fires on the same predicate over the same
-        # mesh list and nothing here is reachable today (measured: a rig with one hidden
-        # bound mesh exits 1 at the gate, with no geometry block in the report at all).
-        # Kept because the reachable version of this door is one softened offender away,
-        # and then a --whatif readout would claim to be measured geometry while carrying
-        # an unmeasured mesh -- which is the thing the numbers above cannot show.
+        # A backstop: validate_proportion_edge exits first on the same predicate, so this is
+        # unreachable until that gate softens, when a readout would otherwise claim measured
+        # geometry over an unmeasured mesh.
         for name in sorted({n for _, m in stages for n in m["unevaluated"]}):
             print("AVATARPREP: WARNING mesh not evaluated, measured undeformed:", name)
 

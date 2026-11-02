@@ -3,25 +3,19 @@
 Run with::
 
     blender <in.blend> --background --factory-startup \
-        --python cli/apply_pose.py -- --in <in.blend> --out <out.blend> [--scale-test]
+        --python cli/apply_pose.py -- --in <in.blend> --out <out.blend>
 
-The script loads ``--in``, enables the AvatarPrep extension from the bundled
-source package (deterministic, no dependence on user prefs), calls the pure core
-function, and saves the result to ``--out``. ``--scale-test`` first scales the
-whole armature pose by 1.2x so the change is clearly non-identity (used by the
-verification harness).
+Loads ``--in``, calls the core function and saves to ``--out``.
 
-Exit codes: 0 = baked (--out saved) · 1 = REFUSED (--out NOT saved; a bound mesh the
-depsgraph will not evaluate would bake undeformed) · 2 = ERROR (unopenable --in,
-no armature, write failure).
+Exit codes: 0 = baked (--out saved) · 1 = --out NOT saved: REFUSED (a bound mesh the
+depsgraph will not evaluate would bake undeformed) · 2 = ERROR (unopenable --in, no
+armature, write failure).
 """
 
 import os
 import sys
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -39,8 +33,6 @@ def _parse_args():
                    help=".blend whose armature pose becomes its rest pose")
     p.add_argument("--out", dest="out_path", required=True,
                    help="Where to save the result")
-    p.add_argument("--scale-test", action="store_true",
-                   help="Scale the armature pose by 1.2x before applying (test)")
     add_force_load_repair(p)
     return p.parse_args(argv)
 
@@ -56,19 +48,11 @@ def main():
     armature = scene_utils.find_armature()
     if armature is None:
         print("AVATARPREP: ERROR no armature found")
-        sys.exit(1)
+        sys.exit(2)
 
-    # Put the armature into pose mode (required by the workflow).
     bpy.context.view_layer.objects.active = armature
     armature.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')
-
-    if args.scale_test:
-        for pbone in armature.pose.bones:
-            pbone.scale = (1.2, 1.2, 1.2)
-        bpy.context.view_layer.update()
-        print("AVATARPREP: applied 1.2x pose scale to %d bones"
-              % len(armature.pose.bones))
 
     try:
         result = rest_pose.apply_pose(armature)

@@ -1,13 +1,7 @@
 """Delete bones that carry no vertex weight and serve no structural purpose.
 
 After clothing meshes are removed from an avatar, the bone chains that drove them
-(skirt, wings, etc.) become orphaned. This module prunes those bones while
-preserving physbone tips (zero-weight leaf children of weighted bones) and any
-bone that has a weighted descendant.
-
-Holding a bone-parented object is not a keep reason; it is a gate. See
-``prune_zero_weight_bones`` for why both, and for the ancestor-closure constraint
-any future keep rule has to satisfy.
+(skirt, wings, etc.) become orphaned; this module prunes them.
 """
 
 from typing import List, Optional
@@ -18,11 +12,7 @@ from . import scene_utils
 
 
 class PruneRefused(ValueError):
-    """Raised when an object rides a bone this prune would delete. Names the offenders.
-
-    Raised before Edit Mode opens, so nothing is mutated. ``force`` proceeds anyway;
-    ``whatif`` never raises and reports ``would_refuse`` instead.
-    """
+    """Raised when an object rides a bone this prune would delete. Names the offenders."""
 
     def __init__(self, offenders):
         self.offenders = offenders
@@ -34,13 +24,10 @@ class PruneRefused(ValueError):
 
 class PruneTargetNotEditable(ValueError):
     """Raised when the target armature is library data — a linked reference, or an
-    override whose armature data is still linked. Nothing here can edit it: the
-    Edit Mode entry fails Blender's own poll (measured as a traceback and exit 2
-    with no verdict before this gate existed), and ``force`` cannot change that, so
-    there is no bypass. Distinct from :class:`PruneRefused`, whose catch sites
-    iterate bone-parented offenders and print a re-weight / force remedy that is
-    wrong on every count here. ``whatif`` never raises it; it reports
-    ``would_refuse`` plus ``refusal`` instead.
+    override whose armature data is still linked. Edit Mode entry fails Blender's own
+    poll and ``force`` cannot change that, so there is no bypass. Distinct from
+    :class:`PruneRefused`, whose catch sites print a re-weight or force remedy that is
+    wrong here.
     """
 
     def __init__(self, armature):
@@ -90,8 +77,6 @@ def _group_chains(bones, delete: set, weighted: set) -> List[dict]:
             "root": b.name,
             "bones": members,
             "parent": b.parent.name if b.parent else None,
-            # Near-universal on real avatars, so it narrows nothing — see the caller
-            # docstring before reading it as an alarm.
             "parent_weighted": bool(b.parent and b.parent.name in weighted),
         })
     return out
@@ -127,35 +112,22 @@ def prune_zero_weight_bones(armature,
     (a) It or any descendant has nonzero weight in any mesh in ``meshes``.
     (b) It is a zero-weight leaf whose direct parent is weighted (physbone tip).
         Only depth-1 zero-weight leaves of a weighted bone are preserved;
-        longer zero-weight chains are deleted entirely (e.g. a
-        ``Scalp→Hair1→Hair2→Hair3`` chain with no weight anywhere is removed
-        whole — intended, since such chains are orphaned by dropped clothing).
+        longer zero-weight chains are deleted entirely.
 
-    All other bones are deleted from the armature in Edit Mode.
-
-    **Both rules are weight-structural, which keeps the keep set closed under
-    ancestors** — (a)'s parent inherits the weighted descendant, (b)'s parent is
-    weighted outright. That closure is the constraint, not a coincidence:
-    ``edit_bones.remove`` splices children onto the removed bone's parent, so a keep
-    rule that breaks closure re-routes a survivor to a new hierarchy path while its
-    name, rest pose and every count here stay identical. Nothing downstream can see
-    it. **Any future keep rule must preserve ancestor-closure or report the
-    re-routing.**
+    **Both rules keep the keep set closed under ancestors**: (a)'s parent inherits the
+    weighted descendant, (b)'s parent is weighted outright. ``edit_bones.remove``
+    splices children onto the removed bone's parent, so a keep rule that breaks closure
+    re-routes a survivor to a new hierarchy path while its name, rest pose and every
+    count here stay identical. **Any future keep rule must preserve ancestor-closure or
+    report the re-routing.**
 
     **Holding a bone-parented object is not a keep reason — it is a gate.** Keeping
-    such a bone is what breaks closure (its zero-weight ancestors still go), and it
-    only half-helps: the object's name binding survives while the chain that drove it
-    is deleted, so a physbone-driven prop goes rigid. Instead, an object riding a
-    doomed bone raises :class:`PruneRefused` before Edit Mode opens. A warning here
-    would be a notice where the removed rule was a guard — and a warn-then-prune run
-    exits 0, which to a caller reading exit codes is a clean run on a broken asset.
-    ``force`` prunes anyway; riders of surviving bones are reported, not blocked.
-
-    The gate is near-dead weight on vendor input: 113 FBX / 22810 bones across the
-    library carry ZERO bone-parented non-skeleton objects, because avatars attach by
-    skinning. It exists because that scan covered vendor FBX *sources* while this
-    runs on a ``.blend`` after import, merge and hand-authoring — so a refusal means
-    this file acquired one along the way.
+    such a bone breaks closure (its zero-weight ancestors still go) and only half-helps:
+    the object's name binding survives while the chain that drove it is deleted, so a
+    physbone-driven prop goes rigid. An object riding a doomed bone raises
+    :class:`PruneRefused` instead; riders of surviving bones are reported, not blocked.
+    Across the vendor library (113 FBX / 22810 bones) no non-skeleton object is
+    bone-parented, so a refusal means this ``.blend`` acquired one along the way.
 
     Weights are read as stored in the vertex groups; deform-time modifiers are
     ignored (e.g. a Mirror modifier with vertex-group flip weights the mirrored
@@ -168,9 +140,7 @@ def prune_zero_weight_bones(armature,
         meshes: Explicit list of mesh objects to scan. If ``None``, all scene
             meshes bound to ``armature`` (via an ARMATURE modifier OR parented
             to it) are used.
-        whatif: Preview only, returning the plan enriched (see below). Consumes the
-            same computed plan the destructive path does, so the two cannot disagree.
-            Never raises.
+        whatif: Preview only, returning the plan enriched (see below). Never raises.
         force: Prune despite the gate, orphaning the rider.
 
     Raises:
@@ -189,11 +159,9 @@ def prune_zero_weight_bones(armature,
         cannot be edited is still reported, so the reader sees what a local copy
         would lose), ``kept_tips`` (the rule-(b) keeps), and ``chains``:
 
-        - ``chains`` groups the removals as rooted chains — the unit you spare or
-          cut, since sparing one bone of a doomed chain is rarely what you mean.
+        - ``chains`` groups the removals as rooted chains, the unit you spare or cut.
           ``parent_weighted`` reads as *where the chain meets the body*, not as a
-          shortlist: on real avatars nearly every chain has it, clothing being hung
-          off weighted body bones.
+          shortlist: on real avatars nearly every chain has it.
     """
     if meshes is None:
         meshes = scene_utils.get_bound_meshes(armature)
@@ -238,17 +206,11 @@ def prune_zero_weight_bones(armature,
             "refusal": str(PruneTargetNotEditable(armature)) if not_editable else None,
         }
 
-    # Last point at which declining is still free. Library data first: no flag
-    # reaches past it, so it outranks the forceable gate.
     if not_editable:
         raise PruneTargetNotEditable(armature)
     if orphaned and not force:
         raise PruneRefused(orphaned)
 
-    # Switch to Edit Mode to remove bones (headless-safe; the context manager
-    # guarantees a return to OBJECT mode even if a remove() fails, so a failure
-    # can't strand the armature in Edit Mode and break later ops). Record each
-    # actual removal by name so the count and the named list can never drift.
     deleted_bones: List[str] = []
     with scene_utils.edit_mode(armature) as ebs:
         for n in delete:

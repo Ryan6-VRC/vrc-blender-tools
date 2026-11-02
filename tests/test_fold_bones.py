@@ -1,18 +1,4 @@
-"""Synthetic headless test for avatarprep.core.fold_bones and cli/fold_bones.py.
-
-Run: blender --background --factory-startup --python tests/test_fold_bones.py
-Prints FOLD_TEST OK / FOLD_TEST FAIL: <reason>.
-
-Fixture (rebuilt fresh per test — ``_build_scene`` — so one test's mutation never
-leaks into another): an armature ``Hips -> Bun``, ``Hips -> Strand_1 -> Strand_2``,
-``Hips -> Extra``, and the doomed chain ``Bun -> Ribbon -> Ribbon_1 -> Ribbon_2``.
-``RibbonMesh`` is a hair-ribbon island weighted only to the doomed chain (plus one
-untouched vertex on ``Hips`` carrying a non-bone ``Mask`` group, and a Basis+Pucker
-shape key pair) — the natural gradient across ``Ribbon_1``/``Ribbon_2`` and a
-5-group vertex that forces the cap are both on it. ``SecondMesh`` is bound to the
-same armature but never a fold target, weighted to ``Hips`` only in the baseline —
-the "other mesh in the file" gate-2 fixture.
-"""
+"""Synthetic headless test for avatarprep.core.fold_bones and cli/fold_bones.py."""
 import os
 import sys
 
@@ -36,11 +22,9 @@ def _clear_scene():
         bpy.data.armatures.remove(arm)
 
 
-# {survivor bone: fully-mapped doomed bone(s)} — Ribbon_1 -> Strand_1 and
-# Ribbon_2 -> Strand_2 each map fully to ONE neighbour (the "one measured
-# neighbour maps fully to it" case from the venue script), so a vertex split
-# 50/50 across Ribbon_1/Ribbon_2 lands split 50/50 across Strand_1/Strand_2 —
-# the gradient-survives assertion.
+# {doomed bone: {survivor: fraction}}. Ribbon_1 and Ribbon_2 each map fully to one
+# neighbour, so a vertex split 50/50 across them lands split 50/50 across
+# Strand_1/Strand_2.
 HAND_MAP = {
     "Ribbon":   {"Bun": 1.0},
     "Ribbon_1": {"Strand_1": 1.0},
@@ -101,7 +85,7 @@ def _build_ribbon_mesh(arm_obj):
     """6 verts: v0 pure Ribbon, v1 pure Ribbon_1, v2 the 50/50 Ribbon_1/Ribbon_2
     gradient vertex, v3 pure Ribbon_2, v4 a 6-group vertex (Ribbon_1 doomed plus 5
     survivors) that forces the cap, v5 untouched (Hips only) carrying a non-bone
-    "Mask" group — the invariant fixtures."""
+    "Mask" group."""
     verts = [
         (0.0, 0.05, 1.4),
         (0.0, 0.05, 1.6),
@@ -130,7 +114,7 @@ def _build_ribbon_mesh(arm_obj):
     add("Bun",      [(4, 0.15)])
     add("Strand_2", [(4, 0.14)])
     add("Extra",    [(4, 0.10)])
-    add("Mask",     [(5, 0.7)])   # non-bone group — must be bit-identical after the fold
+    add("Mask",     [(5, 0.7)])   # non-bone group
 
     mo.shape_key_add(name="Basis")
     mo.shape_key_add(name="Pucker")
@@ -164,8 +148,7 @@ def _build_scene(add_charm_child=False, second_mesh_weights_ribbon=False):
 
 
 def _weights_of(mesh_obj, names):
-    """Independent read-back: {vertex index: {group name: weight}}, restricted to
-    ``names`` (bone or not — the caller decides what it's checking)."""
+    """{vertex index: {group name: weight}}, restricted to ``names``, bone or not."""
     idx_to_name = {vg.index: vg.name for vg in mesh_obj.vertex_groups if vg.name in names}
     out = {}
     for v in mesh_obj.data.vertices:
@@ -205,7 +188,6 @@ def test_hand_map_fold_and_gradient():
     check(doomed == ["Ribbon", "Ribbon_1", "Ribbon_2"],
           "resolve_doomed should return the ribbon chain in armature order, got %r" % doomed)
 
-    # whatif must not mutate anything.
     bones_before = {b.name for b in arm.data.bones}
     weights_before = _weights_of(ribbon, all_names)
     preview = core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=True)
@@ -247,7 +229,6 @@ def test_hand_map_fold_and_gradient():
     check(abs(sum(v4.values()) - 1.0) < 1e-6, "v4 weights should renormalise to 1.0, got sum=%r"
           % sum(v4.values()))
 
-    # v5: untouched (no doomed weight) — bone weight AND the non-bone Mask group unchanged.
     check(_close(final.get(5, {}), {"Hips": 1.0}), "v5 (untouched) changed: %r" % final.get(5))
     mask_after = _weights_of(ribbon, {"Mask"})
     check(_close(mask_after.get(5, {}), {"Mask": 0.7}), "non-bone Mask group changed: %r"
@@ -259,8 +240,8 @@ def test_hand_map_fold_and_gradient():
 
     dt = result["destination_totals"]
     check(set(dt) >= {"Bun", "Strand_1", "Strand_2"}, "destination_totals missing an expected bone: %r" % dt)
-    # Mass: every fixture vertex sums to 1, so the fold moves weight without losing
-    # any — the survivors' "after" total equals the "before" total over all bones.
+    # Every fixture vertex sums to 1, so the survivors' "after" total equals the
+    # "before" total over all bones.
     total_before = sum(r["before"] for r in dt.values())
     total_after = sum(r["after"] for n, r in dt.items() if n not in doomed)
     check(abs(total_before - 6.0) < 1e-6 and abs(total_after - total_before) < 1e-6,
@@ -294,7 +275,6 @@ def test_auto_map_deterministic_readonly_and_reusable():
     check({b.name for b in arm.data.bones} == bones_before, "auto_map mutated the armature")
     check(_weights_of(ribbon, all_names) == weights_before, "auto_map mutated the mesh")
 
-    # Table shape: exactly {doomed: {survivor: fraction}}, directly --map-consumable.
     survivors = {"Hips", "Bun", "Strand_1", "Strand_2", "Extra"}
     for bone, dests in table1.items():
         check(bone in doomed, "auto table names a non-doomed bone %r" % bone)
@@ -306,8 +286,6 @@ def test_auto_map_deterministic_readonly_and_reusable():
             check(i["ambiguous"] == (i["ratio"] <= core.AMBIGUOUS_RATIO),
                   "ambiguous flag disagrees with its own ratio for %s: %r" % (bone, i))
 
-    # The written table is directly reusable as --map: feed it into a real run on a
-    # FRESH copy of the fixture and confirm it clears every gate.
     arm2, ribbon2, second2 = _build_scene()
     doomed2 = set(core.resolve_doomed(arm2, ["Ribbon*"]))
     result = core.fold_bones(arm2, [ribbon2], doomed2, table1, whatif=False)
@@ -388,15 +366,9 @@ def test_gate_unmapped_bone():
 
 
 def test_gate_zero_sum():
-    """A row that fails to sum to 1 is now caught earlier, by
-    ``check_fraction_sums`` (see ``test_gate_fraction_sum``) — so a *valid*
-    (sum-to-1) map can no longer zero-sum a touched vertex through the public
-    ``fold_bones()`` gate sequence: with every weighted row summing to exactly 1,
-    a vertex's post-blend total is algebraically ``sum(w_b for b in its doomed
-    bones)``, which is > 0 for any vertex ``fold_bones`` calls "touched". The
-    zero-sum check survives as a defensive backstop, so this test exercises it directly at the unit the gate reads from —
-    ``_fold_mesh`` — rather than fabricating a public-API map that can no longer
-    reach it."""
+    """Exercises the zero-sum backstop directly at ``_fold_mesh``, because
+    ``check_fraction_sums`` rejects any map that could reach it through
+    ``fold_bones``."""
     _repo_root()
     from avatarprep.core import fold_bones as core
 
@@ -446,8 +418,6 @@ def test_rerun_refuses():
 
 
 def test_folded_stamp_readable_by_report_stamps():
-    """The contract requires the stamp be readable by report_stamps — exercised at
-    the core level (the CLI writes the identical stamp via the same helper)."""
     _repo_root()
     from avatarprep.core import scene_utils
 
@@ -495,7 +465,7 @@ def test_untouched_vertex_over_cap():
     preview = core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=True)
     try:
         result = core.fold_bones(arm, [ribbon], doomed, HAND_MAP, whatif=False)
-    except AssertionError as e:
+    except core.FoldRefused as e:
         FAILURES.append("real run refused an untouched 5-group vertex whatif passed: %s" % e)
         return
     check((preview["touched"], preview["capped"]) == (result["touched"], result["capped"]),
@@ -575,9 +545,6 @@ def _door(script, args):
 
 
 def test_cli(tmp):
-    """The door end to end: auto writes the table and exits 1; the table replayed as
-    --map exits 0, prints the canonical recipe and stamps it; report_stamps reads it;
-    a target with two Armature modifiers exits 2."""
     import json
     import shlex
     from avatarprep.core import scene_utils

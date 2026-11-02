@@ -32,7 +32,7 @@ combines the two with flipped-normal matching; both additions are rebuilt here f
 MIT sources and no add-on source is copied. Two helpers do follow the add-on's structure:
 ``smooth`` its ``smooth_weigths`` (the Jacobi form, step 3) and ``adjacency`` its
 ``get_mesh_adjacency_matrix_sparse`` (a symmetric CSR from the edge list); both are standard
-sparse idioms, written afresh here. The influence limit is this module's own design.
+sparse idioms, written afresh here.
 
 Per target mesh, in world space at the current shape-key mix plus ``shapes``:
 
@@ -45,43 +45,30 @@ Per target mesh, in world space at the current shape-key mix plus ``shapes``:
    fixed, ``Q = L + L M^-1 L`` over the point-cloud Laplacian of every target vertex (its
    ``L`` is positive semi-definite, opposite in sign to the igl cotmatrix behind the MIT
    code's ``-L + L M^-1 L``), solved by sparse LU; clipped to [0, 1] after the solve, since the biharmonic fill overshoots.
-   A failed solve refuses and names the loose parts that hold no matched vertex, as does a
-   part of the Laplacian's graph that holds no matched vertex but a vertex the run writes.
 3. **Smooth** (optional). ``steps`` Jacobi passes of ``(1 - f) w + f * mean(one-ring incl.
    self)`` on every vertex within ``max_distance`` (straight line) of an unmatched vertex.
-   Jacobi is the add-on's form rather than the paper's Gauss-Seidel sweep, kept so its
-   recorded ``--smooth`` lines stay meaningful.
 4. **Narrow the source** (optional). Case-insensitive globs over the source armature's
    deform bones, each hit taking its descendants; a source vertex whose share on those
    bones exceeds ``exclude_max`` is dropped with every triangle touching it.
 5. **Blend** (optional). Whole and narrowed transfers, each normalised, mixed by a
    smoothstep of rest position along a frame axis from the reference bone's head, times an
    optional lateral fade; then Laplacian steps on the band near boundary loops whose mean
-   share on the excluded bones exceeds ``exclude_max`` (leg holes). No such loop refuses
-   unless ``allow_no_loops``.
+   share on the excluded bones exceeds ``exclude_max`` (leg holes).
 6. **Limit.** A weight at or under ``EPS`` is zero; each vertex keeps its top
    ``UNITY_BONES - garment_groups`` body weights, ties broken by column order.
 7. **Write.** Garment bones are the target armature's deform bones the source armature
    lacks. A vertex's garment total ``p`` is never written; its body groups are replaced by
    the transfer normalised to ``1 - p``. A vertex at ``p ~ 1``, with no allowance left, or
    outside ``mask`` is left alone. Groups naming no source deform bone are untouched.
-8. **Refuse / assert.** Refused before anything is written: a written vertex with no body
-   weight; transferred weight on a bone the target armature lacks, anywhere in the matched
-   or written region; a target whose shape state, ``shapes`` applied, disagrees with the
-   source's; a ``shapes`` value outside its key's slider range; no
-   leg-hole loop for the smoothing; a target with no vertex to write. Targets are written
+8. **Refuse / assert.** Every refusal fires before anything is written. Targets are written
    one after another and the asserts run after each, so a failure can leave earlier targets
    written in memory: the caller discards the scene on failure (the door saves nothing).
-   Asserted after writing:
-   garment and non-bone groups bit-identical, unwritten vertices identical, no written
-   vertex over ``UNITY_BONES`` bone groups, shape-key metadata and datablock counts unchanged.
 
 The source is evaluated from an in-memory copy with its Armature modifier disabled, because
 a linked body armature evaluates at whatever pose its library saved; the copy is unhidden,
-since a hidden object is not evaluated and would read as Basis. A hidden target refuses. Targets evaluate with
-their Armature modifiers disabled and their editable armatures at rest, both restored.
+since a hidden object is not evaluated and would read as Basis.
 scipy and robust_laplacian import inside the functions that use them, so the package
-registers without them. Pure ``bpy`` data access. Door: ``cli/transfer_weights.py``.
+registers without them. Door: ``cli/transfer_weights.py``.
 """
 import contextlib
 import fnmatch
@@ -225,9 +212,8 @@ def _part(V, vs):
 
 def resolve_shapes(shapes: Sequence[Tuple[Optional[str], str, float]], meshes: Sequence) -> Dict[str, Dict[str, float]]:
     """``{mesh_name: {key: value}}`` from ``(mesh_or_None, key, value)`` triples. A bare key
-    lands on every listed mesh carrying it and is refused when none does; a scoped key is
-    refused when its mesh is not listed or lacks the key. A value outside the key's slider
-    range is refused, since Blender would clamp it to the range and run at another value."""
+    lands on every listed mesh carrying it. A value outside the key's slider range is
+    refused, since Blender would clamp it to the range and run at another value."""
     by = {m.name: m for m in meshes}
     out = {m.name: {} for m in meshes}
 
@@ -431,12 +417,12 @@ def smooth(TV, W, matched, A, steps, factor, radius):
     """Step 3. ``steps`` Jacobi passes over self-inclusive adjacency ``A`` on
     ``smooth_band``; every other row held. Returns ``(W, band)``.
 
-    Two choices depart from the Robust Weight Transfer add-on, whose recorded ``--smooth``
-    lines this form otherwise keeps: the input is already clipped to [0, 1] (the add-on
-    smoothed the raw fill and clipped at 0 afterwards), and the band is the straight-line
-    ball, independent of vertex order (the add-on's edge walk stops at vertices an earlier
-    seed marked, so its band depends on vertex order and is a subset of this one). A
-    ``--smooth`` run therefore exceeds the add-on differential's tolerance by design."""
+    Two choices depart from the Robust Weight Transfer add-on: the input is already clipped
+    to [0, 1] (the add-on smoothed the raw fill and clipped at 0 afterwards), and the band
+    is the straight-line ball, independent of vertex order (the add-on's edge walk stops at
+    vertices an earlier seed marked, so its band depends on vertex order and is a subset of
+    this one). A ``--smooth`` run can therefore exceed the add-on differential's tolerance;
+    ``tests/acceptance/diff_addon.py`` names the case that does."""
     import scipy.sparse as sp
     band = np.zeros(len(TV), bool)
     if steps <= 0 or matched.all():

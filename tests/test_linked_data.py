@@ -1,26 +1,7 @@
 """Headless test for library data across the doors: linked references, linked
 collection instances, and library overrides.
 
-Run:
-  blender --background --factory-startup --python tests/test_linked_data.py
-
-Prints LINKED_TEST OK / LINKED_TEST FAIL: <reason>.
-
-The link target is a temp ``.blend`` this test writes first (a rig, a bound mesh
-with a baked stamp, and a collection holding both), so no fixture ships. Every
-case pins one measured defect or one branch of the three predicates in
-``scene_utils`` (``is_linked`` / ``instances_linked`` / ``is_editable``):
-
-  * the default armature pick skipped a linked rig (it was picked first, and a
-    real prune then crashed with ``Cannot edit library linked``);
-  * the whole-scene export refuses a linked object and a linked collection
-    instance by name, above the multi-armature refusal;
-  * a scoped export ignores a linked reference and refuses a linked scope;
-  * the scale bake refuses shared or library data ONLY when a bake reaches it —
-    the narrowing that lets a unit-scale override head export, pinned both ways;
-  * prune reports ``would_refuse`` + ``refusal`` on a non-editable rig and raises
-    ``PruneTargetNotEditable`` (force does not bypass) on a real run;
-  * ``report_stamps`` carries ``library`` / ``data_library`` on every entry.
+The link target is a temp ``.blend`` this test writes first, so no fixture ships.
 """
 import os
 import subprocess
@@ -157,7 +138,6 @@ def main():
           "library_path names the library, got %r" % S.library_path(ref_arm))
     check(S.library_path(own) is None, "library_path of local data is None")
 
-    # default pick skips the linked rig even though it comes first
     bpy.context.view_layer.objects.active = None
     check(S.find_armature() is own, "find_armature default pick must skip the linked rig")
     check(S.find_armature("RefArm") is ref_arm, "explicit name still resolves a linked rig")
@@ -165,7 +145,6 @@ def main():
     check(picked is own and err is None, "resolve_target_armature picks the sole LOCAL rig")
     check(S.library_armature_count() == 1, "library_armature_count reads 1")
 
-    # report_stamps marks the reference
     rep = S.report_stamps(bpy.context.scene)
     ra = next((a for a in rep["armatures"] if a["name"] == "RefArm"), None)
     la = next((a for a in rep["armatures"] if a["name"] == "Armature.ZOwn"), None)
@@ -177,7 +156,6 @@ def main():
     check(rb is not None and rb["library"] and rb["baked"] == {"Chest": 0.6},
           "linked baked mesh grouped under its linked rig with library set, got %r" % rb)
 
-    # prune: whatif reports, real run refuses, force does not bypass
     bones_before = {b.name for b in ref_arm.data.bones}
     pre = prune_zero_weight_bones(ref_arm, whatif=True)
     check(pre["would_refuse"] and pre.get("refusal") and "library data" in pre["refusal"],
@@ -196,7 +174,6 @@ def main():
     check(own_pre["refusal"] is None and not own_pre["would_refuse"],
           "local rig whatif has no refusal")
 
-    # export: scoped to the local rig ignores the link; whole-scene and linked scope refuse
     exc, written = _export(own, tmp, "scoped_with_link")
     check(exc is None and written, "scoped export with a linked reference present: %r" % exc)
     exc, written = _export(None, tmp, "whole_with_link")
@@ -239,8 +216,7 @@ def main():
     ent = next((m for a in rep["armatures"] for m in a["meshes"] if m["name"] == ov.name), None)
     check(ent is not None and ent["library"] is None and ent["data_library"],
           "override entry: library=None, data_library set, got %r" % ent)
-    # The door's --shapekeys listing carries the same marker: a real override HEAD
-    # has no baked stamp, so the shapekeys line is the only one naming its library.
+    # The door's --shapekeys listing carries the same marker.
     saved = os.path.join(tmp, "override_scene.blend")
     bpy.ops.wm.save_as_mainfile(filepath=saved, copy=True)
     door = os.path.join(_repo_root(), "cli", "report_stamps.py")
@@ -254,7 +230,7 @@ def main():
           "--shapekeys line for an unstamped override head must carry data-linked=, got %r" % line)
     exc, written = _export(own, tmp, "override_unit")
     check(exc is None and written,
-          "unit-scale override head must export (the narrowed refusal): %r" % exc)
+          "unit-scale override head must export: %r" % exc)
     own.scale = (2.0, 2.0, 2.0)
     exc, written = _export(own, tmp, "override_reached")
     check(isinstance(exc, ValueError) and "library data" in str(exc),
@@ -269,8 +245,7 @@ def main():
     bpy.context.view_layer.objects.active = None
     check(S.find_armature() is own, "default pick skips an override armature too")
     check(S.library_armature_count() == 1, "an override armature counts as library data")
-    # A FULLY overridden armature (data overridden too) reads ID.is_editable True
-    # yet Edit Mode entry fails on it — the predicate must still say no.
+    # The predicate must say no on a fully overridden armature (is_editable's docstring).
     ov_arm.data.override_create(remap_local_usages=True)
     check(ov_arm.data.override_library is not None and ov_arm.data.is_editable,
           "fixture: fully overridden armature data reads ID.is_editable True")
@@ -287,7 +262,21 @@ def main():
     except Exception as e:  # noqa: BLE001
         check(False, "wrong exception on override-armature prune: %r" % e)
 
-    # ── 5. Shared local data: the narrowed refusal, pinned both ways ─────────
+    # ── 4b. Override MESH: Blender drops a key written on one at reload ──────
+    from avatarprep.core import coverage
+    _fresh_with_local()
+    (ref_body,) = _link_objects(lib, ["RefBody"])
+    ov_body = ref_body.override_create(remap_local_usages=True)
+    ov_body.data.override_create(remap_local_usages=True)
+    check(ov_body.data.override_library is not None and ov_body.data.is_editable,
+          "fixture: override mesh reads ID.is_editable True")
+    try:
+        coverage.check_key(ov_body, "Cover")
+        check(False, "the carrier writer must refuse an override mesh")
+    except coverage.CoverageError:
+        pass
+
+    # ── 5. Shared local data: refused only when a bake reaches it ────────────
     own, own_mesh = _fresh_with_local()
     twin = _make_mesh("ZOwnTwin", own, bone="Root", data=own_mesh.data)
     check(own_mesh.data.users == 2, "fixture: two local objects share one mesh")

@@ -1,12 +1,8 @@
 """Synthetic headless test for avatarprep.core.shapekey_transfer.
 
-Run: blender --background --factory-startup --python tests/test_shapekey_transfer.py
-Prints TRANSFER_TEST OK / TRANSFER_TEST FAIL: <reason>.
-
 Fixture: a dense "body" grid with a bump key, baked half in (Basis raised by half the
 bump, avatarprep_baked records 0.5); a "garment" grid hovering a fixed 5 mm above the
-UNBAKED body — the vendor-neutral cut. The transfer must seat the garment over the baked
-body at the same 5 mm, leave vertices off the bump alone, and carry the key over when asked.
+UNBAKED body — the vendor-neutral cut.
 """
 import os
 import sys
@@ -71,8 +67,7 @@ def _grid(name, n, z_fn):
 
 def _body():
     from avatarprep.core import scene_utils
-    # Basis carries half the bump (the bake); the key keeps its full delta from Basis,
-    # exactly as bake_shapekey leaves a body.
+    # The key keeps its full delta from the half-baked Basis, as bake_shapekey leaves a body.
     ob = _grid("Body_Base", 40, lambda x, y: BAKED * _bump(x, y))
     ob.shape_key_add(name="Basis")
     kb = ob.shape_key_add(name="Bump", from_mix=False)
@@ -84,7 +79,7 @@ def _body():
 
 
 def _garment():
-    return _grid("Top", 24, lambda x, y: GAP)  # cut over the unbaked body: flat, 5 mm up
+    return _grid("Top", 24, lambda x, y: GAP)
 
 
 def _gap_over_body(garment, body):
@@ -118,6 +113,25 @@ def test_seat_only_folds_into_basis_and_stamps():
     check(row["leak_outside_footprint"] == 0, "no movement outside the footprint (leak=%d)" % row["leak_outside_footprint"])
 
 
+def test_seat_outside_footprint_records_fold():
+    # The garment sits clear of the bump, so the seat moves nothing and is still a fold.
+    from avatarprep.core import shapekey_transfer as T
+    from avatarprep.core import scene_utils, weight_transfer
+    body = _body(); top = _garment()
+    for v in top.data.vertices:
+        v.co.x *= 0.15; v.co.y *= 0.15
+    row = T.transfer_shapekeys(body, [top], keys=[], authored={"Bump": 0.0})["targets"][0]
+    check(row["max_move_mm"] == 0.0, "the fixture's seat must move nothing (%g mm)" % row["max_move_mm"])
+    check(abs(row["baked_written"].get("Bump", -9) - BAKED) < 1e-9, "the report should name the fold, got %r" % row["baked_written"])
+    m = top.get(scene_utils.STAMP_BAKED)
+    check(m is not None and abs(dict(m).get("Bump", -9) - BAKED) < 1e-9, "garment baked map should record Bump=0.5, got %r" % m)
+    bad = weight_transfer.seat_disagreement(body, top)
+    check(not bad, "a garment seated without moving must not read as unseated, got %r" % bad)
+    _clear(); body = _body(); top = _garment()
+    T.transfer_shapekeys(body, [top], keys=["Bump"], seat=False)
+    check(top.get(scene_utils.STAMP_BAKED) is None, "a run with no move and no fold writes no stamp")
+
+
 def test_add_key_carries_seat_as_live_value():
     from avatarprep.core import shapekey_transfer as T
     from avatarprep.core import scene_utils
@@ -141,12 +155,11 @@ def test_add_key_carries_seat_as_live_value():
 
 
 def test_authored_offset_unbakes_negative():
-    # The garment was cut against the body at Bump=1.0 (a bigger bust); un-baking to state 0.5
-    # records the offset as a negative-going move recorded in the baked map.
+    # A garment cut at Bump=1.0 and un-baked to the body's state 0.5 records a negative baked entry.
     from avatarprep.core import shapekey_transfer as T
     from avatarprep.core import scene_utils
     body = _body()
-    top = _grid("Top", 24, lambda x, y: GAP + _bump(x, y))  # cut over the full bump
+    top = _grid("Top", 24, lambda x, y: GAP + _bump(x, y))
     rep = T.transfer_shapekeys(body, [top], keys=[], authored={"Bump": 1.0})
     check(abs(rep["seat"]["Bump"] + 0.5) < 1e-9, "seat should be 0.5-1.0 = -0.5, got %r" % rep["seat"])
     m = dict(top.get(scene_utils.STAMP_BAKED))
@@ -242,7 +255,7 @@ def test_static_island_is_dropped():
     bm.to_mesh(me); bm.free(); me.update()
     for kb in me.shape_keys.key_blocks:
         for i, co in enumerate(verts):
-            kb.data[base_n + i].co = co  # the overlay is static under every key
+            kb.data[base_n + i].co = co
     rep = T.transfer_shapekeys(body, [top], keys=["Bump"], authored={"Bump": 1.0})
     check([d["verts"] for d in rep["static_islands_dropped"]] == [9],
           "the 9-vertex overlay is reported dropped, got %r" % rep["static_islands_dropped"])
@@ -255,10 +268,9 @@ def test_static_island_is_dropped():
 
 
 def test_tear_heals():
-    # A key that pulls the two halves of the body apart, sharply at x=0.5 — the cleavage,
-    # where each breast recedes toward its own side. A garment bridging the midline maps
-    # each vertex to whichever half is nearest and shears along the line unless the move
-    # is healed across it.
+    # A key pulls the two halves of the body apart, sharply at x=0.5 (the cleavage). A garment
+    # bridging the midline maps each vertex to whichever half is nearest and shears along the
+    # line unless the move is healed across it.
     from avatarprep.core import shapekey_transfer as T
     from avatarprep.core import scene_utils
     import math
@@ -271,7 +283,7 @@ def test_tear_heals():
         for i, v in enumerate(body.data.vertices):
             kb.data[i].co = Vector(v.co) + Vector((SPREAD * math.tanh((v.co.x - 0.5) / 0.003), 0, 0))
         body[scene_utils.STAMP_BAKED] = {"Spread": 0.0}
-        kb.value = 1.0  # the body wears the spread live
+        kb.value = 1.0
         return body
 
     def strain(top):
@@ -298,7 +310,7 @@ def test_tear_heals():
 
 def main():
     _clear(); _enable()
-    for t in (test_seat_only_folds_into_basis_and_stamps, test_add_key_carries_seat_as_live_value,
+    for t in (test_seat_only_folds_into_basis_and_stamps, test_seat_outside_footprint_records_fold, test_add_key_carries_seat_as_live_value,
               test_authored_offset_unbakes_negative, test_add_key_with_authored_offset, test_smooth_keeps_gap, test_whatif_writes_nothing, test_refusals,
               test_scan_reads_authored_value, test_static_island_is_dropped, test_tear_heals):
         _clear()

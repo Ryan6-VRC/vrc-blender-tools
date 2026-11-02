@@ -7,30 +7,15 @@ Run:
       [--reference-bone Hips] [--forward BONE] [--replace] \
       (--whatif | --out <out.blend>) [--force-load-repair]
 
-``--region`` is the fit family's grammar, read on each target's Basis: ``group:NAME`` (weight
-over 0.5, summed over the groups a glob matches), ``bone:NAME`` (largest influence on a bone
-the glob matches or one under it, over the deform bones of the mesh's armature),
-``slot:MATERIAL`` (every polygon touching the vertex in a slot whose material the glob
-matches), ``zone:front|back|left|right|midline:M|above:BONE|below:BONE`` (the armature's body
-frame from ``--reference-bone``'s head; ``midline:M`` is within M metres either side of the
-lateral midline). Terms joined by ``+`` intersect; repeated ``--region`` flags add together.
-Names are case-sensitive globs.
+``--region`` is the fit family's grammar (``fit.region_mask``), read on each target's Basis;
+``parts`` says what differs. Repeated ``--region`` flags add together.
 
-``--islands`` takes each edge-linked island whole when ``any``, at least ``half`` (the
-default) or ``all`` of its vertices are in the regions, and nothing outside a taken island
-moves. Each taken island moves rigidly, its centroid to the head of the deform bone carrying
-its largest summed weight (a tie goes to the first in the mesh's vertex-group order), or to
-``--to`` (a bone's head, or a world point ``x,y,z``) for every island; ``--collapse`` instead
-puts every vertex on that point. A rigid move keeps the part's shape around its target, so a
-Hide toggle of a part larger than the body there still shows it; collapse a part a toggle
-hides. A key moving any vertex ``--threshold`` metres or less refuses: Modular Avatar's
-ShapeChanger keeps a vertex its shape moves by its threshold or less (0.01,
-``VertexFilterByShape``'s default; pass the component's when it differs).
+``parts``'s module docstring and ``--help`` cover islands, targets, ``--collapse`` and
+``--threshold``.
 
 ``--whatif`` prints every island taken, the vertex count and the smallest and largest move,
-and writes nothing, refusing everything the write would. A saving run adds the key at value 0,
-appended last in each target's key order (``--replace`` rewrites a same-named key where it
-stands, only one ``avatarprep_authored`` lists, and refuses one another key is relative to),
+and writes nothing, refusing everything the write would. A saving run writes through
+``coverage.add_key`` (``--replace`` touches only a key ``avatarprep_authored`` lists),
 stamps ``avatarprep_authored`` ``{key: recipe}`` on each target with the
 canonical command line printed as ``recipe:`` (defaults omitted, no paths or mode flags),
 leaves Object Mode with the active key on Basis, and saves to ``--out`` (which may be ``--in``).
@@ -39,8 +24,7 @@ Refuses (exit 1, nothing saved): zero vertices selected, a linked or override ta
 target sharing its mesh, a posed armature, a vertex under the threshold, an existing key
 without ``--replace``, ``--replace`` on a key this door did not author, a non-map
 ``avatarprep_authored``. Exit 2 on bad args, a mesh not in the file, or a crash. Core:
-``avatarprep/core/parts.py``; the key writer is ``coverage.add_key``, shared with
-``mark_coverage``.
+``avatarprep/core/parts.py``.
 """
 import os
 import sys

@@ -4,27 +4,20 @@ Run:
   blender <in.blend> --background --factory-startup --python cli/report_stamps.py -- \
       --in <in.blend> [--shapekeys [SUBSTR]]
 
-The read/query counterpart of stamp_base — inspects a file's avatarprep_base /
-avatarprep_state (per armature), avatarprep_baked (per baked mesh), avatarprep_weights,
-avatarprep_folded, avatarprep_pushed and avatarprep_offset (per reweighted, folded, pushed or
-offset mesh), avatarprep_authored (one line per key mark_parts authored) and avatarprep_normals
-(one line per key bake_shapekey_normals baked) in one call.
-Opens the blend read-only; never saves. A report never "fails" — exit 0 always
-(a bad --in / open failure is the only ERROR exit 2).
+The read/query counterpart of stamp_base: every avatarprep_ stamp
+(``scene_utils.report_stamps``) in one call. Never saves. Exit 0 always, except exit 2
+on a bad --in or open failure.
 
-``--shapekeys`` additionally lists shape-key NAMES per mesh (every scene mesh,
-basis excluded), optionally narrowed by a case-insensitive substring — the
-enumeration door for "which key is the blink" that otherwise forces ad-hoc bpy.
-Each mesh line (and its JSON entry) carries ``library`` / ``data_library`` like the
-stamp lines, so an override head with no baked stamp still reads as linked.
+``--shapekeys`` is the enumeration door for "which key is the blink", in place of ad-hoc
+bpy. Each mesh line (and its JSON entry) carries ``library`` / ``data_library`` like the
+stamp lines, because a head that is a library override of a sibling base carries no baked
+stamp, so this line is the only one naming its library.
 """
 import os
 import sys
 import json
 import argparse
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -53,8 +46,7 @@ def main():
     report = scene_utils.report_stamps(bpy.context.scene)
 
     def _linked(e):
-        # A linked reference reads ``linked=//path``; an override object over
-        # linked data reads ``data-linked=//path`` (local object, read-only data).
+        # data-linked is a local object over read-only linked data.
         if e.get("library"):
             return " linked=%s" % e["library"]
         if e.get("data_library"):
@@ -62,10 +54,6 @@ def main():
         return ""
 
     def _print_mesh(owner, m):
-        # A mesh qualifies on any stamp (avatarprep_baked / _weights / _folded /
-        # _pushed / _offset / _authored / _normals), so any key may be absent — print
-        # only what the entry carries. A corrupt (non-map) baked stamp is the one genuine fault → WARNING
-        # (greppable, matching the Slice-E CLI family); everything else is a plain line.
         if m.get("corrupt") is not None:
             print("AVATARPREP: WARNING mesh %s baked=CORRUPT %s (%s)%s"
                   % (m["name"], m["corrupt"], owner, _linked(m)))
@@ -119,9 +107,6 @@ def main():
             sk = ob.data.shape_keys
             all_keys = [k.name for k in sk.key_blocks[1:]] if sk else []
             names = [n for n in all_keys if needle in n.casefold()]
-            # Same linked / data-linked marker as the stamp lines. A head that is a
-            # library override of a sibling base carries no baked stamp, so this is
-            # the only line that tells a reader whose head the base is wearing.
             entry = {"names": names,
                      "library": scene_utils.library_path(ob),
                      "data_library": scene_utils.library_path(ob.data)}

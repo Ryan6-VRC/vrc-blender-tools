@@ -1,12 +1,4 @@
-"""Synthetic headless test for ``prune_zero_weight_bones``.
-
-Run::
-
-    blender --background --factory-startup --python tests/test_prune_bones.py
-
-Prints ``PRUNE_TEST OK`` and exits 0 on success; prints
-``PRUNE_TEST FAIL: <reason>`` and exits 1 on any failed assertion or exception.
-"""
+"""Synthetic headless test for ``prune_zero_weight_bones``."""
 
 import os
 import sys
@@ -50,7 +42,6 @@ def _build_armature():
     bpy.context.view_layer.objects.active = arm_obj
     arm_obj.select_set(True)
 
-    # Enter Edit Mode to add bones (use op_override for headless safety).
     from avatarprep.core import scene_utils
     ctx = {'active_object': arm_obj, 'object': arm_obj}
     scene_utils.op_override(bpy.ops.object.mode_set, ctx, mode='EDIT')
@@ -88,7 +79,6 @@ def _build_armature():
     hook.head = Vector((0.0, 0.5, 0.3))
     hook.tail = Vector((0.0, 0.5, 0.5))
 
-    # Zero-weight chain off a WEIGHTED parent — the parent_weighted over-prune case.
     cloth1 = ebs.new("Cloth1")
     cloth1.head = Vector((0.0, -0.2, 0.6))
     cloth1.tail = Vector((0.0, -0.2, 0.4))
@@ -99,9 +89,6 @@ def _build_armature():
     cloth2.tail = Vector((0.0, -0.2, 0.2))
     cloth2.parent = cloth1
 
-    # Fully zero-weight multi-bone chain off an unweighted root. None of these
-    # carry weight, so the whole chain must be deleted (only depth-1 zero-weight
-    # leaves of a weighted bone are preserved).
     prev = None
     for i, name in enumerate(["Scalp", "Hair1", "Hair2", "Hair3"]):
         b = ebs.new(name)
@@ -170,13 +157,11 @@ def main():
         print("PRUNE_TEST FAIL: whatif exception:", e)
         sys.exit(1)
 
-    # The whole point of the preview: it must not touch the armature.
     if {b.name for b in arm_obj.data.bones} != bones_before:
         failures.append("whatif MUTATED the armature (bones changed)")
     if preview.get("whatif") is not True:
         failures.append("expected preview['whatif'] is True, got %r" % preview.get("whatif"))
 
-    # Tripwire: the Empty rides Hook, and Hook is on the chopping block.
     bpo = preview.get("bone_parented_objects") or []
     hook_rows = [o for o in bpo if o.get("bone") == "Hook"]
     if len(hook_rows) != 1:
@@ -185,7 +170,6 @@ def main():
         failures.append("expected the Hook tripwire row to report bone_pruned=True, got %r"
                         % hook_rows[0])
 
-    # Chains must partition the removals exactly — no bone in two chains or none.
     chains = preview.get("chains") or []
     chained = [n for ch in chains for n in ch["bones"]]
     if sorted(chained) != sorted(preview.get("deleted_bones") or []):
@@ -197,7 +181,6 @@ def main():
     if chain_roots != {"Skirt", "Hook", "Scalp", "Cloth1"}:
         failures.append("expected chain roots {Skirt, Hook, Scalp, Cloth1}, got %r" % sorted(chain_roots))
 
-    # Both polarities — a flag only ever checked False proves nothing.
     by_root = {ch["root"]: ch for ch in chains}
     if by_root.get("Cloth1", {}).get("parent_weighted") is not True:
         failures.append("expected Cloth1 chain parent_weighted=True (parent Chest is weighted), got %r"
@@ -210,13 +193,10 @@ def main():
         if by_root.get(root, {}).get("parent_weighted") is not False:
             failures.append("expected %s chain parent_weighted=False, got %r" % (root, by_root.get(root)))
 
-    # Upper_end is the only rule-(b) keep.
     tips = {t["bone"] for t in (preview.get("kept_tips") or [])}
     if tips != {"Upper_end"}:
         failures.append("expected kept_tips == {Upper_end}, got %r" % sorted(tips))
 
-    # The preview must carry the GATE verdict, not just the plan: HookAttachment
-    # rides the doomed Hook, so a real run refuses.
     if preview.get("would_refuse") is not True:
         failures.append("expected preview['would_refuse'] is True (Hook is doomed and ridden), got %r"
                         % preview.get("would_refuse"))
@@ -232,7 +212,6 @@ def main():
         failures.append("expected PruneRefused, got %s: %s" % (type(e).__name__, e))
     else:
         failures.append("expected PruneRefused (HookAttachment rides the doomed Hook), but the prune ran")
-    # A gate that mutates is a warning.
     if {b.name for b in arm_obj.data.bones} != bones_pre_gate:
         failures.append("a REFUSED prune must mutate nothing, but the armature changed")
 
@@ -244,7 +223,6 @@ def main():
         sys.exit(1)
     bones_remaining = {b.name for b in arm_obj.data.bones}
 
-    # Preview fidelity: a preview that can disagree with the run is worthless.
     if sorted(preview.get("deleted_bones") or []) != sorted(result.get("deleted_bones") or []):
         failures.append("preview plan != actual removals: %r vs %r"
                         % (sorted(preview.get("deleted_bones") or []),
@@ -271,13 +249,11 @@ def main():
     expect_absent("Skirt_end")    # zero-weight leaf, parent not weighted
     expect_absent("Cloth1")       # zero-weight under a weighted parent, but has a child
     expect_absent("Cloth2")       # zero-weight leaf, parent (Cloth1) not weighted
-    # Fully zero-weight chain off an unweighted root: deleted whole.
     expect_absent("Scalp")
     expect_absent("Hair1")
     expect_absent("Hair2")
     expect_absent("Hair3")
 
-    # Under force the orphan is deliberate, and still has to be reported.
     exec_bpo = result.get("bone_parented_objects")
     if not isinstance(exec_bpo, list):
         failures.append("execute result must carry bone_parented_objects, got %r" % exec_bpo)
@@ -289,7 +265,6 @@ def main():
             failures.append("execute tripwire != preview tripwire: %r vs %r"
                             % (exec_bpo, preview.get("bone_parented_objects")))
 
-    # Guard the return dict so a miscounted result is caught too.
     if result.get("kept") != 4:
         failures.append("expected result['kept'] == 4, got %r" % result.get("kept"))
     if result.get("deleted") != 9:

@@ -1,29 +1,7 @@
 """Synthetic headless test for avatarprep.core.parts and the mark_parts door.
 
-Run: blender --background --factory-startup --python tests/test_mark_parts.py
-Prints MARKPARTS_TEST OK / MARKPARTS_TEST FAIL: <reason>; exit 1 on any failure.
-
 The fixture is one garment mesh of box islands on a small rig, scaled by its object so the
-world and object frames differ, each island pinning one clause:
-
-  * a ribbon box ridden by ``Ribbon_1`` and a collar box with two of its eight vertices on it:
-    ``bone:Ribbon*`` takes the ribbon at ``half`` and ``all`` and both at ``any``;
-  * two all-``Pearl`` boxes (one left of the midline, one on it) and a box with one ``Pearl``
-    face: ``slot:Pearl`` takes the whole-slot boxes only (the polygon rule), ``+zone:midline``
-    and ``+zone:left`` split them, and repeated regions add together;
-  * a ``group:Mask_*`` glob over a non-bone group;
-  * a box centred on its dominant bone's head refuses at the default target and moves with
-    ``--to``; every island moves rigidly, its object-space offset the world move through the
-    object's inverse scale, or with ``collapse`` every vertex lands on the target;
-  * a group named ``Mask[1]`` beside one named ``Mask1``: the literal name wins over the glob;
-  * the writer appends last, ``--replace`` keeps the index, refuses a key another key is
-    relative to and a key this door did not author, and the stamp records each key's recipe;
-    a non-map stamp refuses; ``plan`` refuses an existing key as the write does;
-  * refusals: zero vertices, shared mesh (a fake user is not a sharer), linked mesh, posed rig,
-    a slot no material matches;
-  * the door: ``--whatif`` writes nothing and refuses an existing key, ``--out`` saves the key in
-    Object Mode with the active key on Basis from a blend left in Edit Mode, ``report_stamps``
-    reads the stamp, and bad args exit 2 while refusals exit 1.
+world and object frames differ, each island pinning one clause.
 """
 import os
 import subprocess
@@ -75,7 +53,7 @@ BONES = {  # name: (head, tail, parent)
     "Toe.R": ((-0.1, -0.12, 0.0), (-0.1, -0.15, 0.0), "Foot.R"),
 }
 
-# island name: (centre, size, material per face or one for all, {group: weight} or per-vertex fn)
+# island name: (centre, size, material or "top:Pearl" for the top face alone, {group: weight} or None)
 ISLANDS = {
     "torso": ((0, 0, 1.25), 0.2, "Cloth", {"Spine": 1.0, "Mask1": 1.0}),
     "ribbon": ((0, -0.14, 1.32), 0.04, "Cloth", {"Ribbon_1": 0.8, "Chest": 0.2, "Mask_Ribbon": 1.0,
@@ -283,7 +261,6 @@ def test_write_and_refusals(tmp):
     check(entry and entry[0].get("authored", {}).get("Hide_Pearls") == "mark_parts --key Hide_Pearls",
           "report_stamps reads the authored stamp: %r" % entry)
 
-    # refusals on the target
     rig, ob, R = _scene()
     twin = bpy.data.objects.new("Twin", ob.data)
     bpy.context.scene.collection.objects.link(twin)

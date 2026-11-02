@@ -1,30 +1,12 @@
 """Headless test for the shared CLI open path.
 
-Run:
-  blender --background --factory-startup --python tests/test_open_blend.py
-
-Prints OPENBLEND_TEST OK / OPENBLEND_TEST FAIL: <reason>.
-
-TWO TIERS, deliberately.
-
-The POLICY (classify_open x open_policy) is tested exhaustively and purely, with no
-Blender file at all: the whole point of splitting those out of the shim is that the
-branch table is checkable without one.
+The POLICY is tested purely (classify_open's docstring says why).
 
 The end-to-end tier covers only the failures a test can synthesize -- a missing file, a
-non-.blend, a directory. The 'repaired' branch is MEASURED, NOT FIXTURED: the one file
-known to trigger a reported repair is a vendor-licensed avatar base body that cannot
-ship in a public repo. As measured on Blender 5.2.0, opening
-``CHR_VRC03_NYM_Basebody_v1.0.blend`` (Kuronyam v1.01, in the local asset library)
-raises
-
-    RuntimeError: Error: ShapeKey KEKey.003 has an invalid 'from' pointer
-                  (0000000000000000), it will be deleted
-
-while the file loads completely -- 15 objects, ``bpy.data.filepath`` set -- and its
-``Mesh_NYM_BaseBody`` comes up with ZERO shape keys, the whole morph set dropped by the
-repair. 1 of the 6 vendor-authored .blend files in that library behaves this way. To
-re-measure, open any .blend and compare the raise against ``bpy.data.filepath``.
+non-.blend, a directory. The 'repaired' branch has no fixture: the one file known to
+trigger a reported repair is a vendor-licensed avatar base body that cannot ship in a
+public repo. To re-measure, open any .blend and compare the raise against
+``bpy.data.filepath``.
 """
 import os
 import subprocess
@@ -54,9 +36,7 @@ def test_classify_open():
     check(kind == "repaired" and "boom" in detail, "a raise on a landed load is a repair")
     check("\n" not in detail, "detail should be stripped of newlines for one-line grammar")
 
-    # The class that never raises: Blender substitutes a placeholder and only WARNS,
-    # so a raise-based classifier would call this clean and a saving door would bake
-    # the placeholder in.
+    # The class that never raises (scene_utils' File-open classification).
     kind, detail = classify_open(None, True, ["lib.blend"])
     check(kind == "repaired" and "lib.blend" in detail,
           "a missing linked library is a repair even with no raise")
@@ -90,8 +70,7 @@ def test_open_policy():
         got = open_policy(kind, writes=writes, force_load_repair=force)
         check(got == want, "open_policy(%s, writes=%s, force=%s) = %s, want %s"
               % (kind, writes, force, got, want))
-    # The load-bearing asymmetry, stated as its own assertion so a regression names it:
-    # a repaired file is readable and previewable, and only the WRITE is blocked.
+    # The asymmetry as its own assertion, so a regression names it.
     check(open_policy("repaired", writes=False, force_load_repair=False) == "warn"
           and open_policy("repaired", writes=True, force_load_repair=False) == "refuse",
           "a repair must block the write while leaving reads and previews open")
@@ -106,8 +85,7 @@ def _run_cli(args):
 
 
 def test_end_to_end_failures():
-    """The three failures a public repo can synthesize. All must be ERROR + exit 2 --
-    NOT a traceback, which Blender would exit 0 on."""
+    """The three failures a public repo can synthesize. All must be ERROR + exit 2."""
     root = _repo_root()
     door = os.path.join(root, "cli", "report_stamps.py")
     tmp = tempfile.mkdtemp(prefix="avatarprep_open_")
@@ -134,11 +112,9 @@ def test_end_to_end_failures():
 def test_missing_after_a_successful_load():
     """The regression that a cold test cannot see.
 
-    ``os.path.samefile`` stats BOTH paths and raises on a missing one. Unguarded, that
-    escapes the opener -- and Blender exits 0 on an unhandled --python exception, so the
-    likeliest bad --in read as ``0 = did the thing``. A cold process never reaches the
-    bug, because ``bpy.data.filepath`` is '' and short-circuits first; the previous main
-    has to be live. This test also pins that a failed open does NOT proceed against it."""
+    A cold process never reaches the samefile guard (open_blend's comment), because
+    ``bpy.data.filepath`` is '' and short-circuits first; the previous main has to be live.
+    This also pins that a failed open does NOT proceed against it."""
     root = _repo_root()
     tmp = tempfile.mkdtemp(prefix="avatarprep_open2_")
     good = os.path.join(tmp, "good.blend")
@@ -166,8 +142,7 @@ def test_missing_after_a_successful_load():
 
 
 def test_crash_wrapper():
-    """An unhandled exception inside a CLI must exit 2. Blender exits 0 on one, which
-    is why run_cli exists at all -- without it a crash reads as a clean run."""
+    """An unhandled exception inside a CLI must exit 2."""
     root = _repo_root()
     tmp = tempfile.mkdtemp(prefix="avatarprep_open3_")
     script = os.path.join(tmp, "boom.py")

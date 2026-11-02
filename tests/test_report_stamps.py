@@ -1,12 +1,6 @@
 """Synthetic headless test for avatarprep.core.scene_utils.report_stamps.
 
-Run: blender --background --factory-startup --python tests/test_report_stamps.py
-Prints REPORT_TEST OK / REPORT_TEST FAIL: <reason>.
-
-Asserts the armature-scoped schema: each baked mesh's per-mesh entry (unchanged in
-shape from the old flat list) is partitioned under its SINGLE owning armature's
-``meshes[]``; a mesh owned by zero or by >=2 armatures lands in top-level
-``unbound[]`` — a true partition (every baked mesh appears exactly once).
+Asserts report_stamps' armature-scoped schema and its true partition.
 """
 import os
 import sys
@@ -81,34 +75,34 @@ def _all_mesh_names(rep):
 
 
 def test_partition():
-    """Cases 1,2,3,4,6,8 — separation, entry shape, unbound, ambiguity, corrupt, modifier bind."""
+    """Separation, entry shape, unbound, ambiguity, corrupt and modifier bind."""
     from avatarprep.core import scene_utils as S
     _clear()
 
     dress = _make_arm("Armature.Dress")
     base = _make_arm("Base")
 
-    m_dress = _make_mesh("DressBody")          # parented to Dress (case 1, 2)
+    m_dress = _make_mesh("DressBody")
     _parent_bind(m_dress, dress)
     m_dress[S.STAMP_BAKED] = {"Chest": 0.8}
 
-    m_base = _make_mesh("BaseBody")            # modifier-bound to Base (case 8)
+    m_base = _make_mesh("BaseBody")
     _mod_bind(m_base, base)
     m_base[S.STAMP_BAKED] = {"Chest": 0.5}
 
-    m_free = _make_mesh("Floating")            # no armature (case 3)
+    m_free = _make_mesh("Floating")            # no armature
     m_free[S.STAMP_BAKED] = {"Hips": 0.3}
 
-    m_ambi = _make_mesh("Ambi")                # parent Dress + modifier Base (case 4)
+    m_ambi = _make_mesh("Ambi")
     _parent_bind(m_ambi, dress)
     _mod_bind(m_ambi, base)
     m_ambi[S.STAMP_BAKED] = {"Waist": 0.2}
 
-    m_cbound = _make_mesh("CorruptBound")      # non-map, bound to Dress (case 6)
+    m_cbound = _make_mesh("CorruptBound")
     _parent_bind(m_cbound, dress)
     m_cbound[S.STAMP_BAKED] = "not-a-map"
 
-    m_cfree = _make_mesh("CorruptFree")        # non-map, unbound (case 6)
+    m_cfree = _make_mesh("CorruptFree")
     m_cfree[S.STAMP_BAKED] = "bad"
 
     _make_mesh("Plain")                        # no baked map → never listed
@@ -118,7 +112,6 @@ def test_partition():
     d = _by_name(rep["armatures"], "Armature.Dress")
     b = _by_name(rep["armatures"], "Base")
 
-    # (1) Two-armature separation — each rig holds only its own bound baked mesh.
     dm = _by_name(d["meshes"], "DressBody")
     check(dm is not None and dm.get("baked") == {"Chest": 0.8},
           "Dress should hold its own DressBody={Chest:0.8}, got %r" % dm)
@@ -130,30 +123,24 @@ def test_partition():
     check(_by_name(b["meshes"], "DressBody") is None,
           "Base.meshes must NOT contain Dress's mesh")
 
-    # (2) Per-mesh entry shape — exactly {name, baked} plus the two always-present
-    # library fields (None on local data; test_linked_data pins the linked values).
+    # test_linked_data pins the two library fields' linked values.
     check(dm is not None and set(dm.keys()) == {"name", "baked", "library", "data_library"}
           and dm["library"] is None and dm["data_library"] is None,
           "clean baked entry must be exactly {name, baked, library, data_library}, got keys %r"
           % (None if dm is None else sorted(dm.keys())))
 
-    # (8) Modifier binding — BaseBody bound only by modifier appears under Base (asserted above).
-
-    # (3) Unbound bucket — Floating, bound to no armature.
     fm = _by_name(rep["unbound"], "Floating")
     check(fm is not None and fm.get("baked") == {"Hips": 0.3},
           "Floating (no armature) should be in unbound with its map, got %r" % fm)
     check(_by_name(d["meshes"], "Floating") is None and _by_name(b["meshes"], "Floating") is None,
           "Floating must not appear under any armature")
 
-    # (4) Ambiguous ownership (>=2 owners) → unbound, under neither rig, not duplicated.
     am = _by_name(rep["unbound"], "Ambi")
     check(am is not None and am.get("baked") == {"Waist": 0.2},
           "double-bound Ambi should route to unbound, got %r" % am)
     check(_by_name(d["meshes"], "Ambi") is None and _by_name(b["meshes"], "Ambi") is None,
           "double-bound Ambi must appear under NEITHER rig (true partition)")
 
-    # (6) Per-mesh corrupt — flagged not raised, in sole-owner meshes[] and in unbound.
     cb = _by_name(d["meshes"], "CorruptBound")
     check(cb is not None and cb.get("baked") is None and cb.get("corrupt") is not None,
           "bound corrupt mesh should be flagged in its owner's meshes[], got %r" % cb)
@@ -161,11 +148,9 @@ def test_partition():
     check(cf is not None and cf.get("baked") is None and cf.get("corrupt") is not None,
           "unbound corrupt mesh should be flagged in unbound, got %r" % cf)
 
-    # Plain (no baked map) never listed anywhere.
     check("Plain" not in _all_mesh_names(rep),
           "a mesh with no baked map must be omitted entirely")
 
-    # True partition — every baked mesh appears exactly once across the whole report.
     names = _all_mesh_names(rep)
     check(sorted(names) == sorted(set(names)),
           "every baked mesh must appear exactly once, got %r" % names)
@@ -175,13 +160,13 @@ def test_partition():
 
 
 def test_present_empty_buckets():
-    """Case 5 — meshes:[] and unbound:[] are always present, never absent."""
+    """meshes:[] and unbound:[] are always present, never absent."""
     from avatarprep.core import scene_utils as S
     _clear()
 
-    _make_arm("Empty")                         # no bound baked mesh → meshes: []
+    _make_arm("Empty")
     owner = _make_arm("Owner")
-    m = _make_mesh("Owned")                     # single-owned → unbound stays []
+    m = _make_mesh("Owned")
     _parent_bind(m, owner)
     m[S.STAMP_BAKED] = {"Chest": 0.4}
 
@@ -194,7 +179,7 @@ def test_present_empty_buckets():
 
 
 def test_armature_fields():
-    """Case 7 — base/state/state_kind unchanged by the grouping."""
+    """Each armature entry carries base, state and state_kind."""
     from avatarprep.core import scene_utils as S
     _clear()
 

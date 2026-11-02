@@ -4,17 +4,14 @@ Run:
   blender --background --factory-startup --python cli/report_fit.py -- \
       --in <costume.blend> --targets A,B [--source Body_Base] [--shape K=V | MESH:K=V]... \
       [--cut-shape K]... [--cut-threshold-m 0.01] [--sweep BONE[:AXIS][:MIN..MAX[:STEPS]]]... \
-      [--region group:NAME | bone:NAME | zone:NAME]... [--reference-bone Hips] [--forward BONE] \
+      [--region group:NAME | bone:NAME | slot:MATERIAL | zone:NAME]... [--reference-bone Hips] [--forward BONE] \
       [--label L] [--render DIR] [--report JSON] [--whatif]
 
-Reads ``--in`` and never saves it. Prints the body frame and each garment's extents in it
-(the numbers ``transfer_weights --exclude-blend`` takes), the classes, the swept bones with
-the joint-table row each took, the legend, rest context, and per garment and region the
-worst step of every metric. ``--region`` names the spot: without ``--sweep`` the sweep set
-is derived from the regions' vertices, and each region gets its own rows beside ``all``.
-``--whatif`` prints the step count and a time estimate from one timed step, then stops.
-``--render DIR`` writes a close-up sheet per garment (per region when given) at its worst
-stretch, new-penetration and body-through steps.
+Prints the body frame and each garment's extents in it (the numbers ``transfer_weights
+--exclude-blend`` takes), the classes, the swept bones with the joint-table row each took,
+the legend, rest context, and per garment and region the worst step of every metric.
+``--region`` names the spot: without ``--sweep`` the sweep set is derived from the regions'
+vertices, and each region gets its own rows beside ``all``.
 
 ``=> OK`` means measured. Exit 0 on OK; 1 on ``=> FAIL:`` (a refusal such as a bone that
 moves no skin under the garment or an empty region, or a failed render); 2 on unresolvable
@@ -62,8 +59,7 @@ def _parse_args(argv):
 
 
 def plan_for(a, fit, data, bones=None):
-    """``(regions, plan, region sets)`` for loaded ``data``; refusals raise ``FitError``. Without
-    ``--sweep`` the sweep set comes from the regions' vertices, or every vertex."""
+    """``(regions, plan, region sets)`` for loaded ``data``; refusals raise ``FitError``."""
     regions = fit.resolve_regions(data, a.regions)
     focus = None
     if regions and a.sweep_list is None:

@@ -6,14 +6,13 @@ Verifies the shape-key-safe ``apply_pose`` against a real avatar:
   (c) shape keys are preserved (same count, basis intact, a non-basis key still
       produces nonzero, sensible deformation).
 
-Loads the avatar from ``--asset`` (optional). Default: the bundled, redistributable
-Felis fixture (VN3; see tests/fixtures/Felis/NOTICE), so the harness runs zero-arg
-from a clean clone::
+Zero-arg, it loads the bundled, redistributable Felis fixture (VN3; see
+tests/fixtures/Felis/NOTICE)::
 
     blender --background --factory-startup --python tests/verify.py
 
-An operator can point it at their own avatar (``.fbx`` is imported; ``.blend`` is
-opened in place and never saved, so the source is untouched)::
+``--asset`` opens your own avatar (``.fbx`` is imported; ``.blend`` is opened in place
+and never saved)::
 
     blender --background --factory-startup --python tests/verify.py -- --asset <path>
 
@@ -28,7 +27,7 @@ import bpy
 from mathutils import Vector
 
 SCALE = 1.2
-TOL = 0.05  # 5% tolerance on the expected scale factor
+TOL = 0.05
 
 DEFAULT_ASSET = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -46,8 +45,6 @@ def _parse_args():
     return p.parse_args(argv)
 
 
-# Structural: a fresh --background --python process has no repo path; this must
-# precede any shared import.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -55,12 +52,7 @@ from cli._common import enable_avatarprep
 
 
 def _load(path):
-    """Load the avatar asset, dispatching on extension.
-
-    .fbx   -> clear the factory-startup default scene, then import via avatarprep.
-    .blend -> open in place (never saved here, so the on-disk source is untouched).
-    Anything else, or a missing file -> fail loudly, naming the offender.
-    """
+    """Load the avatar asset, dispatching on extension."""
     path = os.path.abspath(path)
     if not os.path.exists(path):
         raise SystemExit("VERIFY: asset not found: %s" % path)
@@ -80,7 +72,8 @@ def _load(path):
 
 
 def _max_nonbasis_offset(mesh_obj):
-    """Largest distance between a non-basis key and the basis, or None."""
+    """The largest distance of a non-basis key from the basis and that key's name, or
+    ``(None, None)``."""
     me = mesh_obj.data
     if not (me.shape_keys and len(me.shape_keys.key_blocks) > 1):
         return None, None
@@ -115,11 +108,8 @@ def main():
     print("VERIFY: armature =", armature.name,
           "| bound meshes =", [m.name for m in meshes])
 
-    # Pick a LEAF bone (no children) to measure rest-length change. Using a leaf
-    # with an identity parent chain means scaling ONLY this bone by SCALE should
-    # change its own rest length by exactly SCALE, with no parent-chain
-    # compounding (scaling every bone instead compounds as SCALE**depth, which is
-    # correct behaviour but not a clean single-factor assertion).
+    # Scale a single LEAF bone, so its rest length changes by exactly SCALE; scaling
+    # every bone would correctly compound as SCALE**depth.
     leaf_bones = [b for b in armature.data.bones if not b.children]
     ref_bone = max(leaf_bones, key=lambda b: b.length)
     before_len = ref_bone.length
@@ -128,7 +118,6 @@ def main():
           "| children =", len(ref_bone.children),
           "| rest length =", round(before_len, 6))
 
-    # Record shape-key state on the first mesh that has >1 key.
     sk_mesh = None
     for m in meshes:
         if m.data.shape_keys and len(m.data.shape_keys.key_blocks) > 1:
@@ -153,7 +142,6 @@ def main():
         print("VERIFY: NOTE no mesh with >1 shape key found; "
               "shape-key preservation check is limited")
 
-    # --- Run: scale ONLY the target leaf bone by SCALE, then apply as rest --
     bpy.context.view_layer.objects.active = armature
     armature.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')
@@ -163,7 +151,7 @@ def main():
     exc = None
     try:
         result = rest_pose.apply_pose(armature)
-    except Exception as e:  # (a)
+    except Exception as e:
         exc = e
         import traceback
         traceback.print_exc()
@@ -173,7 +161,6 @@ def main():
     else:
         print("VERIFY: (a) PASS no exception | result =", result)
 
-    # (b) rest pose changed by ~SCALE
     after_bone = armature.data.bones.get(before_name)
     after_len = after_bone.length if after_bone else None
     ratio = (after_len / before_len) if (after_len and before_len) else None
@@ -187,7 +174,6 @@ def main():
     else:
         print("VERIFY: (b) PASS rest pose reflects applied scale")
 
-    # (c) shape keys preserved
     if sk_mesh is not None:
         kb = sk_mesh.data.shape_keys.key_blocks
         after_sk_count = len(kb)

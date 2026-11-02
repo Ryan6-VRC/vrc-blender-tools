@@ -1,34 +1,7 @@
 """Synthetic headless test for avatarprep.core.coverage and the mark_coverage door.
 
-Run: blender --background --factory-startup --python tests/test_coverage.py
-Prints COVERAGE_TEST OK / COVERAGE_TEST FAIL: <reason>; exit 1 on any failure.
-
-Fixtures are a cylinder "body" and tubes around it built in memory, weighted by name to
-bones of a small armature, so every case pins one clause of the criterion or of the
-carrier rule:
-
-  * a closed tube covers the cylinder band it wraps (the base case);
-  * a double-walled tube whose inner wall's normals face the body still covers — nothing
-    reads a garment normal;
-  * a short open tube leaves the skin beyond and at its edge uncovered (rays escape
-    through the opening); at 75 degrees the row under the edge is reachable at a grazing
-    angle and counts as rest-visible, at 85 it does not; a tube standing far off the skin
-    is seen into;
-  * a tube band on a bone the body lacks is transparent (declines as swings); a
-    blend-ratio difference on the body's own bones still covers;
-  * a farther co-moving garment covers where a nearer swinging one is transparent;
-  * kin: a band on a child bone declines at kin 0 and covers at kin 1; fold: a band on a
-    'Breast_*' bone covers at kin 0 once folded onto its parent;
-  * shapes: a body key that swells the top half out past the tube uncovers it when set,
-    and the key's value is restored after; a non-armature modifier still deforms under a
-    shape; a modifier that rewrites polygons refuses; an unknown shape refuses;
-  * a vertex group that is not a bone (a shared Mask) never counts as skinning;
-  * the carrier is polygon-level: one uncovered corner keeps its whole quad;
-  * a one-quad-wide covered strip is residue: covered, carrier empty there;
-  * --cut-shape excludes what a shape already moves, and an unknown cut shape refuses;
-  * write_carrier lands the key on a local body, refuses a moved Basis and a same-named
-    key; save_marked writes the inspect copy; the door's --whatif / --out / --out-marked
-    paths and exit codes hold via subprocess, on a LINKED body.
+Every case pins one clause of the coverage criterion or of the carrier rule, on an in-memory
+cylinder "body" and tubes around it, weighted by name to bones of a small armature.
 """
 import math
 import os
@@ -241,7 +214,6 @@ def test_kin_and_fold():
     rf = _measure(body, [tube], kin=0, fold=["Breast_*"])
     check(rf["covered_triangles"] == rf["triangles"], "folding Breast_* onto Chest covers at kin 0: %d/%d"
           % (rf["covered_triangles"], rf["triangles"]))
-    # kin needs a rig; unrigged meshes must say so rather than silently act as kin 0
     body, tube = _scene(rig=False)
     try:
         _measure(body, [tube], kin=2)
@@ -251,7 +223,7 @@ def test_kin_and_fold():
     check(_measure(body, [tube], kin=0)["covered_triangles"] > 0, "kin 0 works unrigged")
 
 
-def test_shapes_on_stand_in():
+def test_shapes_on_body():
     from avatarprep.core import coverage
     body, tube = _scene()
     body.shape_key_add(name="Basis", from_mix=False)
@@ -268,7 +240,6 @@ def test_shapes_on_stand_in():
           % (r_swell["covered_triangles"], r_plain["covered_triangles"]))
     check(body.data.shape_keys.key_blocks["Swell"].value == 0.0, "the body's own key value must be restored")
     check(r_swell["settings"]["shapes"] == {"Swell": 1.0}, "shapes echo in settings")
-    # a deformer that is not an armature must still be in play under a shape
     disp = body.modifiers.new("Push", 'DISPLACE')
     disp.strength = 0.05                          # the whole body out past the tube
     r_disp = _measure(body, [tube], shapes={"Swell": 0.0})
@@ -290,8 +261,6 @@ def test_shapes_on_stand_in():
 
 
 def test_polygon_carrier_keeps_uncovered_corner():
-    """One body vertex made unweighted declines; every quad around it must survive, so
-    the removed set never contains a polygon with an uncovered corner."""
     body, tube = _scene()
     victim = 10 * 24 + 5                     # a mid-body vertex
     for g in body.vertex_groups:
@@ -311,10 +280,9 @@ def test_polygon_carrier_keeps_uncovered_corner():
 
 
 def test_residue_strip():
-    """A one-quad-wide covered band: the tube rides a bone the body lacks except over a
-    narrow band on the body's bone, so exactly two vertex rows are covered, one row of
-    quads is covered, and no vertex of it has every surrounding quad covered. Covered,
-    carrier empty, all of it residue."""
+    """The tube rides a bone the body lacks except over a narrow band on the body's bone,
+    so one row of quads is covered and no vertex of it has every surrounding quad covered:
+    covered, carrier empty, all of it residue."""
     body, tube = _scene(tube_kw=dict(rings=28))
     for g in list(tube.vertex_groups):
         tube.vertex_groups.remove(g)
@@ -416,9 +384,9 @@ def test_marked_copy_and_save(tmp):
 
 
 def test_cli(tmp):
-    """The door through a fresh blender: --whatif writes nothing, --shape on a LINKED body
-    measures on a stand-in, --out writes the key onto that body's own blend, --out-marked
-    saves the inspect copy, bad args exit 2 in-grammar."""
+    """The door through a fresh blender on a LINKED body: --whatif still saves --report and
+    --out-marked, --shape measures in place, --out writes the key onto that body's own blend,
+    bad args exit 2 in-grammar."""
     root = _repo_root()
     blender = bpy.app.binary_path
     # base blend: the rigged body with a swell key
@@ -510,7 +478,7 @@ def main():
     test_farther_comoving_garment_covers()
     test_non_bone_groups_do_not_skin()
     test_kin_and_fold()
-    test_shapes_on_stand_in()
+    test_shapes_on_body()
     test_polygon_carrier_keeps_uncovered_corner()
     test_residue_strip()
     test_cut_shape_exclusion_and_unknown()

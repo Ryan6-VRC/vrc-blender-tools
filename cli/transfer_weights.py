@@ -10,13 +10,10 @@ Run:
       [--viz <review.blend>] [--report <json>] (--whatif | --out <out.blend> | --in-place) \
       [--force-load-repair]
 
-Runs on the costume blend, where the body is normally a library link and is never written.
-``--whatif`` runs the whole transfer in memory, asserts included, and saves nothing. A
-saving run stamps each target object with ``avatarprep_weights``, the canonical
-command line printed as ``recipe:`` (flags in the order above, defaults omitted, no paths
-or mode flags), which reproduces the same weights on a rerun. ``--viz`` saves a copy whose
-targets carry an ``avatarprep_matched`` colour layer (white matched, magenta inpainted) for
-``render_mesh --shading vertexcolor``; the saved deliverable never carries it.
+A saving run stamps each target object with ``avatarprep_weights``, the :func:`recipe`
+line printed as ``recipe:``, which reproduces the same weights on a rerun. ``--viz`` saves
+a copy whose targets carry an ``avatarprep_matched`` colour layer (white matched, magenta
+inpainted) for ``render_mesh --shading vertexcolor``.
 
 Axes are words: ``forward`` (the body's facing, read from the feet), ``back``, ``lateral``
 (the body's left, the ``.L`` side), ``up``, measured from ``--reference-bone``'s head.

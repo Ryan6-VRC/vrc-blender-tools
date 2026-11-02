@@ -1,13 +1,7 @@
 """Synthetic headless test for avatarprep.core.render_mesh.render().
 
-Run: blender --background --factory-startup --python tests/test_render_mesh.py
-Prints RENDERMESH_TEST OK / RENDERMESH_TEST FAIL: <reason>; sys.exit(1) on any failure.
-
 Workbench renders headless, so BOTH the pre-render refusals AND the real render
-assertions live here (no separate windowed script). The load-bearing render asserts:
-a direction-keyed 3-axis orientation fixture (fails on any front/back, left/right, or
-top/bottom vertical-flip swap) and an RBT-marker color round-trip (catches the sRGB
-read-back defect). See the module docstring in core/render_mesh.py for the pipeline.
+assertions live here.
 """
 import os
 import sys
@@ -46,8 +40,7 @@ _FACE_COLORS = {
     (0, 0, 1):  (0, 0, 255, 255),      # +Z blue
     (0, 0, -1): (255, 255, 0, 255),    # -Z yellow
 }
-# confirmed mapping (which world face each angle shows), matching core _VIEW_Q's Felis calibration:
-# front->+Y, back->-Y, left->-X, right->+X, top->+Z, bottom->-Z. The RGB each angle must show dominant.
+# The RGB each angle must show dominant; the faces match core _VIEW_Q's Felis calibration.
 _ANGLE_EXPECT = {
     "front":  (0, 255, 0),     # +Y
     "back":   (255, 0, 255),   # -Y
@@ -84,9 +77,9 @@ def _add_cube(name, size=2.0, attr_name="Test", per_face=True, solid_color=None)
         for li in poly.loop_indices:
             if not per_face:
                 col = solid_color
-            elif axis[2] != 0:  # top/bottom face — no world-Z asymmetry, uniform identity colour
+            elif axis[2] != 0:
                 col = _FACE_COLORS[axis]
-            else:               # side face — bright above the face centre, dark below (Z split)
+            else:
                 bright = _FACE_COLORS[axis]
                 vz = me.vertices[me.loops[li].vertex_index].co.z
                 col = bright if vz > 0 else tuple(int(c * 0.4) for c in bright[:3]) + (255,)
@@ -110,7 +103,7 @@ def _load_png_top(path):
     w, h = img.size
     arr = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, 4)
     bpy.data.images.remove(img)
-    return np.clip(arr[::-1] * 255.0 + 0.5, 0, 255).astype(np.uint8)  # flip to top-origin
+    return np.clip(arr[::-1] * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
 
 def _png_path(line):
@@ -163,7 +156,6 @@ def test_refuse_unknown_shading():
     line = render(shading="glow", resolution=64)
     check("=> FAIL:" in line and "solid,vertexcolor" in line,
           "unknown shading should refuse listing solid,vertexcolor, got %r" % line)
-    # mixed-case / whitespace normalizes and passes
     ok = render(shading=" Solid ", resolution=64)
     check("=> OK" in ok, "' Solid ' should normalize and pass, got %r" % ok)
 
@@ -189,7 +181,7 @@ def test_refuse_zero_extent():
     from avatarprep.core.render_mesh import render
     _clear()
     me = bpy.data.meshes.new("Dot")
-    me.from_pydata([(0.0, 0.0, 0.0)], [], [])  # single vertex — zero extent
+    me.from_pydata([(0.0, 0.0, 0.0)], [], [])
     me.update()
     ob = bpy.data.objects.new("Dot", me)
     bpy.context.scene.collection.objects.link(ob)
@@ -217,7 +209,6 @@ def test_only_notes_distinguish():
     check("=> OK" in line, "a resolvable --only should render, got %r" % line)
     check("only-hidden:Hidden" in line, "present-but-hidden name should read only-hidden, got %r" % line)
     check("only-not-found:Ghost" in line, "absent name should read only-not-found, got %r" % line)
-    # both flags live in a single note= field before png=
     check(line.index("note=") < line.index("png="), "note= must sit before terminal png=, got %r" % line)
 
 
@@ -233,7 +224,7 @@ def test_solid_render():
     check(os.path.exists(path), "solid PNG should exist at %r" % path)
     if os.path.exists(path):
         px = _load_png_top(path)
-        # coverage over the plate: something drew (drew floor cleared, well above 0.5%)
+        # Coverage over the plate, set well above core's 0.5% _DREW_FLOOR.
         nonplate = (np.abs(px[:, :, :3].astype(np.int32) - 71).sum(axis=2) > 30).mean()
         check(nonplate > 0.05, "solid render should clear the drew floor, coverage=%.4f" % nonplate)
 
@@ -252,12 +243,8 @@ def _under(path, base):
 
 
 def test_output_persists_location():
-    """The returned png= must live in the PERSISTENT OS temp, in the DEDICATED
-    <tempfile.gettempdir>/avatarprep_rendermesh subdir (not the bare temp root — so a grab-dir
-    scanner sees only rendermesh sheets, mirroring RenderAvatar's per-project cache), NOT in
-    bpy.app.tempdir — Blender deletes its session dir on process exit, so a session-dir path is a
-    dead path by the time a real headless cli returns. A true cross-process test isn't feasible in
-    one process; this location assert is the practical regression guard."""
+    """The returned png= must live in the persistent subdir, not bpy.app.tempdir. A true
+    cross-process test isn't feasible in one process; this location assert is the practical guard."""
     from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
@@ -271,10 +258,9 @@ def test_output_persists_location():
 
 
 def test_orientation():
-    """Direction-keyed 3-axis fixture. Two counted asserts: (1) each cell's dominant colour equals
-    the expected face colour — fails on any front/back, left/right, or top/bottom face swap; (2) on
-    the four side tiles the bright top-half sits ABOVE the dark bottom-half — fails on a forgotten
-    reshape vertical flip (which a uniform-per-face colour, being flip-invariant, would not catch)."""
+    """Direction-keyed 3-axis fixture. Each cell's dominant colour equals the expected face colour,
+    which fails on a face swap, and on the four side tiles the bright top-half sits ABOVE the dark
+    bottom-half, which fails on a forgotten reshape vertical flip."""
     from avatarprep.core.render_mesh import render
     _clear()
     _add_cube("OrientCube", per_face=True)
@@ -300,7 +286,6 @@ def test_orientation():
         check(got == _ANGLE_EXPECT[angle],
               "angle %s should show face %s, dominant=%s nearest=%s"
               % (angle, _ANGLE_EXPECT[angle], dom, got))
-        # vertical-flip guard: the four side faces are bright-top/dark-bottom (top = high world Z)
         if angle in ("front", "back", "left", "right"):
             h = cell.shape[0]
             top = _nonplate_luma(cell[:h // 2])
@@ -312,8 +297,7 @@ def test_orientation():
 
 def test_rbt_marker():
     """An 'RBT Matched'-style render colour attribute round-trips to the authored bytes within a
-    tight tolerance — catches the sRGB read-back defect. A SINGLE colour attribute is unambiguous,
-    so no ambiguous-color-attribute note fires."""
+    tight tolerance, which catches the sRGB read-back defect."""
     from avatarprep.core.render_mesh import render
     _clear()
     rbt_fail = (234, 0, 255)  # robust-weight-transfer 'failed' magenta (234/255, 0, 1)
@@ -332,12 +316,9 @@ def test_rbt_marker():
 
 
 def test_ambiguous_color_attribute():
-    """The identity hazard: a mesh with >1 colour attribute renders the one at render_color_index,
-    and the OK line must NAME what was actually rendered (so a non-RBT layer can't masquerade as the
-    marker). The single-attribute case must NOT emit this note."""
+    """A mesh with >1 colour attribute: the OK line must NAME the attribute actually rendered."""
     from avatarprep.core.render_mesh import render
     _clear()
-    # a mesh carrying an unrelated layer FIRST and the RBT marker second, marker flagged for render
     me = bpy.data.meshes.new("MultiData")
     me.from_pydata([(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)], [], [(0, 1, 2, 3)])
     me.update()
@@ -356,10 +337,6 @@ def test_ambiguous_color_attribute():
           "multi-attr mesh must name the rendered attribute, got %r" % line)
 
 
-# NOTE: the spec (v2) drops the unreachable no-render-color-attribute case — Blender 5.1 clamps
-# render_color_index to a valid index (0) whenever any colour attribute exists, so "attributes but
-# none render-flagged" cannot occur through the API. The real hazard is IDENTITY (render index points
-# at a non-marker layer), covered by test_ambiguous_color_attribute above.
 def test_no_color_attribute():
     from avatarprep.core.render_mesh import render
     _clear()
@@ -372,18 +349,15 @@ def test_no_color_attribute():
     if os.path.exists(path):
         px = _load_png_top(path)
         dom = _dominant_nonplate(px)
-        # renders a neutral (grey) fallback, distinct from the 71 plate
         check(dom is not None and max(dom) - min(dom) <= 25,
               "no-colour mesh should render a neutral grey fallback, got %s" % (dom,))
 
 
 def test_plate():
-    """An empty grid cell / margin samples exactly the 71 plate (passes by construction — a
-    compose-layout check, not a round-trip guard)."""
+    """An empty grid cell samples exactly the 71 plate."""
     from avatarprep.core.render_mesh import render
     _clear()
     _add_plain_cube("Cube")
-    # 3 angles -> 2x2 grid, one empty cell filled with the plate
     line = render(angles=["front", "back", "left"], shading="solid", resolution=128)
     path = _png_path(line)
     edge = _res(line)
@@ -416,7 +390,6 @@ def test_only_all_hidden_breakdown():
     _clear()
     h = _add_plain_cube("Cape")
     h.hide_render = True
-    # every --only name unresolvable: one hidden, one absent — the FAIL must break them down
     line = render(only=["Cape", "Ghost"], resolution=64)
     check("=> FAIL:" in line and "png=" not in line, "all-hidden/absent --only should refuse, got %r" % line)
     check("hidden:Cape" in line and "not-found:Ghost" in line,

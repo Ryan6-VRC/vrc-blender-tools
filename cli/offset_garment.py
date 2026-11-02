@@ -6,26 +6,13 @@ Run:
       [--tight 0.003] [--loose 0.006] [--report JSON] (--whatif | --out <out.blend> | --in-place) \
       [--force-load-repair]
 
-Each target vertex, at its Basis, finds its nearest point on ``--source`` and moves outward
-along the body's normal there by ``--amount`` metres times a fade: whole while its distance
-to the skin is within ``--tight``, falling by a smoothstep to nothing at ``--loose``, and
-nothing beyond. The skin-tight tube thickens evenly while frills, ruffles and straps standing
-off the skin stay where they are. The body is read at the row's state, its shape keys at their
-stored values with each ``--shape`` overriding one (a Unity weight of 100 is 1): only the
-source's state places the skin, so a ``--shape`` the source lacks refuses. Its normal is the
-area-weighted vertex normal interpolated across the nearest triangle, so the direction turns
-smoothly over the skin rather than faceting on a coarse limb. ``--loose`` minus ``--tight``
-must exceed 1.5 times ``--amount``, or layers between them can cross. This is a rest-shape
-change for the whole garment; ``push_garment`` is the door for one spot the body comes
-through under motion.
+Mechanism: ``fit.plan_offset``. ``--shape`` reads on the source only (a Unity weight of 100 is
+1), so a ``--shape`` it lacks refuses. This is a rest-shape change for the whole garment;
+``push_garment`` is the door for one spot the body comes through under motion.
 
-Asserted before anything saves: no vertex beyond ``--loose`` moves, none moves farther than
-``--amount``, and the vertex count and every key's offset from Basis hold, since the same
-object-space delta goes onto the mesh, Basis and every shape key. A saving run stamps each
-target object with ``avatarprep_offset``, the canonical command line printed as ``recipe:``
-(defaults omitted, no paths or mode flags); a stamped mesh refuses, since a rerun would offset
-twice: re-derive from the blend before the offset. ``--whatif`` plans everything and saves
-nothing.
+A saving run stamps each target object with ``avatarprep_offset``, the canonical command
+line printed as ``recipe:`` (defaults omitted, no paths or mode flags); a stamped mesh
+refuses.
 
 Exit 0 on ``=> OK``; 1 on ``=> FAIL:`` (ran and refused, nothing saved); 2 on unresolvable
 input (bad args, a missing mesh) or a crash.
