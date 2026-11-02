@@ -422,8 +422,7 @@ def test_apply_pose_no_armature(tmp):
     _save_scene(scene)
     rc, out = _run_cli("apply_pose.py", ["--in", scene, "--out", os.path.join(tmp, "unwritten.blend")])
     if rc != 2 or "ERROR no armature found" not in out:
-        _fail("apply_pose with no armature: expected exit 2 and ERROR, got %d
-%s" % (rc, out))
+        _fail("apply_pose with no armature: expected exit 2 and ERROR, got %d\n%s" % (rc, out))
 
 
 def test_edge_missing_file(tmp):
